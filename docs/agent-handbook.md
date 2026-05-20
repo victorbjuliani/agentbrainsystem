@@ -23,20 +23,25 @@ Shared onboarding layer for AI coding agents in this repository. Keep project fa
 | --- | --- | --- |
 | `/` | repo root | thin wrappers + config live here |
 | `docs/` | shared documentation | canonical onboarding/workflow/testing/docs-standards |
-| `src/` | application code | *not created yet — established with the first feature* |
-| `tests/` | test suites | *not created yet* |
+| `src/` | application code | TS source; tests colocated as `*.test.ts` |
+| `docs/adr/` | architecture decision records | committed; ADR 0001 = storage + embeddings |
+| `.github/workflows/` | CI | `ci.yml` runs lint → typecheck → build → test |
 
 Expand this table as the codebase materializes.
 
 ## Core Commands
 
-*To be filled when the stack is finalized (first `/feature`).* Placeholders:
+Stack: **Node.js (≥22) + TypeScript (ESM)**, Biome (lint+format), Vitest (tests),
+`tsc` (build/typecheck). See `docs/adr/0001-storage-and-embeddings.md` for the
+storage/embedding decisions.
 
-- Install: `[tbd]`
-- Start locally: `[tbd]`
-- Test: `[tbd]`
-- Typecheck / lint: `[tbd]`
-- Build: `[tbd]`
+- Install: `npm install`
+- Test: `npm test` (watch: `npm run test:watch`)
+- Lint: `npm run lint` (autofix: `npm run lint:fix`)
+- Typecheck: `npm run typecheck`
+- Build: `npm run build` (emits `dist/`)
+- **Full gate (CI parity):** `npm run check` (lint → typecheck → test)
+- Run a TS entrypoint in dev: `npm run dev`
 
 ## Architecture Notes (intended, pre-implementation)
 

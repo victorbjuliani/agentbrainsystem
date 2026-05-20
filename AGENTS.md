@@ -17,6 +17,6 @@ Read before changing code:
 
 ## Repo Overrides
 
-- Primary validation command: `[fill once the stack is finalized]`
-- Main package manager / toolchain: `[fill once the stack is finalized — strong lean: Node/TypeScript]`
+- Primary validation command: `npm run check` (lint → typecheck → test); see `docs/agent-handbook.md` → Core Commands.
+- Main package manager / toolchain: **npm + Node ≥22 + TypeScript (ESM)**; Biome (lint/format), Vitest (test), `tsc` (build). Storage/embedding decisions in `docs/adr/0001-storage-and-embeddings.md`.
 - Sensitive areas: the index lifecycle (`embed → persist → recall`) and the MCP tool contract. Change with tests.
