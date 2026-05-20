@@ -1,0 +1,8 @@
+# <type>(<scope>): <subject>   — Conventional Commits; <=72 chars on this line
+#
+# Types: feat | fix | docs | refactor | test | chore | perf | build | ci
+#
+# Body: what changed and why (not how). Wrap at 72 chars.
+#
+# Footer: reference the issue, e.g. "Closes #12". Note breaking changes
+# with "BREAKING CHANGE: ...".

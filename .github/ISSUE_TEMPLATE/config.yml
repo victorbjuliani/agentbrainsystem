@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Discovery roadmap
+    url: https://github.com/victorbjuliani/agentbrainsystem/tree/main/docs/discovery
+    about: Requirements, risks, and the planned issue roadmap live here.

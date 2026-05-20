@@ -1,0 +1,19 @@
+name: Task
+description: A scoped chore, spike, or infra task.
+labels: ["task"]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What needs doing and why.
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: Definition of done
+      value: |
+        - [ ]
+    validations:
+      required: true

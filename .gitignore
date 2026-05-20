@@ -1,0 +1,40 @@
+# === Worktrees (repo convention: <repo-root>/.worktrees/) ===
+.worktrees/
+
+# === Discovery / planning artifacts (GitHub Issues are the source of truth) ===
+docs/discovery/
+
+# === Node / TypeScript (stack lean — adjust when finalized) ===
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+.npm/
+.pnpm-store/
+coverage/
+*.log
+
+# === Secrets / local config ===
+.env
+.env.*
+!.env.example
+*.local
+
+# === Memory store & runtime data (never commit a user's memory) ===
+data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# === Model / embedding cache ===
+.cache/
+models/
+
+# === Editor / OS ===
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
