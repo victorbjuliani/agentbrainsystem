@@ -14,11 +14,11 @@ export {
   createEmbeddingProvider,
   DimensionMismatchError,
 } from './embedding/index.js';
+export { exportStore, importStore } from './export/index.js';
 export type { EnsureResult, IndexStatus } from './indexer/index.js';
 export { Indexer } from './indexer/index.js';
-export { MemoryStore } from './store/index.js';
+export { ingestClaudeProjects } from './ingest/index.js';
 export { type Memory, openMemory } from './memory.js';
 export { Recall } from './recall/index.js';
-export { ingestClaudeProjects } from './ingest/index.js';
-export { exportStore, importStore } from './export/index.js';
+export { MemoryStore } from './store/index.js';
 export { VERSION } from './version.js';

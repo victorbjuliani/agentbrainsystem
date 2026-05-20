@@ -9,6 +9,9 @@
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "abs": "./dist/cli/cli.js"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
