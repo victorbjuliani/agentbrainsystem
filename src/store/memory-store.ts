@@ -131,6 +131,11 @@ export class MemoryStore {
     return this.db;
   }
 
+  /** The vector width this store's `vec0` column is sized for. */
+  get vectorDimensions(): number {
+    return this.dimensions;
+  }
+
   // ---------------------------------------------------------------- migrations
 
   /** Apply any pending forward migrations. Idempotent — a no-op on a current DB. */
@@ -361,6 +366,18 @@ export class MemoryStore {
       )
       .all(JSON.stringify(query), k) as Array<{ id: number | bigint; distance: number }>;
     return rows.map((r) => ({ id: Number(r.id), distance: r.distance }));
+  }
+
+  /**
+   * Read back an observation's stored embedding as a plain number[] (via
+   * sqlite-vec `vec_to_json`), or null if absent. Used by export (#8) to ship
+   * vectors so an imported store recalls identically without re-embedding.
+   */
+  getVector(obsId: number): number[] | null {
+    const row = this.conn()
+      .prepare('SELECT vec_to_json(embedding) AS j FROM vec_observations WHERE rowid = ?')
+      .get(BigInt(obsId)) as { j: string } | undefined;
+    return row ? (JSON.parse(row.j) as number[]) : null;
   }
 
   // -------------------------------------------------------- keyword index (FTS5)
