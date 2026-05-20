@@ -1,6 +1,9 @@
 # === Worktrees (repo convention: <repo-root>/.worktrees/) ===
 .worktrees/
 
+# === Spike scratch (throwaway validation; findings live in docs/adr/) ===
+.spike/
+
 # === Discovery / planning artifacts (GitHub Issues are the source of truth) ===
 docs/discovery/
 
