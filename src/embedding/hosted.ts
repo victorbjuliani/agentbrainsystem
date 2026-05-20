@@ -12,6 +12,7 @@
  */
 import { assertDimensions } from './guard.js';
 import type { EmbeddingProvider } from './provider.js';
+import { fetchWithRetry, type RetryOptions } from './retry.js';
 
 /** L2-normalize a vector in place-safe fashion (returns a new array). */
 function l2normalize(vec: number[]): number[] {
@@ -69,6 +70,8 @@ interface GeminiBatchResponse {
 export interface GeminiProviderOptions {
   model?: string;
   dimensions?: number;
+  /** Optional retry/backoff overrides; defaults are fine for production. */
+  retry?: RetryOptions;
 }
 
 export class GeminiEmbeddingProvider implements EmbeddingProvider {
@@ -76,11 +79,13 @@ export class GeminiEmbeddingProvider implements EmbeddingProvider {
   readonly model: string;
   readonly dimensions: number;
   private readonly apiKey: string;
+  private readonly retry?: RetryOptions;
 
   constructor(options: GeminiProviderOptions = {}) {
     this.apiKey = requireEnv(GEMINI_API_KEY_ENV, 'gemini');
     this.model = options.model ?? GEMINI_DEFAULT_MODEL;
     this.dimensions = options.dimensions ?? GEMINI_DEFAULT_DIMENSIONS;
+    this.retry = options.retry;
   }
 
   async embed(texts: string[]): Promise<number[][]> {
@@ -94,11 +99,15 @@ export class GeminiEmbeddingProvider implements EmbeddingProvider {
         content: { parts: [{ text }] },
       })),
     };
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    });
+    const res = await fetchWithRetry(
+      url,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+      this.retry,
+    );
     if (!res.ok) {
       throw new Error(`gemini embeddings request failed: ${res.status} ${await res.text()}`);
     }
@@ -123,6 +132,8 @@ interface VoyageResponse {
 export interface VoyageProviderOptions {
   model?: string;
   dimensions?: number;
+  /** Optional retry/backoff overrides; defaults are fine for production. */
+  retry?: RetryOptions;
 }
 
 export class VoyageEmbeddingProvider implements EmbeddingProvider {
@@ -130,23 +141,29 @@ export class VoyageEmbeddingProvider implements EmbeddingProvider {
   readonly model: string;
   readonly dimensions: number;
   private readonly apiKey: string;
+  private readonly retry?: RetryOptions;
 
   constructor(options: VoyageProviderOptions = {}) {
     this.apiKey = requireEnv(VOYAGE_API_KEY_ENV, 'voyage');
     this.model = options.model ?? VOYAGE_DEFAULT_MODEL;
     this.dimensions = options.dimensions ?? VOYAGE_DEFAULT_DIMENSIONS;
+    this.retry = options.retry;
   }
 
   async embed(texts: string[]): Promise<number[][]> {
     if (texts.length === 0) return [];
-    const res = await fetch('https://api.voyageai.com/v1/embeddings', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${this.apiKey}`,
+    const res = await fetchWithRetry(
+      'https://api.voyageai.com/v1/embeddings',
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify({ model: this.model, input: texts }),
       },
-      body: JSON.stringify({ model: this.model, input: texts }),
-    });
+      this.retry,
+    );
     if (!res.ok) {
       throw new Error(`voyage embeddings request failed: ${res.status} ${await res.text()}`);
     }

@@ -96,6 +96,11 @@ Then ingest your history (`abs ingest`) and Claude Code can call the `recall`,
 | `ABS_EMBED_MODEL` | `Xenova/all-MiniLM-L6-v2` | model id for the provider |
 | `ABS_EMBED_DIM` | per provider (local 384, gemini 768, voyage 1024) | vector width; only set to override |
 
+Hosted providers retry transient failures — HTTP `429`/`503` and network errors — with
+capped exponential backoff + jitter, honoring `Retry-After`. A momentary rate-limit or
+blip during bulk ingest is absorbed instead of aborting the whole run (the local provider
+needs none of this — no network).
+
 See also:
 
 - `docs/agent-handbook.md` — onboarding for AI agents and contributors
