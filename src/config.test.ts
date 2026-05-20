@@ -48,6 +48,13 @@ describe('loadConfig', () => {
     expect(cfg.embedding.provider).toBe('gemini');
   });
 
+  it('defaults dimensions per provider when ABS_EMBED_DIM is unset', () => {
+    process.env.ABS_EMBED_PROVIDER = 'gemini';
+    expect(loadConfig().embedding.dimensions).toBe(768);
+    process.env.ABS_EMBED_PROVIDER = 'voyage';
+    expect(loadConfig().embedding.dimensions).toBe(1024);
+  });
+
   it('throws on a non-integer ABS_EMBED_DIM instead of leaking NaN to the schema', () => {
     process.env.ABS_EMBED_DIM = 'garbage';
     expect(() => loadConfig()).toThrow(/ABS_EMBED_DIM/);

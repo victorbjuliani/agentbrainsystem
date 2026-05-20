@@ -84,7 +84,7 @@ Then ingest your history (`abs ingest`) and Claude Code can call the `recall`,
 | `ABS_DB_PATH` / `ABS_HOME` | `~/.agentbrainsystem/memory.db` | where the store lives |
 | `ABS_EMBED_PROVIDER` | `local` | `local` \| `gemini` \| `voyage` |
 | `ABS_EMBED_MODEL` | `Xenova/all-MiniLM-L6-v2` | model id for the provider |
-| `ABS_EMBED_DIM` | `384` | vector width (must match the provider) |
+| `ABS_EMBED_DIM` | per provider (local 384, gemini 768, voyage 1024) | vector width; only set to override |
 
 See also:
 

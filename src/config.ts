@@ -31,8 +31,18 @@ export interface AppConfig {
 }
 
 const DEFAULT_LOCAL_MODEL = 'Xenova/all-MiniLM-L6-v2';
-const DEFAULT_DIMENSIONS = 384;
 const VALID_PROVIDERS: readonly EmbeddingProviderId[] = ['local', 'gemini', 'voyage'];
+/**
+ * Native vector width per provider, used when `ABS_EMBED_DIM` is unset. Pairing
+ * the dimension with the provider avoids the footgun where selecting a hosted
+ * provider would otherwise size the store at the local default (384) and fail on
+ * the first embed (e.g. Gemini returns 768).
+ */
+const PROVIDER_DEFAULT_DIM: Record<EmbeddingProviderId, number> = {
+  local: 384,
+  gemini: 768,
+  voyage: 1024,
+};
 
 function defaultDataDir(): string {
   return process.env.ABS_HOME
@@ -61,7 +71,7 @@ export function loadConfig(): AppConfig {
   const model = process.env.ABS_EMBED_MODEL || (provider === 'local' ? DEFAULT_LOCAL_MODEL : '');
   const dimensions = process.env.ABS_EMBED_DIM
     ? Number.parseInt(process.env.ABS_EMBED_DIM, 10)
-    : DEFAULT_DIMENSIONS;
+    : PROVIDER_DEFAULT_DIM[provider];
   // Fail loud at startup rather than letting NaN/0 reach the vec0 DDL (float[NaN]).
   if (!Number.isInteger(dimensions) || dimensions <= 0) {
     throw new Error(
@@ -78,5 +88,5 @@ export function loadConfig(): AppConfig {
 
 export const DEFAULTS = {
   localModel: DEFAULT_LOCAL_MODEL,
-  dimensions: DEFAULT_DIMENSIONS,
+  dimensions: PROVIDER_DEFAULT_DIM.local,
 } as const;
