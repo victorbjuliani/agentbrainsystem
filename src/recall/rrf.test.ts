@@ -1,0 +1,45 @@
+import { describe, expect, it } from 'vitest';
+import { reciprocalRankFusion, toFtsQuery } from './index.js';
+
+describe('reciprocalRankFusion', () => {
+  it('ranks an id present in both lists above one present in only one', () => {
+    const fused = reciprocalRankFusion([
+      { name: 'vector', ids: [10, 20, 30] },
+      { name: 'fts', ids: [20, 40] },
+    ]);
+    expect(fused[0]?.id).toBe(20); // in both → highest summed score
+    expect(fused[0]?.ranks).toEqual({ vector: 2, fts: 1 });
+  });
+
+  it('rewards a better rank within a single list', () => {
+    const fused = reciprocalRankFusion([{ name: 'vector', ids: [1, 2, 3] }]);
+    expect(fused.map((f) => f.id)).toEqual([1, 2, 3]);
+    expect(fused[0]?.score).toBeGreaterThan(fused[1]?.score ?? 0);
+  });
+
+  it('handles empty lists', () => {
+    expect(reciprocalRankFusion([{ name: 'vector', ids: [] }])).toEqual([]);
+  });
+});
+
+describe('toFtsQuery', () => {
+  it('tokenizes into quoted OR terms, lowercasing and dropping duplicates', () => {
+    // "git" appears twice → deduped; punctuation dropped; order preserved
+    expect(toFtsQuery('Squash my GIT commits, git!')).toBe(
+      '"squash" OR "my" OR "git" OR "commits"',
+    );
+  });
+
+  it('drops tokens shorter than 2 chars', () => {
+    expect(toFtsQuery('a big queue x')).toBe('"big" OR "queue"');
+  });
+
+  it('returns null when nothing searchable', () => {
+    expect(toFtsQuery('  ?! - ')).toBeNull();
+  });
+
+  it('does not let FTS operators leak through (quotes terms)', () => {
+    // "OR" as a bare token would be an operator; quoting neutralizes it
+    expect(toFtsQuery('cat OR dog')).toBe('"cat" OR "or" OR "dog"');
+  });
+});
