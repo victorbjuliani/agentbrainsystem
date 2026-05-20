@@ -32,6 +32,7 @@ export interface AppConfig {
 
 const DEFAULT_LOCAL_MODEL = 'Xenova/all-MiniLM-L6-v2';
 const DEFAULT_DIMENSIONS = 384;
+const VALID_PROVIDERS: readonly EmbeddingProviderId[] = ['local', 'gemini', 'voyage'];
 
 function defaultDataDir(): string {
   return process.env.ABS_HOME
@@ -50,11 +51,23 @@ export function loadConfig(): AppConfig {
     ? resolve(process.env.ABS_DB_PATH)
     : join(dataDir, 'memory.db');
 
-  const provider = (process.env.ABS_EMBED_PROVIDER as EmbeddingProviderId) || 'local';
+  const rawProvider = process.env.ABS_EMBED_PROVIDER;
+  if (rawProvider && !VALID_PROVIDERS.includes(rawProvider as EmbeddingProviderId)) {
+    throw new Error(
+      `invalid ABS_EMBED_PROVIDER '${rawProvider}' — expected one of ${VALID_PROVIDERS.join(', ')}`,
+    );
+  }
+  const provider = (rawProvider as EmbeddingProviderId) || 'local';
   const model = process.env.ABS_EMBED_MODEL || (provider === 'local' ? DEFAULT_LOCAL_MODEL : '');
   const dimensions = process.env.ABS_EMBED_DIM
     ? Number.parseInt(process.env.ABS_EMBED_DIM, 10)
     : DEFAULT_DIMENSIONS;
+  // Fail loud at startup rather than letting NaN/0 reach the vec0 DDL (float[NaN]).
+  if (!Number.isInteger(dimensions) || dimensions <= 0) {
+    throw new Error(
+      `invalid ABS_EMBED_DIM '${process.env.ABS_EMBED_DIM}' — expected a positive integer`,
+    );
+  }
 
   return {
     dataDir,

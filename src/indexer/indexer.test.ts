@@ -63,6 +63,33 @@ describe('Indexer — index at write', () => {
   });
 });
 
+/** Provider that always fails — to test the write rollback path. */
+class FailingProvider implements EmbeddingProvider {
+  readonly id = 'failing';
+  readonly model = 'fail-v1';
+  readonly dimensions = 8;
+  async embed(): Promise<number[][]> {
+    throw new Error('embed boom');
+  }
+}
+
+describe('Indexer — atomic write', () => {
+  it('rolls back the observation row when embedding fails', async () => {
+    const store = newStore(8);
+    const indexer = new Indexer(store, new FailingProvider());
+    const sessionId = store.createSession({ externalId: 's1' });
+
+    await expect(indexer.write({ sessionId, kind: 'note', content: 'will fail' })).rejects.toThrow(
+      'embed boom',
+    );
+
+    // no orphan: the row must not survive a failed embed
+    const counts = store.counts();
+    expect(counts).toMatchObject({ observations: 0, vectors: 0, fts: 0 });
+    store.close();
+  });
+});
+
 describe('Indexer — status reports reality', () => {
   it('reports real counts and not-stale after writes', async () => {
     const store = newStore(8);

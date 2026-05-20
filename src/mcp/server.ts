@@ -23,6 +23,23 @@ function jsonContent(value: unknown): { content: Array<{ type: 'text'; text: str
   return { content: [{ type: 'text', text: JSON.stringify(value, null, 2) }] };
 }
 
+/**
+ * Get-or-create a session by external id, tolerating a concurrent creator: if two
+ * callers race and the second hits the UNIQUE(external_id) constraint, re-read the
+ * row the winner inserted instead of surfacing the conflict.
+ */
+function resolveSession(memory: Memory, externalId: string): number {
+  const existing = memory.store.getSessionByExternalId(externalId);
+  if (existing) return existing.id;
+  try {
+    return memory.store.createSession({ externalId });
+  } catch {
+    const winner = memory.store.getSessionByExternalId(externalId);
+    if (winner) return winner.id;
+    throw new Error(`could not resolve session '${externalId}'`);
+  }
+}
+
 export function createMcpServer(memory: Memory): McpServer {
   const server = new McpServer({ name: 'agentbrainsystem', version: VERSION });
 
@@ -66,8 +83,7 @@ export function createMcpServer(memory: Memory): McpServer {
     },
     async ({ content, kind, session }) => {
       const externalId = session ?? DEFAULT_SESSION;
-      const existing = memory.store.getSessionByExternalId(externalId);
-      const sessionId = existing?.id ?? memory.store.createSession({ externalId });
+      const sessionId = resolveSession(memory, externalId);
       const id = await memory.indexer.write({ sessionId, kind: kind ?? 'note', content });
       return jsonContent({ id, sessionId });
     },

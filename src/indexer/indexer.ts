@@ -76,7 +76,14 @@ export class Indexer {
    */
   async write(input: CreateObservationInput): Promise<number> {
     const obsId = this.store.createObservation(input);
-    await this.indexObservation(obsId, input.content);
+    try {
+      await this.indexObservation(obsId, input.content);
+    } catch (err) {
+      // Atomic write: if embedding fails, don't leave an unindexed orphan row
+      // that would be unrecallable this session (and duplicated on retry).
+      this.store.deleteObservation(obsId);
+      throw err;
+    }
     return obsId;
   }
 
@@ -97,27 +104,35 @@ export class Indexer {
   // -------------------------------------------------------- deterministic rebuild
 
   /**
-   * Re-derive the entire index from the stored observations. Clears both index
-   * tables, then walks observations in batches (streaming — no full
-   * materialization), embeds, and persists. Stamps the embedding signature so
-   * staleness can be detected later. Idempotent.
+   * Re-derive the entire index from the stored observations. Walks observations
+   * in batches (streaming — no full materialization), embeds, and upsert-replaces
+   * each vector + FTS entry, then prunes index rows whose observation no longer
+   * exists. Crucially it does NOT pre-clear the index: an upsert-and-prune leaves
+   * no window where recall sees an empty index (a crash mid-rebuild self-heals on
+   * the next startup via the staleness gate). Stamps the signature on success.
    */
   async rebuild(): Promise<RebuildResult> {
-    this.store.clearVectorIndex();
-    this.store.clearFtsIndex();
-
     let indexed = 0;
     let batch: Array<{ id: number; content: string }> = [];
+    const seen: number[] = [];
 
     const flush = async (): Promise<void> => {
       if (batch.length === 0) return;
       const vectors = await this.embedBatch(batch.map((b) => b.content));
+      // assertDimensions checks width, not count; a short provider response would
+      // leave observations unindexed and silently stamp success. Reject it.
+      if (vectors.length !== batch.length) {
+        throw new Error(
+          `embedding provider returned ${vectors.length} vectors for ${batch.length} inputs`,
+        );
+      }
       for (let i = 0; i < batch.length; i++) {
         const entry = batch[i];
         const vector = vectors[i];
         if (entry === undefined || vector === undefined) continue;
         this.store.upsertVector(entry.id, vector);
         this.store.indexFts(entry.id, entry.content);
+        seen.push(entry.id);
         indexed++;
       }
       batch = [];
@@ -129,6 +144,8 @@ export class Indexer {
     }
     await flush();
 
+    // Drop stale index rows for observations that no longer exist.
+    this.store.pruneIndexOrphans();
     this.store.setMeta(SIGNATURE_KEY, this.signature());
     return { indexed };
   }

@@ -30,6 +30,30 @@ function requireEnv(envVar: string, providerName: string): string {
   return value;
 }
 
+/**
+ * Turn a hosted API's raw item list into normalized vectors, failing loudly on a
+ * partial/malformed response (wrong count or a missing vector field) instead of
+ * silently leaving observations unindexed.
+ */
+function extractVectors<T>(
+  items: T[] | undefined,
+  expectedCount: number,
+  pick: (item: T) => number[] | undefined,
+  provider: string,
+): number[][] {
+  const list = items ?? [];
+  if (list.length !== expectedCount) {
+    throw new Error(`${provider} returned ${list.length} embeddings for ${expectedCount} inputs`);
+  }
+  return list.map((item, i) => {
+    const values = pick(item);
+    if (!values || values.length === 0) {
+      throw new Error(`${provider} embedding ${i} is missing vector values`);
+    }
+    return l2normalize(values);
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Gemini — text-embedding-004 (default 768-dim)
 // ---------------------------------------------------------------------------
@@ -39,7 +63,7 @@ const GEMINI_DEFAULT_DIMENSIONS = 768;
 const GEMINI_API_KEY_ENV = 'GEMINI_API_KEY';
 
 interface GeminiBatchResponse {
-  embeddings?: { values: number[] }[];
+  embeddings?: { values?: number[] }[];
 }
 
 export interface GeminiProviderOptions {
@@ -79,7 +103,7 @@ export class GeminiEmbeddingProvider implements EmbeddingProvider {
       throw new Error(`gemini embeddings request failed: ${res.status} ${await res.text()}`);
     }
     const json = (await res.json()) as GeminiBatchResponse;
-    const vectors = (json.embeddings ?? []).map((e) => l2normalize(e.values));
+    const vectors = extractVectors(json.embeddings, texts.length, (e) => e.values, 'gemini');
     return assertDimensions(vectors, this.dimensions);
   }
 }
@@ -93,7 +117,7 @@ const VOYAGE_DEFAULT_DIMENSIONS = 1024;
 const VOYAGE_API_KEY_ENV = 'VOYAGE_API_KEY';
 
 interface VoyageResponse {
-  data?: { embedding: number[] }[];
+  data?: { embedding?: number[] }[];
 }
 
 export interface VoyageProviderOptions {
@@ -127,7 +151,7 @@ export class VoyageEmbeddingProvider implements EmbeddingProvider {
       throw new Error(`voyage embeddings request failed: ${res.status} ${await res.text()}`);
     }
     const json = (await res.json()) as VoyageResponse;
-    const vectors = (json.data ?? []).map((d) => l2normalize(d.embedding));
+    const vectors = extractVectors(json.data, texts.length, (d) => d.embedding, 'voyage');
     return assertDimensions(vectors, this.dimensions);
   }
 }

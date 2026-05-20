@@ -359,8 +359,8 @@ export class MemoryStore {
          ORDER BY distance
          LIMIT ?`,
       )
-      .all(JSON.stringify(query), k) as Array<{ id: number; distance: number }>;
-    return rows.map((r) => ({ id: r.id, distance: r.distance }));
+      .all(JSON.stringify(query), k) as Array<{ id: number | bigint; distance: number }>;
+    return rows.map((r) => ({ id: Number(r.id), distance: r.distance }));
   }
 
   // -------------------------------------------------------- keyword index (FTS5)
@@ -385,6 +385,24 @@ export class MemoryStore {
     this.conn().prepare('DELETE FROM fts_observations').run();
   }
 
+  /**
+   * Remove index rows (vector + FTS) whose observation no longer exists. Lets a
+   * rebuild upsert-replace in place instead of clearing first, so recall never
+   * sees an empty index mid-rebuild.
+   */
+  pruneIndexOrphans(): void {
+    const db = this.conn();
+    const tx = db.transaction(() => {
+      db.prepare(
+        'DELETE FROM vec_observations WHERE rowid NOT IN (SELECT id FROM observations)',
+      ).run();
+      db.prepare(
+        'DELETE FROM fts_observations WHERE rowid NOT IN (SELECT id FROM observations)',
+      ).run();
+    });
+    tx();
+  }
+
   /** Full-text search returning matching observation ids ordered by FTS rank. */
   searchFts(queryText: string, k: number): KnnHit[] {
     const rows = this.conn()
@@ -395,8 +413,8 @@ export class MemoryStore {
          ORDER BY rank
          LIMIT ?`,
       )
-      .all(queryText, k) as Array<{ id: number; distance: number }>;
-    return rows.map((r) => ({ id: r.id, distance: r.distance }));
+      .all(queryText, k) as Array<{ id: number | bigint; distance: number }>;
+    return rows.map((r) => ({ id: Number(r.id), distance: r.distance }));
   }
 
   // ------------------------------------------------------------------- kv meta

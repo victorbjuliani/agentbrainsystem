@@ -47,4 +47,19 @@ describe('loadConfig', () => {
     expect(cfg.embedding.dimensions).toBe(768);
     expect(cfg.embedding.provider).toBe('gemini');
   });
+
+  it('throws on a non-integer ABS_EMBED_DIM instead of leaking NaN to the schema', () => {
+    process.env.ABS_EMBED_DIM = 'garbage';
+    expect(() => loadConfig()).toThrow(/ABS_EMBED_DIM/);
+  });
+
+  it('throws on a zero/negative ABS_EMBED_DIM', () => {
+    process.env.ABS_EMBED_DIM = '0';
+    expect(() => loadConfig()).toThrow(/ABS_EMBED_DIM/);
+  });
+
+  it('throws on an unknown ABS_EMBED_PROVIDER', () => {
+    process.env.ABS_EMBED_PROVIDER = 'nope';
+    expect(() => loadConfig()).toThrow(/ABS_EMBED_PROVIDER/);
+  });
 });

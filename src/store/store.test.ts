@@ -255,4 +255,23 @@ describe('MemoryStore', () => {
       });
     });
   });
+
+  describe('pruneIndexOrphans', () => {
+    it('removes index rows whose observation no longer exists, keeps live ones', () => {
+      const sessionId = store.createSession({ externalId: 'sess' });
+      const live = store.createObservation({ sessionId, kind: 'note', content: 'live' });
+      store.upsertVector(live, unitVector(0));
+      store.indexFts(live, 'live');
+
+      // simulate orphan index rows (e.g. a crash left them behind): no observation row
+      store.upsertVector(999, unitVector(1));
+      store.indexFts(999, 'ghost');
+      expect(store.counts()).toMatchObject({ observations: 1, vectors: 2, fts: 2 });
+
+      store.pruneIndexOrphans();
+      expect(store.counts()).toMatchObject({ observations: 1, vectors: 1, fts: 1 });
+      // the live entry is still queryable
+      expect(store.knn(unitVector(0), 1)[0]?.id).toBe(live);
+    });
+  });
 });
