@@ -15,6 +15,19 @@ survives a process restart, on a MacBook Air M1 / 8 GB.
 The discovery brief (`docs/discovery/agentbrainsystem.md`) pre-selected the shape.
 This spike de-risks the two central technical bets **before** any production code.
 
+## Portability (non-negotiable)
+
+This is a tool for everyone, not for one machine. Target OSes: **macOS and Windows**
+(Linux comes free via Node). Therefore:
+
+- No hardcoded paths — all paths derive from `node:os` `homedir()` + `node:path`.
+- `better-sqlite3` / `sqlite-vec` ship prebuilt binaries for darwin-arm64/x64,
+  win32-x64 and linux; `transformers.js` is JS/wasm. Nothing is M1-specific.
+- "M1 / 8 GB" below is the **validation environment and footprint budget** (run light
+  on a modest machine), not a requirement.
+- Agent harness focus for now: **Claude Code** (ingestion #7, packaging #10 target it
+  first). Codex parity is a later concern.
+
 ## Decision
 
 ### Storage / index: SQLite + `sqlite-vec` + FTS5, single embedded DB
