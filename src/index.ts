@@ -5,4 +5,16 @@
  * stable building blocks here as each issue lands (store, embedding, indexer,
  * recall, ingest, export). For now it exposes the version.
  */
+
+export type { AppConfig, EmbeddingConfig, EmbeddingProviderId } from './config.js';
+export { DEFAULTS, loadConfig } from './config.js';
+export type { EmbeddingProvider } from './embedding/index.js';
+export {
+  assertDimensions,
+  createEmbeddingProvider,
+  DimensionMismatchError,
+} from './embedding/index.js';
+export type { EnsureResult, IndexStatus } from './indexer/index.js';
+export { Indexer } from './indexer/index.js';
+export { MemoryStore } from './store/index.js';
 export { VERSION } from './version.js';

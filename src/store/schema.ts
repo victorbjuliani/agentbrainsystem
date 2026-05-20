@@ -13,7 +13,7 @@
 import type { Database } from 'better-sqlite3';
 
 /** The schema version the running code expects. Bump when adding a migration. */
-export const CURRENT_SCHEMA_VERSION = 1;
+export const CURRENT_SCHEMA_VERSION = 2;
 
 /**
  * Run a multi-statement DDL/SQL batch on the connection. Thin wrapper over
@@ -77,6 +77,23 @@ export const MIGRATIONS: readonly Migration[] = [
 
       // Keyword index: FTS5 over observation content, keyed by the same rowid.
       runDdl(db, 'CREATE VIRTUAL TABLE fts_observations USING fts5(content);');
+    },
+  },
+  {
+    version: 2,
+    name: 'kv-meta',
+    up(db) {
+      // Small key/value table for index lifecycle bookkeeping (#5): which
+      // embedding provider/model/dimension the persisted index was built with,
+      // so a deterministic rebuild can fire when that changes (not just on count
+      // drift). Keeping it generic avoids a migration per new bookkeeping field.
+      runDdl(
+        db,
+        `CREATE TABLE kv_meta (
+          key   TEXT PRIMARY KEY,
+          value TEXT NOT NULL
+        );`,
+      );
     },
   },
 ];

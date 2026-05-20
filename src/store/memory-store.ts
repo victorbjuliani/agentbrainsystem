@@ -341,6 +341,11 @@ export class MemoryStore {
     this.conn().prepare('DELETE FROM vec_observations WHERE rowid = ?').run(BigInt(obsId));
   }
 
+  /** Drop every row from the vector index. Used by a deterministic rebuild (#5). */
+  clearVectorIndex(): void {
+    this.conn().prepare('DELETE FROM vec_observations').run();
+  }
+
   /** k-nearest-neighbour search over the vector index, ordered by distance. */
   knn(query: number[], k: number): KnnHit[] {
     if (query.length !== this.dimensions) {
@@ -375,6 +380,11 @@ export class MemoryStore {
     this.conn().prepare('DELETE FROM fts_observations WHERE rowid = ?').run(obsId);
   }
 
+  /** Drop every row from the keyword index. Used by a deterministic rebuild (#5). */
+  clearFtsIndex(): void {
+    this.conn().prepare('DELETE FROM fts_observations').run();
+  }
+
   /** Full-text search returning matching observation ids ordered by FTS rank. */
   searchFts(queryText: string, k: number): KnnHit[] {
     const rows = this.conn()
@@ -387,6 +397,26 @@ export class MemoryStore {
       )
       .all(queryText, k) as Array<{ id: number; distance: number }>;
     return rows.map((r) => ({ id: r.id, distance: r.distance }));
+  }
+
+  // ------------------------------------------------------------------- kv meta
+
+  /** Read a bookkeeping value (e.g. the embedding signature the index was built with). */
+  getMeta(key: string): string | null {
+    const row = this.conn().prepare('SELECT value FROM kv_meta WHERE key = ?').get(key) as
+      | { value: string }
+      | undefined;
+    return row ? row.value : null;
+  }
+
+  /** Write a bookkeeping value (insert-or-replace). */
+  setMeta(key: string, value: string): void {
+    this.conn()
+      .prepare(
+        `INSERT INTO kv_meta (key, value) VALUES (?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      )
+      .run(key, value);
   }
 
   // -------------------------------------------------------------------- counts
