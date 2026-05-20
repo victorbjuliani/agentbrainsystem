@@ -2,7 +2,7 @@
 
 Local-first persistent memory for AI coding agents — capture, store, and **actually recall** past sessions, with portable export/import and a visual graph UI.
 
-> Status: **MVP** — reliable `embed → persist → recall` over MCP, JSONL ingestion, portable export/import, and a CLI. Works offline on macOS/Windows/Linux. The interactive graph UI (issue #11) is the next milestone.
+> Status: **MVP+** — reliable `embed → persist → recall` over MCP, JSONL ingestion, portable export/import, a CLI, and an interactive localhost graph UI (`abs ui`). Works offline on macOS/Windows/Linux.
 
 ## Why
 
@@ -45,11 +45,21 @@ abs ingest [--dir PATH]   # ingest Claude Code transcripts (default ~/.claude/pr
 abs status                # real health: db path, schema, counts, index staleness
 abs export <path>         # write the whole store to a portable artifact
 abs import <path> [--mode replace|merge]   # load an artifact (default merge)
-abs ui                    # (v1 / issue #11) interactive memory graph — not in the MVP yet
+abs ui [--port N]         # serve the interactive memory graph at http://127.0.0.1:7717
 abs --help | --version
 ```
 
 (During development, run any command without building via `npm run dev -- <command>`.)
+
+### Memory graph UI
+
+`abs ui` starts a localhost server (default port `7717`, override with `--port`) and
+opens a browser to a **read-only**, force-directed graph of the live store: session
+hubs and their observations, colored by kind, with optional similarity edges
+(`?similarity=1`). It binds to `127.0.0.1` only, never mutates the store, and ships
+self-contained (no CDN — works offline). The default view is scoped to the most
+recently active session; switch sessions or use top-N from the on-canvas controls.
+Visual intent is documented in `docs/DESIGN.md`.
 
 ### Connect to Claude Code
 
@@ -90,6 +100,8 @@ See also:
 
 - `docs/agent-handbook.md` — onboarding for AI agents and contributors
 - `docs/adr/0001-storage-and-embeddings.md` — storage/embedding decisions
+- `docs/adr/0002-ui-build-pipeline-and-frontend-stack.md` — UI build pipeline & frontend stack
+- `docs/DESIGN.md` — visual identity for the graph UI
 - `docs/export-format.md` — the export artifact format
 - [GitHub Issues](https://github.com/victorbjuliani/agentbrainsystem/issues) — requirements and roadmap (source of truth)
 

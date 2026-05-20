@@ -219,6 +219,31 @@ export class MemoryStore {
     return rows.map(rowToSession);
   }
 
+  /**
+   * Sessions ordered by their latest observation activity (MAX(observations.
+   * created_at)), most-active first. This is "most recently ACTIVE" — distinct
+   * from `sessions.created_at`, which is ingest wall-clock and would make
+   * "latest session" mean "last ingested". Sessions with zero observations
+   * (MAX is NULL) sort last; `id DESC` is the deterministic tiebreaker.
+   *
+   * `listSessions()` (full, id-ASC) stays the contract for export; this is the
+   * read primitive the UI graph (#11) uses to pick its default scope.
+   */
+  listSessionsByActivity(limit?: number): Session[] {
+    const db = this.conn();
+    const limitClause = limit !== undefined ? 'LIMIT @limit' : '';
+    const rows = db
+      .prepare(
+        `SELECT s.* FROM sessions s
+         LEFT JOIN observations o ON o.session_id = s.id
+         GROUP BY s.id
+         ORDER BY MAX(o.created_at) DESC NULLS LAST, s.id DESC
+         ${limitClause}`,
+      )
+      .all(limit !== undefined ? { limit } : {}) as SessionRow[];
+    return rows.map(rowToSession);
+  }
+
   /** Delete a session. Observations cascade; their vector/fts entries are pruned too. */
   deleteSession(id: number): void {
     const db = this.conn();
@@ -302,8 +327,10 @@ export class MemoryStore {
     const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
     const limit = options.limit !== undefined ? 'LIMIT @limit' : '';
     if (options.limit !== undefined) params.limit = options.limit;
+    // Default 'asc' keeps every existing caller byte-for-byte unchanged.
+    const direction = options.order === 'desc' ? 'DESC' : 'ASC';
     return {
-      sql: `SELECT * FROM observations ${where} ORDER BY id ASC ${limit}`,
+      sql: `SELECT * FROM observations ${where} ORDER BY id ${direction} ${limit}`,
       params,
     };
   }

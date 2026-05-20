@@ -63,6 +63,12 @@ export interface ListObservationsOptions {
   sessionId?: number;
   kind?: string;
   limit?: number;
+  /**
+   * Row order by `id`. Defaults to `'asc'` (oldest first) — the contract every
+   * existing caller (ingest, indexer rebuild, export, recall) relies on. Pass
+   * `'desc'` to read the NEWEST rows first, e.g. a capped most-recent tail.
+   */
+  order?: 'asc' | 'desc';
 }
 
 /**

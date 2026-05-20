@@ -22,11 +22,13 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.json && npm run build:ui",
+    "build:ui": "node scripts/build-ui.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.ui.json --noEmit",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "format": "biome format --write .",
+    "pretest": "npm run build:ui",
     "test": "vitest run",
     "test:watch": "vitest",
     "dev": "tsx src/index.ts",
@@ -41,8 +43,14 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.0.0",
+    "@fontsource/inter": "^5.2.8",
+    "@fontsource/jetbrains-mono": "^5.2.8",
+    "@fontsource/space-grotesk": "^5.2.10",
     "@types/better-sqlite3": "^7.6.11",
     "@types/node": "^22.0.0",
+    "d3-force": "^3.0.0",
+    "esbuild": "^0.28.0",
+    "force-graph": "^1.51.4",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0",
     "vitest": "^2.1.0"

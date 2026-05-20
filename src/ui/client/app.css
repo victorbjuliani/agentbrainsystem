@@ -1,0 +1,631 @@
+/*
+ * agentbrainsystem — memory graph (issue #11).
+ * Visual system per docs/DESIGN.md. Aesthetic stance: "a living organism" —
+ * luminous nodes over a deep void, glow as elevation in dark, motion always
+ * present. The graph is the hero; this chrome floats and stays subordinate.
+ *
+ * Fonts self-hosted via @fontsource so the UI is fully offline (DESIGN §5 / §10:
+ * no runtime CDN). esbuild rewrites these url()s to dist/ui/static/fonts/*.
+ */
+@import '@fontsource/space-grotesk/latin-500.css';
+@import '@fontsource/space-grotesk/latin-700.css';
+@import '@fontsource/inter/latin-400.css';
+@import '@fontsource/inter/latin-500.css';
+@import '@fontsource/inter/latin-600.css';
+@import '@fontsource/jetbrains-mono/latin-400.css';
+@import '@fontsource/jetbrains-mono/latin-500.css';
+
+:root {
+  /* --- Brand / violet scale (DESIGN §4) --- */
+  --violet-300: #c4b5fd;
+  --violet-400: #a78bfa;
+  --violet-500: #8b5cf6;
+  --violet-600: #7c3aed;
+  --violet-700: #6d28d9;
+
+  /* --- Node taxonomy accents (DESIGN §4 / §11) --- */
+  --accent-session: #8b5cf6;
+  --accent-user: #22d3ee;
+  --accent-assistant: #a78bfa;
+  --accent-tool: #5eead4;
+  --accent-lesson: #fbbf24;
+  --accent-decision: #f0abfc;
+
+  /* --- Neutrals (9-step, violet-tinted; DESIGN §4) --- */
+  --neutral-50: #fafaf9;
+  --neutral-100: #f3f2f7;
+  --neutral-200: #e6e4ed;
+  --neutral-300: #cfcbdb;
+  --neutral-400: #9a95ad;
+  --neutral-500: #6e6a82;
+  --neutral-600: #4a4760;
+  --neutral-700: #2a2838;
+  --neutral-800: #1a1825;
+  --neutral-900: #12101b;
+  --neutral-950: #0a0810;
+
+  /* --- Type (DESIGN §5; modular 1.25) --- */
+  --font-display: 'Space Grotesk', system-ui, sans-serif;
+  --font-body: 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', monospace;
+  --text-xs: 0.75rem; /* 12 */
+  --text-sm: 0.875rem; /* 14 */
+  --text-base: 1rem; /* 16 */
+  --text-lg: 1.125rem; /* 18 */
+  --text-xl: 1.25rem; /* 20 */
+  --text-3xl: 1.875rem; /* 30 */
+  --text-5xl: 3rem; /* 48 */
+
+  /* --- Spacing (DESIGN §7; base 4) --- */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+
+  /* --- Radius (DESIGN §8) --- */
+  --radius-sm: 6px;
+  --radius-base: 10px;
+  --radius-lg: 16px;
+  --radius-full: 9999px;
+
+  /* --- Motion (DESIGN §9) --- */
+  --ease-primary: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --dur-micro: 150ms;
+  --dur-regular: 250ms;
+  --dur-page: 400ms;
+}
+
+/* ----- DARK (default): glow as elevation (DESIGN §8) ----- */
+:root,
+[data-theme='dark'] {
+  color-scheme: dark;
+  --bg-canvas: var(--neutral-950);
+  --bg-app: var(--neutral-900);
+  --surface: rgba(26, 24, 37, 0.72); /* neutral-800 @ blur */
+  --surface-solid: var(--neutral-800);
+  --hairline: rgba(255, 255, 255, 0.08);
+  --fg: var(--neutral-50);
+  --fg-muted: var(--neutral-400);
+  --fg-mono: var(--neutral-300);
+  --node-rim: #ffffff;
+  --label-fg: var(--neutral-50);
+  --edge-containment: rgba(196, 181, 253, 0.15);
+  --edge-similarity: rgba(94, 234, 212, 0.2);
+  --elevation: 0 0 24px -2px rgba(139, 92, 246, 0.45); /* --glow-md */
+  --elevation-lg: 0 0 48px -4px rgba(139, 92, 246, 0.4);
+  --vignette: radial-gradient(
+    ellipse 120% 90% at 50% 45%,
+    transparent 38%,
+    rgba(0, 0, 0, 0.55) 100%
+  );
+}
+
+/* ----- LIGHT: soft diffuse shadows (DESIGN §4 neutrals / §8) ----- */
+[data-theme='light'] {
+  color-scheme: light;
+  --bg-canvas: var(--neutral-50);
+  --bg-app: var(--neutral-50);
+  --surface: rgba(255, 255, 255, 0.78);
+  --surface-solid: #ffffff;
+  --hairline: var(--neutral-200);
+  --fg: var(--neutral-700);
+  --fg-muted: var(--neutral-500);
+  --fg-mono: var(--neutral-600);
+  --node-rim: #2a2838;
+  --label-fg: var(--neutral-700);
+  --edge-containment: rgba(74, 71, 96, 0.18);
+  --edge-similarity: rgba(20, 148, 136, 0.22);
+  /* Slightly deeper accents so the luminous hues stay legible on a light canvas. */
+  --accent-user: #0891b2;
+  --accent-assistant: #7c3aed;
+  --accent-tool: #0d9488;
+  --elevation: 0 4px 12px -2px rgba(20, 16, 27, 0.1);
+  --elevation-lg: 0 12px 32px -6px rgba(20, 16, 27, 0.14);
+  --vignette: none;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  background: var(--bg-app);
+  color: var(--fg);
+  font-family: var(--font-body);
+  font-size: var(--text-base);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+#app {
+  position: relative;
+  width: 100%;
+  height: 100dvh;
+}
+
+/* --- Canvas: full-bleed hero (DESIGN §11) --- */
+#graph {
+  position: absolute;
+  inset: 0;
+  background: var(--bg-canvas);
+  transition: background-color var(--dur-page) var(--ease-primary);
+}
+/* Subtle radial vignette focusing the center — dark only (DESIGN §11). */
+#graph::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: var(--vignette);
+}
+#graph canvas {
+  cursor: grab;
+}
+
+#overlays {
+  position: absolute;
+  inset: 0;
+  pointer-events: none; /* only the panels themselves catch pointer events */
+}
+
+/* ===== Overlays: float with backdrop-blur, never an opaque top-bar ===== */
+.overlay {
+  position: absolute;
+  pointer-events: auto;
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  box-shadow: var(--elevation);
+  padding: var(--space-4);
+}
+
+.overlay-tl {
+  top: var(--space-4);
+  left: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  max-width: 22rem;
+}
+.overlay-tr {
+  top: var(--space-4);
+  right: var(--space-4);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.overlay-bl {
+  bottom: var(--space-4);
+  left: var(--space-4);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  max-width: 30rem;
+}
+
+/* --- Brand --- */
+.brand {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+.brand-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: var(--radius-full);
+  background: var(--violet-500);
+  box-shadow: 0 0 12px var(--violet-500);
+  align-self: center;
+  animation: brand-pulse 3s var(--ease-primary) infinite;
+}
+.brand-name {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: var(--text-lg);
+  letter-spacing: -0.02em;
+}
+.brand-sub {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+}
+
+@keyframes brand-pulse {
+  0%,
+  100% {
+    opacity: 0.7;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.25);
+  }
+}
+
+.scope-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+/* --- Controls (DESIGN §6 — 36px height; §8 radius) --- */
+.control {
+  height: 36px;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--fg);
+  background: var(--surface-solid);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-3);
+  transition:
+    border-color var(--dur-micro) var(--ease-primary),
+    box-shadow var(--dur-micro) var(--ease-primary),
+    background-color var(--dur-micro) var(--ease-primary);
+}
+.control:hover {
+  border-color: var(--violet-400);
+}
+.select {
+  cursor: pointer;
+  max-width: 14rem;
+}
+.search {
+  width: 13rem;
+}
+.search::placeholder {
+  color: var(--fg-muted);
+}
+
+.toggle {
+  cursor: pointer;
+}
+.toggle[aria-pressed='true'] {
+  border-color: var(--violet-500);
+  color: var(--violet-300);
+  background: color-mix(in oklab, var(--violet-500) 16%, var(--surface-solid));
+  box-shadow: 0 0 16px -4px var(--violet-500);
+}
+
+.icon-btn {
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--text-lg);
+  cursor: pointer;
+  background: var(--surface-solid);
+  color: var(--fg);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  transition:
+    border-color var(--dur-micro) var(--ease-primary),
+    transform var(--dur-micro) var(--ease-spring);
+}
+.icon-btn:hover {
+  border-color: var(--violet-400);
+}
+.icon-btn:active {
+  transform: scale(0.92);
+}
+
+/* Visible focus ring everywhere (DESIGN §8; a11y — never bare outline:none). */
+.control:focus-visible,
+.icon-btn:focus-visible,
+.pill:focus-visible {
+  outline: 2px solid var(--violet-500);
+  outline-offset: 2px;
+}
+
+.trunc {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--accent-lesson);
+  letter-spacing: 0.01em;
+}
+
+/* --- Type-filter pills (full radius, taxonomy-colored; DESIGN §11) --- */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 30px;
+  padding: 0 var(--space-3);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--fg);
+  background: var(--surface-solid);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  transition:
+    opacity var(--dur-micro) var(--ease-primary),
+    border-color var(--dur-micro) var(--ease-primary),
+    transform var(--dur-micro) var(--ease-spring);
+}
+.pill:hover {
+  transform: translateY(-1px);
+}
+.pill-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: var(--radius-full);
+  background: var(--pill-color);
+  box-shadow: 0 0 8px var(--pill-color);
+}
+.pill[aria-pressed='false'] {
+  opacity: 0.42;
+}
+.pill[aria-pressed='false'] .pill-dot {
+  box-shadow: none;
+  opacity: 0.6;
+}
+.pill-absent {
+  opacity: 0.28;
+  filter: grayscale(0.5);
+}
+.pill-reserved {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.pill-note {
+  font-size: 0.625rem;
+  color: var(--fg-muted);
+  letter-spacing: 0.02em;
+}
+
+/* --- Inspector (right drawer; surface neutral-800 + hairline + glow; DESIGN §11) --- */
+.inspector {
+  top: var(--space-4);
+  right: var(--space-4);
+  width: 22rem;
+  max-width: calc(100vw - var(--space-8));
+  max-height: calc(100dvh - var(--space-8));
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  box-shadow: var(--elevation-lg);
+  transform: translateX(12px);
+  opacity: 0;
+  transition:
+    transform var(--dur-regular) var(--ease-primary),
+    opacity var(--dur-regular) var(--ease-primary);
+}
+.inspector.open {
+  transform: translateX(0);
+  opacity: 1;
+}
+.inspect-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.inspect-type {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: var(--text-sm);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-full);
+}
+.inspect-type[data-type='session'] {
+  color: var(--accent-session);
+  background: color-mix(in oklab, var(--accent-session) 16%, transparent);
+}
+.inspect-type[data-type='user'] {
+  color: var(--accent-user);
+  background: color-mix(in oklab, var(--accent-user) 16%, transparent);
+}
+.inspect-type[data-type='assistant'] {
+  color: var(--accent-assistant);
+  background: color-mix(in oklab, var(--accent-assistant) 16%, transparent);
+}
+.inspect-type[data-type='tool'] {
+  color: var(--accent-tool);
+  background: color-mix(in oklab, var(--accent-tool) 16%, transparent);
+}
+.inspect-type[data-type='lesson'] {
+  color: var(--accent-lesson);
+  background: color-mix(in oklab, var(--accent-lesson) 16%, transparent);
+}
+.inspect-type[data-type='decision'] {
+  color: var(--accent-decision);
+  background: color-mix(in oklab, var(--accent-decision) 16%, transparent);
+}
+.inspect-close {
+  font-size: var(--text-xl);
+  line-height: 1;
+}
+.inspect-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  overflow-y: auto;
+}
+.meta-grid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.meta-row {
+  display: grid;
+  grid-template-columns: 5.5rem 1fr;
+  gap: var(--space-3);
+  align-items: baseline;
+}
+.meta-key {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+  text-transform: lowercase;
+}
+.meta-val {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--fg-mono);
+  font-variant-numeric: tabular-nums;
+  word-break: break-word;
+}
+.inspect-content-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.inspect-content {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  color: var(--fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 40dvh;
+  overflow-y: auto;
+  padding: var(--space-3);
+  background: color-mix(in oklab, var(--violet-500) 6%, transparent);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-base);
+}
+
+/* The HTML `hidden` attribute must win over the layout `display` below. */
+[hidden] {
+  display: none !important;
+}
+
+/* --- Empty state (centered, on-brand; DESIGN §0 / UX writing) --- */
+.empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  text-align: center;
+  pointer-events: none;
+}
+.empty-glyph {
+  font-size: var(--text-5xl);
+  color: var(--violet-500);
+  opacity: 0.55;
+  animation: breathe 3.2s var(--ease-primary) infinite;
+}
+.empty-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: var(--text-3xl);
+  letter-spacing: -0.02em;
+  color: var(--fg);
+}
+.empty-sub {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: var(--text-base);
+  color: var(--fg-muted);
+}
+.empty-code {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--accent-tool);
+  background: color-mix(in oklab, var(--accent-tool) 12%, transparent);
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.45;
+  }
+  50% {
+    transform: scale(1.08);
+    opacity: 0.7;
+  }
+}
+
+.error-banner {
+  position: absolute;
+  bottom: var(--space-4);
+  right: var(--space-4);
+  margin: 0;
+  max-width: 24rem;
+  padding: var(--space-3) var(--space-4);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--neutral-50);
+  background: color-mix(in oklab, #f87171 30%, var(--surface-solid));
+  border: 1px solid #f87171;
+  border-radius: var(--radius-base);
+  pointer-events: auto;
+}
+
+/* --- Responsive: stack chrome on narrow viewports (DESIGN §6) --- */
+@media (max-width: 640px) {
+  .inspector {
+    width: auto;
+    left: var(--space-4);
+    right: var(--space-4);
+    top: auto;
+    bottom: var(--space-4);
+    max-height: 50dvh;
+  }
+  /* The top-left scope panel and the top-right search/theme cluster collide
+     horizontally at narrow widths (same top band). Stack them: the scope panel
+     spans the full top row and the search/theme cluster drops onto its own row
+     directly beneath it, also full-width and right-aligned. Both overlays stay
+     absolutely positioned (the graph is full-bleed). We give the scope panel a
+     bounded height so the second row's fixed top offset always clears it. */
+  .overlay-tl {
+    left: var(--space-4);
+    right: var(--space-4);
+    max-width: none;
+    /* Bound the panel so the search row below has a deterministic top offset.
+       The scope row stays usable; controls wrap within. */
+    max-height: 30dvh;
+    overflow-y: auto;
+  }
+  .overlay-tr {
+    /* Second row: below the scope panel, clear of any horizontal overlap. */
+    top: calc(30dvh + var(--space-4) + var(--space-2));
+    left: var(--space-4);
+    right: var(--space-4);
+    justify-content: flex-end;
+  }
+  .search {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+}
+
+/* --- Reduced motion: kill ambient/decorative animation (DESIGN §9) --- */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+  .brand-dot,
+  .empty-glyph {
+    animation: none;
+  }
+}

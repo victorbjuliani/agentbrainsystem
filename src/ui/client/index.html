@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0a0810" />
+    <meta name="color-scheme" content="dark light" />
+    <title>agentbrainsystem — memory graph</title>
+    <!-- Assets are served under /static/ by the UI server; reference them there so
+         index.html (served at /) loads them correctly. -->
+    <link rel="stylesheet" href="/static/app.css" />
+  </head>
+  <body>
+    <main id="app">
+      <!-- The hero: full-bleed force-graph canvas (DESIGN §0 / §11). -->
+      <div id="graph" role="img" aria-label="Grafo interativo da memória do agente"></div>
+      <!-- Floating chrome lives here; built by overlays.ts (never an opaque top-bar). -->
+      <div id="overlays"></div>
+      <p id="error-banner" class="error-banner" role="alert" hidden></p>
+    </main>
+    <script type="module" src="/static/app.js"></script>
+  </body>
+</html>

@@ -7,11 +7,14 @@
  * keeping all logic in src/. `start` must stay silent on stdout — that channel
  * is the MCP JSON-RPC transport; diagnostics go to stderr.
  */
+import { spawn } from 'node:child_process';
+import { platform } from 'node:os';
 import { loadConfig } from '../config.js';
 import { exportStore, importStore } from '../export/index.js';
 import { ingestClaudeProjects } from '../ingest/index.js';
 import { startStdio } from '../mcp/index.js';
 import { openMemory } from '../memory.js';
+import { startUiServer } from '../ui/index.js';
 import { VERSION } from '../version.js';
 
 const USAGE = `agentbrainsystem (abs) v${VERSION} — local-first memory for AI coding agents
@@ -24,7 +27,7 @@ Commands:
   status                Show real health: db path, schema, counts, index staleness.
   export <path>         Export the whole store to a portable artifact.
   import <path>         Import an artifact. Options: --mode replace|merge (default merge).
-  ui                    (v1, issue #11) Interactive memory graph — not in the MVP yet.
+  ui [--port N]         Open the local read-only memory graph (127.0.0.1, default port 7717).
 
 Options:
   -h, --help            Show this help.
@@ -116,9 +119,45 @@ async function cmdImport(args: string[]): Promise<void> {
   }
 }
 
-function cmdUi(): void {
-  out('The interactive memory graph UI ships in v1 (issue #11) — not in the MVP yet.');
-  out('For now use `abs status` for counts and the MCP `recall` tool to query memory.');
+/** Best-effort, non-fatal cross-platform browser open. Never throws. */
+function openBrowser(url: string): void {
+  try {
+    const os = platform();
+    const cmd = os === 'darwin' ? 'open' : os === 'win32' ? 'cmd' : 'xdg-open';
+    const cmdArgs = os === 'win32' ? ['/c', 'start', '', url] : [url];
+    const child = spawn(cmd, cmdArgs, { stdio: 'ignore', detached: true, shell: false });
+    child.on('error', () => {}); // swallow ENOENT etc. — opening is best-effort
+    child.unref();
+  } catch {
+    // ignore — the URL is printed to stdout regardless
+  }
+}
+
+async function cmdUi(args: string[]): Promise<void> {
+  const rawPort = optionValue(args, '--port');
+  let port: number | undefined;
+  if (rawPort !== undefined) {
+    const n = Number.parseInt(rawPort, 10);
+    if (!Number.isInteger(n) || n < 1024 || n > 65535) {
+      throw new Error(`--port must be an integer in 1024..65535 (got '${rawPort}')`);
+    }
+    port = n;
+  }
+
+  // ensure:false — the UI is a read-only viewer; it must not trigger a model load.
+  const memory = await openMemory(loadConfig(), { ensure: false });
+  const { server, url } = await startUiServer(memory, port !== undefined ? { port } : {});
+  out(url);
+  openBrowser(url);
+
+  const shutdown = (): void => {
+    server.close();
+    memory.close();
+    process.exit(0);
+  };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+  // Server keeps the event loop alive; nothing further to await.
 }
 
 /** Read the value following a `--flag` token. */
@@ -157,7 +196,7 @@ async function main(): Promise<void> {
     case 'import':
       return cmdImport(rest);
     case 'ui':
-      return cmdUi();
+      return cmdUi(rest);
     default:
       err(`unknown command '${command}'\n`);
       err(USAGE);

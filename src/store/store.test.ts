@@ -124,6 +124,26 @@ describe('MemoryStore', () => {
       expect(store.listObservations({ sessionId, limit: 2 })).toHaveLength(2);
     });
 
+    it('lists observations id-ASC by default and id-DESC when order=desc', () => {
+      const ids: number[] = [];
+      for (let i = 0; i < 5; i++) {
+        ids.push(store.createObservation({ sessionId, kind: 'user', content: `msg ${i}` }));
+      }
+      // Default (no order) stays id-ASC — existing callers unchanged.
+      const asc = store.listObservations({ sessionId }).map((o) => o.id);
+      expect(asc).toEqual([...ids].sort((a, b) => a - b));
+
+      // order='desc' returns rows in id-DESC order.
+      const desc = store.listObservations({ sessionId, order: 'desc' }).map((o) => o.id);
+      expect(desc).toEqual([...ids].sort((a, b) => b - a));
+
+      // desc + limit returns the NEWEST rows (highest ids).
+      const newest = store
+        .listObservations({ sessionId, order: 'desc', limit: 2 })
+        .map((o) => o.id);
+      expect(newest).toEqual([...ids].sort((a, b) => b - a).slice(0, 2));
+    });
+
     it('iterates observations without materializing the whole set', () => {
       for (let i = 0; i < 3; i++) {
         store.createObservation({ sessionId, kind: 'user', content: `m${i}` });
@@ -131,6 +151,81 @@ describe('MemoryStore', () => {
       const seen: string[] = [];
       for (const obs of store.iterateObservations()) seen.push(obs.content);
       expect(seen).toHaveLength(3);
+    });
+  });
+
+  describe('listSessionsByActivity', () => {
+    it('orders sessions by latest observation activity, most-active first', () => {
+      // s1 created first but its newest obs is older; s2 created later with a fresher obs.
+      const s1 = store.createSession({ externalId: 's1', project: 'p' });
+      const s2 = store.createSession({ externalId: 's2', project: 'p' });
+      store.createObservation({
+        sessionId: s1,
+        kind: 'user',
+        content: 'old',
+        createdAt: '2026-01-01T00:00:00.000Z',
+      });
+      store.createObservation({
+        sessionId: s1,
+        kind: 'user',
+        content: 'mid',
+        createdAt: '2026-01-02T00:00:00.000Z',
+      });
+      store.createObservation({
+        sessionId: s2,
+        kind: 'user',
+        content: 'newest',
+        createdAt: '2026-03-01T00:00:00.000Z',
+      });
+
+      const ordered = store.listSessionsByActivity();
+      expect(ordered.map((s) => s.id)).toEqual([s2, s1]);
+    });
+
+    it('honours the limit and returns only the most-active sessions', () => {
+      const s1 = store.createSession({ externalId: 's1' });
+      const s2 = store.createSession({ externalId: 's2' });
+      store.createObservation({
+        sessionId: s1,
+        kind: 'user',
+        content: 'a',
+        createdAt: '2026-01-01T00:00:00.000Z',
+      });
+      store.createObservation({
+        sessionId: s2,
+        kind: 'user',
+        content: 'b',
+        createdAt: '2026-02-01T00:00:00.000Z',
+      });
+      const top = store.listSessionsByActivity(1);
+      expect(top).toHaveLength(1);
+      expect(top[0]?.id).toBe(s2);
+    });
+
+    it('sorts zero-observation sessions last', () => {
+      const empty = store.createSession({ externalId: 'empty' });
+      const active = store.createSession({ externalId: 'active' });
+      store.createObservation({
+        sessionId: active,
+        kind: 'user',
+        content: 'x',
+        createdAt: '2026-01-01T00:00:00.000Z',
+      });
+      const ordered = store.listSessionsByActivity();
+      expect(ordered.map((s) => s.id)).toEqual([active, empty]);
+    });
+
+    it('keeps listSessions() byte-for-byte (id ASC, all rows) intact', () => {
+      const s1 = store.createSession({ externalId: 's1' });
+      const s2 = store.createSession({ externalId: 's2' });
+      store.createObservation({
+        sessionId: s1,
+        kind: 'user',
+        content: 'fresh',
+        createdAt: '2026-05-01T00:00:00.000Z',
+      });
+      // listSessions stays id-ASC regardless of activity.
+      expect(store.listSessions().map((s) => s.id)).toEqual([s1, s2]);
     });
   });
 

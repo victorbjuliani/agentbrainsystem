@@ -23,9 +23,12 @@ Shared onboarding layer for AI coding agents in this repository. Keep project fa
 | --- | --- | --- |
 | `/` | repo root | thin wrappers + config live here |
 | `docs/` | shared documentation | canonical onboarding/workflow/testing/docs-standards |
-| `src/` | application code | TS source; tests colocated as `*.test.ts` |
-| `docs/adr/` | architecture decision records | committed; ADR 0001 = storage + embeddings |
-| `.github/workflows/` | CI | `ci.yml` runs lint → typecheck → build → test |
+| `src/` | application code | TS source; tests colocated as `*.test.ts`. Layers: `config → store → embedding → indexer → recall → {mcp ⨁ ingest ⨁ export ⨁ ui} → memory.ts → cli` |
+| `src/ui/` | localhost graph UI (#11) | `node:http` server (`server.ts`) + pure `buildGraph` projection (`graph.ts`) + shared wire contract (`graph-types.ts`); browser client in `src/ui/client/` (vanilla TS + force-graph, bundled by esbuild) |
+| `scripts/build-ui.mjs` | UI bundler | esbuild: `src/ui/client` → `dist/ui/static/{app.js,app.css,fonts}` (self-hosted, offline) |
+| `docs/adr/` | architecture decision records | committed; ADR 0001 = storage + embeddings; ADR 0002 = UI build pipeline & frontend stack |
+| `docs/DESIGN.md` | visual identity | source-of-truth for the graph UI (palette, type, motion, graph language) |
+| `.github/workflows/` | CI | `ci.yml` runs lint → typecheck → build → (pack assertion) → test |
 
 Expand this table as the codebase materializes.
 
@@ -38,9 +41,9 @@ storage/embedding decisions.
 - Install: `npm install`
 - Test: `npm test` (watch: `npm run test:watch`)
 - Lint: `npm run lint` (autofix: `npm run lint:fix`)
-- Typecheck: `npm run typecheck`
-- Build: `npm run build` (emits `dist/`)
-- **Full gate (CI parity):** `npm run check` (lint → typecheck → test)
+- Typecheck: `npm run typecheck` (runs both `tsconfig.json` and the browser-client `tsconfig.ui.json`)
+- Build: `npm run build` (`tsc` → `dist/`, then `build:ui` bundles the graph UI → `dist/ui/static/`)
+- **Full gate (CI parity):** `npm run check` (lint → typecheck → test). `test` has a `pretest` hook that builds the UI bundle, so the gate is self-contained on a clean checkout.
 - Run a TS entrypoint in dev: `npm run dev`
 
 ## Architecture Notes (intended, pre-implementation)
@@ -59,4 +62,4 @@ storage/embedding decisions.
 - Final stack and storage engine (e.g. SQLite + a vector extension vs. alternatives).
 - Default embedding model and dimensions; provider pluggability.
 - Export/import format (portability artifact shape).
-- Graph UI rendering approach.
+- ~~Graph UI rendering approach.~~ Resolved (#11): vanilla TS + `force-graph` (canvas 2D), bundled by esbuild, served read-only from a `node:http` localhost server — see `docs/adr/0002-ui-build-pipeline-and-frontend-stack.md` and `docs/DESIGN.md`.

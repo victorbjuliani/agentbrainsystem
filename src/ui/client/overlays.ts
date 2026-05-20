@@ -1,0 +1,318 @@
+/**
+ * Floating overlay chrome (issue #11, DESIGN §11). These never form an opaque
+ * top-bar that eats the canvas — they float with backdrop-blur over the graph.
+ *
+ * Pieces:
+ *   - Type-filter pills (colored by taxonomy; reserved types marked "pós-#12").
+ *   - Search input (mono) that highlights matches and dims the rest.
+ *   - Scope controls: session dropdown / topN toggle + similarity-edges toggle.
+ *   - Inspector (on select): compact mono metadata panel, glow-md surface.
+ *   - Theme toggle (dark/light).
+ *   - Truncation banner ("showing N of M") when a cap clipped the graph.
+ *
+ * All DOM is built with semantic elements + aria; interactive controls inherit the
+ * visible focus ring from app.css. No business logic lives here — callbacks bubble
+ * intent up to main.ts (the container).
+ */
+import type { GraphData, GraphMeta, GraphNode, NodeType } from '../graph-types.js';
+import { TAXONOMY } from './palette.js';
+import type { ScopeMode, Theme, ViewNode } from './types.js';
+
+export interface OverlayCallbacks {
+  onToggleType(type: NodeType, enabled: boolean): void;
+  onSearch(query: string): void;
+  onScopeChange(scope: { mode: ScopeMode; sessionId?: number; similarity: boolean }): void;
+  onThemeChange(theme: Theme): void;
+  onInspectorClose(): void;
+}
+
+export interface SessionOption {
+  id: number;
+  label: string;
+}
+
+export interface Overlays {
+  /** Reflect a freshly-loaded payload (pill availability, truncation banner). */
+  syncFromData(data: GraphData, sessions: SessionOption[]): void;
+  /** Render the inspector for the selected node (or hide it on null). */
+  showInspector(node: ViewNode | null): void;
+  setTheme(theme: Theme): void;
+}
+
+const RESERVED_NOTE = 'pós-#12';
+
+function el<K extends keyof HTMLElementTagNameMap>(
+  tag: K,
+  attrs: Record<string, string> = {},
+  children: (Node | string)[] = [],
+): HTMLElementTagNameMap[K] {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === 'class') node.className = v;
+    else node.setAttribute(k, v);
+  }
+  for (const c of children) node.append(typeof c === 'string' ? document.createTextNode(c) : c);
+  return node;
+}
+
+function fmtTimestamp(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(d);
+}
+
+export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays {
+  // --- Top-left: brand + scope ---------------------------------------------
+  const sessionSelect = el('select', {
+    id: 'scope-session',
+    class: 'control select',
+    'aria-label': 'Escopo: sessão a exibir',
+  });
+  const topNBtn = el(
+    'button',
+    { type: 'button', class: 'control toggle', 'aria-pressed': 'false' },
+    ['top 200'],
+  );
+  const simBtn = el(
+    'button',
+    {
+      type: 'button',
+      class: 'control toggle',
+      'aria-pressed': 'false',
+      'aria-label': 'Alternar arestas de similaridade',
+    },
+    ['similaridade'],
+  );
+
+  let mode: ScopeMode = 'session';
+  let similarity = false;
+
+  function emitScope(): void {
+    const sel = sessionSelect.value;
+    cb.onScopeChange({
+      mode,
+      sessionId: mode === 'session' && sel ? Number(sel) : undefined,
+      similarity,
+    });
+  }
+
+  sessionSelect.addEventListener('change', () => {
+    mode = 'session';
+    topNBtn.setAttribute('aria-pressed', 'false');
+    emitScope();
+  });
+  topNBtn.addEventListener('click', () => {
+    mode = mode === 'topN' ? 'session' : 'topN';
+    topNBtn.setAttribute('aria-pressed', String(mode === 'topN'));
+    emitScope();
+  });
+  simBtn.addEventListener('click', () => {
+    similarity = !similarity;
+    simBtn.setAttribute('aria-pressed', String(similarity));
+    emitScope();
+  });
+
+  const truncBanner = el('p', { id: 'trunc-banner', class: 'trunc', hidden: '' });
+
+  const topLeft = el('section', { class: 'overlay overlay-tl', 'aria-label': 'Escopo do grafo' }, [
+    el('div', { class: 'brand' }, [
+      el('span', { class: 'brand-dot', 'aria-hidden': 'true' }),
+      el('span', { class: 'brand-name' }, ['agentbrainsystem']),
+      el('span', { class: 'brand-sub' }, ['memory graph']),
+    ]),
+    el('div', { class: 'scope-row' }, [sessionSelect, topNBtn, simBtn]),
+    truncBanner,
+  ]);
+
+  // --- Top-right: search + theme -------------------------------------------
+  const searchInput = el('input', {
+    type: 'search',
+    id: 'search',
+    class: 'control search',
+    placeholder: 'buscar memória…',
+    autocomplete: 'off',
+    spellcheck: 'false',
+    'aria-label': 'Buscar nós por conteúdo ou id',
+  });
+  let searchDebounce = 0;
+  searchInput.addEventListener('input', () => {
+    window.clearTimeout(searchDebounce);
+    searchDebounce = window.setTimeout(() => cb.onSearch(searchInput.value), 250);
+  });
+
+  const themeBtn = el(
+    'button',
+    {
+      type: 'button',
+      id: 'theme-toggle',
+      class: 'control icon-btn',
+      'aria-label': 'Alternar tema claro/escuro',
+    },
+    ['◐'],
+  );
+  let theme: Theme = (document.documentElement.dataset.theme as Theme) ?? 'dark';
+  themeBtn.addEventListener('click', () => {
+    theme = theme === 'dark' ? 'light' : 'dark';
+    cb.onThemeChange(theme);
+  });
+
+  const topRight = el('section', { class: 'overlay overlay-tr', 'aria-label': 'Busca e tema' }, [
+    searchInput,
+    themeBtn,
+  ]);
+
+  // --- Bottom-left: type-filter pills / legend -----------------------------
+  const pillMap = new Map<NodeType, HTMLButtonElement>();
+  const pills = TAXONOMY.map((meta) => {
+    const swatch = el('span', { class: 'pill-dot', 'aria-hidden': 'true' });
+    swatch.style.setProperty('--pill-color', `var(${meta.cssVar})`);
+    const pill = el(
+      'button',
+      {
+        type: 'button',
+        class: `pill${meta.reserved ? ' pill-reserved' : ''}`,
+        'data-type': meta.type,
+        'aria-pressed': meta.reserved ? 'false' : 'true',
+        'aria-label': `Filtrar nós do tipo ${meta.label}`,
+        ...(meta.reserved
+          ? { disabled: '', title: `Aparece após consolidação (${RESERVED_NOTE})` }
+          : {}),
+      },
+      [
+        swatch,
+        el('span', { class: 'pill-label' }, [meta.label]),
+        ...(meta.reserved ? [el('span', { class: 'pill-note' }, [RESERVED_NOTE])] : []),
+      ],
+    );
+    if (!meta.reserved) {
+      pill.addEventListener('click', () => {
+        const next = pill.getAttribute('aria-pressed') !== 'true';
+        pill.setAttribute('aria-pressed', String(next));
+        cb.onToggleType(meta.type, next);
+      });
+      pillMap.set(meta.type, pill as HTMLButtonElement);
+    }
+    return pill;
+  });
+  const legend = el(
+    'section',
+    { class: 'overlay overlay-bl', 'aria-label': 'Filtro por tipo de nó' },
+    pills,
+  );
+
+  // --- Inspector (right drawer, hidden until select) -----------------------
+  const inspector = el('aside', {
+    id: 'inspector',
+    class: 'overlay inspector',
+    role: 'complementary',
+    'aria-label': 'Inspetor do nó selecionado',
+    hidden: '',
+  });
+  function renderInspector(node: ViewNode): void {
+    inspector.replaceChildren();
+    const closeBtn = el(
+      'button',
+      { type: 'button', class: 'icon-btn inspect-close', 'aria-label': 'Fechar inspetor' },
+      ['×'],
+    );
+    closeBtn.addEventListener('click', () => cb.onInspectorClose());
+
+    const head = el('header', { class: 'inspect-head' }, [
+      el('span', { class: 'inspect-type', 'data-type': node.type }, [node.type]),
+      closeBtn,
+    ]);
+
+    const rows: (Node | string)[] = [];
+    const addRow = (k: string, v: string): void => {
+      rows.push(
+        el('div', { class: 'meta-row' }, [
+          el('span', { class: 'meta-key' }, [k]),
+          el('span', { class: 'meta-val' }, [v]),
+        ]),
+      );
+    };
+    addRow('id', node.id);
+    addRow('type', node.type);
+    addRow('createdAt', fmtTimestamp(node.createdAt));
+    if (node.sessionId) addRow('session', node.sessionId);
+    addRow('degree', String(node.sizeDriver));
+
+    const body = el('div', { class: 'inspect-body' }, [
+      el('div', { class: 'meta-grid' }, rows),
+      el('div', { class: 'inspect-content-wrap' }, [
+        el('span', { class: 'meta-key' }, ['content']),
+        el('pre', { class: 'inspect-content' }, [node.label]),
+      ]),
+    ]);
+    inspector.append(head, body);
+  }
+
+  // --- Empty state (centered, on-brand) ------------------------------------
+  const emptyState = el('div', { id: 'empty-state', class: 'empty', hidden: '' }, [
+    el('div', { class: 'empty-glyph', 'aria-hidden': 'true' }, ['◌']),
+    el('h1', { class: 'empty-title' }, ['memory is empty']),
+    el('p', { class: 'empty-sub' }, [
+      'run ',
+      el('code', { class: 'empty-code', translate: 'no' }, ['abs ingest']),
+      ' to populate the graph',
+    ]),
+  ]);
+
+  root.append(topLeft, topRight, legend, inspector, emptyState);
+
+  return {
+    syncFromData(data: GraphData, sessions: SessionOption[]): void {
+      // Session dropdown.
+      sessionSelect.replaceChildren();
+      for (const s of sessions) {
+        const opt = el('option', { value: String(s.id) }, [s.label]);
+        if (data.scope.sessionId === s.id) opt.selected = true;
+        sessionSelect.append(opt);
+      }
+      // Reflect resolved scope onto the toggles.
+      topNBtn.setAttribute('aria-pressed', String(data.scope.mode === 'topN'));
+      simBtn.setAttribute('aria-pressed', String(data.scope.similarity));
+
+      // Pills: enable only types present in this payload (DESIGN §4 — tool is conditional).
+      const present = new Set<NodeType>(data.nodes.map((n: GraphNode) => n.type));
+      for (const [type, pill] of pillMap) {
+        const has = present.has(type);
+        pill.classList.toggle('pill-absent', !has);
+        if (!has) pill.title = 'nenhum nó deste tipo no escopo atual';
+        else pill.removeAttribute('title');
+      }
+
+      // Truncation banner.
+      const meta: GraphMeta = data.meta;
+      if (meta.truncated) {
+        truncBanner.hidden = false;
+        // renderedNodes is scope-local; the store totals are store-wide — keep
+        // the wording explicit so it never reads as "12 of 9000" in one scope.
+        truncBanner.textContent = `mostrando ${meta.renderedNodes} nós · store tem ${meta.totalObservations} obs / ${meta.totalSessions} sessões`;
+      } else {
+        truncBanner.hidden = true;
+      }
+
+      // Empty state.
+      emptyState.hidden = !meta.emptyStore && data.nodes.length > 0;
+    },
+    showInspector(node: ViewNode | null): void {
+      if (!node) {
+        inspector.hidden = true;
+        inspector.classList.remove('open');
+        return;
+      }
+      renderInspector(node);
+      inspector.hidden = false;
+      // Force reflow so the open transition runs from the hidden state.
+      void inspector.offsetWidth;
+      inspector.classList.add('open');
+    },
+    setTheme(next: Theme): void {
+      theme = next;
+    },
+  };
+}

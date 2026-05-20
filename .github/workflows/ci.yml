@@ -18,4 +18,6 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run build
+      - name: Assert UI bundle is packaged
+        run: npm pack --dry-run --json > /tmp/pack.json && node -e "const f=require('/tmp/pack.json'); const files=(f[0]?.files||[]).map(x=>x.path); if(!files.some(p=>p.endsWith('dist/ui/static/app.js'))) { console.error('UI bundle missing from package'); process.exit(1) }"
       - run: npm test

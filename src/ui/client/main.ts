@@ -1,0 +1,157 @@
+/**
+ * Client entrypoint (issue #11) — the container that wires data → renderer →
+ * overlays. Read-only: it only ever GETs `/api/graph`. No write path exists.
+ *
+ * Flow: fetch the graph for the current scope, assert the contract version,
+ * project the wire payload into the renderer's view model (radius + breathing
+ * phase), and hand the chrome (overlays.ts) the metadata it needs. Scope changes,
+ * filters, search, selection, and theme all flow back through here.
+ *
+ * Shares the wire contract with the backend via `../graph-types.js`.
+ */
+import { GRAPH_CONTRACT_VERSION, type GraphData, type NodeType } from '../graph-types.js';
+import { mountOverlays, type SessionOption } from './overlays.js';
+import { createRenderer, radiusFor } from './render.js';
+import type { ScopeMode, Theme, ViewEdge, ViewGraph, ViewNode } from './types.js';
+import './app.css';
+
+const THEME_KEY = 'abs.theme';
+
+interface ScopeState {
+  mode: ScopeMode;
+  sessionId?: number;
+  similarity: boolean;
+}
+
+/** Build the `/api/graph` query string from the current scope. */
+function scopeToQuery(scope: ScopeState): string {
+  const p = new URLSearchParams();
+  if (scope.mode === 'topN') p.set('topN', '200');
+  else if (scope.sessionId !== undefined) p.set('session', String(scope.sessionId));
+  if (scope.similarity) p.set('similarity', '1');
+  const qs = p.toString();
+  return qs ? `/api/graph?${qs}` : '/api/graph';
+}
+
+/** Project the frozen wire payload into the renderer's view model. */
+function toViewGraph(data: GraphData): ViewGraph {
+  const nodes: ViewNode[] = data.nodes.map((n) => ({
+    ...n,
+    radius: radiusFor(n.type, n.sizeDriver),
+    phase: Math.random() * Math.PI * 2,
+    breathRate: 1.4 + Math.random() * 1.2, // ~0.22–0.41 Hz, desynchronized
+  }));
+  const links: ViewEdge[] = data.edges.map((e) => ({ ...e }));
+  return { nodes, links };
+}
+
+/** Derive the session dropdown options from the rendered session hubs. */
+function sessionOptions(data: GraphData): SessionOption[] {
+  return data.nodes
+    .filter((n) => n.type === 'session')
+    .map((n) => ({ id: Number(n.id.slice(2)), label: n.label }));
+}
+
+function applyTheme(theme: Theme): void {
+  document.documentElement.dataset.theme = theme;
+  // Keep the native UA chrome (scrollbars/inputs) in step with the palette.
+  document.documentElement.style.colorScheme = theme;
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute('content', theme === 'dark' ? '#0a0810' : '#fafaf9');
+}
+
+function loadTheme(): Theme {
+  const stored = localStorage.getItem(THEME_KEY);
+  return stored === 'light' || stored === 'dark' ? stored : 'dark';
+}
+
+async function fetchGraph(scope: ScopeState): Promise<GraphData> {
+  const res = await fetch(scopeToQuery(scope));
+  if (!res.ok) throw new Error(`graph request failed: ${res.status}`);
+  const data = (await res.json()) as GraphData;
+  if (data.version !== GRAPH_CONTRACT_VERSION) {
+    throw new Error(
+      `graph contract mismatch: server v${data.version}, client v${GRAPH_CONTRACT_VERSION}`,
+    );
+  }
+  return data;
+}
+
+async function main(): Promise<void> {
+  const mount = document.getElementById('graph');
+  const overlayRoot = document.getElementById('overlays');
+  if (!mount || !overlayRoot) throw new Error('missing #graph / #overlays mount');
+
+  applyTheme(loadTheme());
+
+  const scope: ScopeState = { mode: 'session', similarity: false };
+  // Visible types: start with everything; pills toggle entries off.
+  const visibleTypes = new Set<NodeType>([
+    'session',
+    'user',
+    'assistant',
+    'tool',
+    'lesson',
+    'decision',
+  ]);
+
+  const renderer = createRenderer(mount, {
+    onSelect: (node) => overlays.showInspector(node),
+  });
+
+  const overlays = mountOverlays(overlayRoot, {
+    onToggleType: (type, enabled) => {
+      if (enabled) visibleTypes.add(type);
+      else visibleTypes.delete(type);
+      renderer.setVisibleTypes(new Set(visibleTypes));
+    },
+    onSearch: (query) => renderer.setSearch(query),
+    onScopeChange: (next) => {
+      scope.mode = next.mode;
+      scope.sessionId = next.sessionId;
+      scope.similarity = next.similarity;
+      void load();
+    },
+    onThemeChange: (theme) => {
+      applyTheme(theme);
+      localStorage.setItem(THEME_KEY, theme);
+      overlays.setTheme(theme);
+      renderer.refreshTheme();
+    },
+    onInspectorClose: () => {
+      renderer.select(null);
+      overlays.showInspector(null);
+    },
+  });
+
+  function sizeCanvas(): void {
+    renderer.resize(window.innerWidth, window.innerHeight);
+  }
+  window.addEventListener('resize', sizeCanvas);
+  sizeCanvas();
+
+  async function load(): Promise<void> {
+    document.body.setAttribute('aria-busy', 'true');
+    try {
+      const data = await fetchGraph(scope);
+      overlays.syncFromData(data, sessionOptions(data));
+      renderer.setData(toViewGraph(data));
+      renderer.setVisibleTypes(new Set(visibleTypes));
+    } catch (err) {
+      // Surface the failure on-brand rather than a blank canvas.
+      const banner = document.getElementById('error-banner');
+      if (banner) {
+        banner.textContent = err instanceof Error ? err.message : String(err);
+        banner.hidden = false;
+      }
+      // eslint-disable-next-line no-console
+      console.error('failed to load graph', err);
+    } finally {
+      document.body.removeAttribute('aria-busy');
+    }
+  }
+
+  await load();
+}
+
+void main();
