@@ -16,6 +16,8 @@
  * injected memory rather than blocking.
  */
 
+import { verifyOnRecall } from '../anchoring/index.js';
+import { createGroundTruthProvider } from '../ground-truth/index.js';
 import type { Memory } from '../memory.js';
 import { openMemory } from '../memory.js';
 import { annotateFreshness, freshnessTag, type RecallHit } from '../recall/index.js';
@@ -91,7 +93,20 @@ async function recallFromStore(prompt: string): Promise<RecallHit[]> {
   const memory: Memory = await openMemory(undefined, { ensure: false });
   try {
     const hits = memory.recall.recallFts(prompt, { limit: TOP_K });
-    // Label each hit with its ground-truth freshness and demote stale facts.
+    // Lazy self-healing (#28): re-verify the verified anchors of the facts about
+    // to be surfaced, so a stale claim is caught at the exact moment of use.
+    // Fail-open and bounded to these few hits — no graph, no cost.
+    const provider = createGroundTruthProvider(process.cwd());
+    try {
+      verifyOnRecall(
+        memory.store,
+        provider,
+        hits.map((h) => h.observation.id),
+      );
+    } finally {
+      provider.close();
+    }
+    // Label each hit with its (now-healed) ground-truth freshness; demote stale.
     return annotateFreshness(memory.store, hits);
   } finally {
     memory.close();

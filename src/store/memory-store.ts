@@ -629,6 +629,33 @@ export class MemoryStore {
       });
   }
 
+  /**
+   * Move a verified anchor to a new location (self-healing rename path, #28):
+   * the symbol survived but relocated, so we keep `verified` and re-pin
+   * file/line/commit instead of marking it stale.
+   */
+  reanchorAnchor(
+    id: number,
+    location: { filePath: string; line?: number; commitSha?: string },
+  ): void {
+    this.conn()
+      .prepare(
+        `UPDATE fact_anchors
+         SET file_path = @filePath,
+             line = @line,
+             commit_sha = COALESCE(@commitSha, commit_sha),
+             verified_at = @verifiedAt
+         WHERE id = @id`,
+      )
+      .run({
+        id,
+        filePath: location.filePath,
+        line: location.line ?? null,
+        commitSha: location.commitSha ?? null,
+        verifiedAt: nowIso(),
+      });
+  }
+
   /** Count anchors per verifiability state — feeds the O2 anchor-coverage metric. */
   countAnchorsByState(): Record<AnchorState, number> {
     const rows = this.conn()
