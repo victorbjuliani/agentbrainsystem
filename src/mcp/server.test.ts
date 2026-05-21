@@ -5,6 +5,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { AppConfig } from '../config.js';
+import { __clearDeleteCacheForTests } from '../delete/delete.js';
 import { type Memory, openMemory } from '../memory.js';
 import { createMcpServer } from './server.js';
 
@@ -36,6 +37,7 @@ function parse(result: unknown): unknown {
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), 'abs-mcp-'));
   mem = await openMemory(config());
+  __clearDeleteCacheForTests();
 });
 
 afterEach(() => {
@@ -44,16 +46,72 @@ afterEach(() => {
 });
 
 describe('MCP server', () => {
-  it('exposes recall, remember, memory_status, optimize and apply tools', async () => {
+  it('exposes recall, remember, memory_status, optimize, apply, forget_preview and forget tools', async () => {
     const client = await connectedClient();
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([
       'apply',
+      'forget',
+      'forget_preview',
       'memory_status',
       'optimize',
       'recall',
       'remember',
     ]);
+  });
+
+  it('forget_preview returns a handle + count; forget(handle) deletes; replay → unknown-handle', async () => {
+    const client = await connectedClient();
+    const saved = parse(
+      await client.callTool({
+        name: 'remember',
+        arguments: { content: 'ephemeral note to be forgotten', kind: 'note' },
+      }),
+    ) as { id: number };
+
+    const prev = parse(
+      await client.callTool({ name: 'forget_preview', arguments: { ids: [saved.id] } }),
+    ) as { handle: string; count: number; items: Array<{ id: number }> };
+    expect(prev.count).toBe(1);
+    expect(typeof prev.handle).toBe('string');
+    expect(prev.items[0]?.id).toBe(saved.id);
+
+    const del = parse(
+      await client.callTool({ name: 'forget', arguments: { handle: prev.handle } }),
+    ) as {
+      deleted: number[];
+    };
+    expect(del.deleted).toEqual([saved.id]);
+    expect(mem.store.getObservation(saved.id)).toBeNull();
+
+    // second forget(sameHandle) → consumed → unknown-handle.
+    const replay = parse(
+      await client.callTool({ name: 'forget', arguments: { handle: prev.handle } }),
+    ) as { reason?: string };
+    expect(replay.reason).toBe('unknown-handle');
+  });
+
+  it('forget(bogus handle) → unknown-handle (machine-readable, no throw)', async () => {
+    const client = await connectedClient();
+    const res = parse(
+      await client.callTool({ name: 'forget', arguments: { handle: 'never-minted' } }),
+    ) as { reason?: string };
+    expect(res.reason).toBe('unknown-handle');
+  });
+
+  it('forget_preview rejects zero or multiple selectors', async () => {
+    const client = await connectedClient();
+    const none = parse(await client.callTool({ name: 'forget_preview', arguments: {} })) as {
+      error?: string;
+    };
+    expect(none.error).toMatch(/exactly one selector/i);
+    const many = parse(
+      await client.callTool({
+        name: 'forget_preview',
+        arguments: { ids: [1], session: 2 },
+      }),
+    ) as { error?: string };
+    expect(many.error).toMatch(/exactly one selector/i);
   });
 
   it('remember persists and recall finds it via MCP', async () => {
