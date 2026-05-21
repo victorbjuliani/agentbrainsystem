@@ -23,11 +23,45 @@ import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { Memory } from '../memory.js';
-import { parseLine } from './claude-jsonl.js';
+import { parseLine, type ToolAnchorSeed } from './claude-jsonl.js';
 import type { IngestOptions, IngestResult } from './types.js';
 
 /** kv_meta key prefix for the per-file byte-offset cursor. */
 const CURSOR_PREFIX = 'ingest:cursor:';
+
+/**
+ * A one-line, footprint-cheap summary for an edit-only turn (no prose), so the
+ * seeded anchor has a home observation and the edit is a recallable fact. We
+ * never store the diff — only "which tools touched which files".
+ */
+function summarizeEdits(anchors: ToolAnchorSeed[]): string {
+  const files = [...new Set(anchors.map((a) => `${a.tool} ${a.filePath}`))];
+  return files.join('; ');
+}
+
+/**
+ * Seed `claimed` fact anchors for one observation from its Edit/Write tool
+ * calls: one file-level anchor per distinct file, plus one symbol-level anchor
+ * per symbol the payload defined. The sweep (#26) later resolves these against
+ * ground truth. Returns the number of anchors created.
+ */
+function seedAnchors(memory: Memory, observationId: number, anchors: ToolAnchorSeed[]): number {
+  let count = 0;
+  for (const a of anchors) {
+    memory.store.createAnchor({ observationId, anchorKind: 'file', filePath: a.filePath });
+    count++;
+    for (const symbol of a.symbols) {
+      memory.store.createAnchor({
+        observationId,
+        anchorKind: 'symbol',
+        qualifiedName: symbol,
+        filePath: a.filePath,
+      });
+      count++;
+    }
+  }
+  return count;
+}
 
 /** Default Claude Code projects root, resolved cross-platform via os/path. */
 export function defaultClaudeProjectsDir(): string {
@@ -113,6 +147,7 @@ async function ingestFile(
   let offset = startOffset;
   let added = 0;
   let skipped = 0;
+  let seeded = 0;
 
   const stream = createReadStream(absPath, { start: startOffset, encoding: 'utf8' });
   const rl = createInterface({ input: stream, crlfDelay: Number.POSITIVE_INFINITY });
@@ -129,20 +164,27 @@ async function ingestFile(
     }
 
     const sessionId = resolveSession(memory, sessionCache, entry.sessionId, project, entry.cwd);
-    await memory.indexer.write({
+    // Prose turn → store the text under its role. Edit-only turn (no prose) →
+    // store a compact 'tool_edit' summary so the seeded anchor has a home.
+    const hasText = entry.text.length > 0;
+    const obsId = await memory.indexer.write({
       sessionId,
-      kind: entry.role,
-      content: entry.text,
+      kind: hasText ? entry.role : 'tool_edit',
+      content: hasText ? entry.text : summarizeEdits(entry.toolAnchors),
       source: absPath,
       ...(entry.timestamp ? { createdAt: entry.timestamp } : {}),
       ...(entry.uuid ? { metadata: { uuid: entry.uuid } } : {}),
     });
     added++;
+    if (entry.toolAnchors.length > 0) {
+      seeded += seedAnchors(memory, obsId, entry.toolAnchors);
+    }
   }
 
   writeCursor(memory, absPath, offset);
   result.observationsAdded += added;
   result.observationsSkipped += skipped;
+  result.anchorsSeeded += seeded;
 }
 
 /**
@@ -160,6 +202,7 @@ export async function ingestClaudeProjects(
     filesSkipped: 0,
     observationsAdded: 0,
     observationsSkipped: 0,
+    anchorsSeeded: 0,
   };
 
   for await (const absPath of walkJsonlFiles(root)) {
