@@ -51,3 +51,6 @@ models/
 .claude/
 .mcp.json
 .atualizar-docs.json
+# Per-dev agent wrappers (personal memory; kept local, never shared in git).
+CLAUDE.md
+AGENTS.md
