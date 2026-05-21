@@ -12,6 +12,7 @@ import { platform } from 'node:os';
 import { loadConfig } from '../config.js';
 import { consolidate } from '../consolidate/index.js';
 import { exportStore, importStore } from '../export/index.js';
+import { dispatchHook, installHooks } from '../hooks/index.js';
 import { ingestClaudeProjects } from '../ingest/index.js';
 import { createLlmProvider } from '../llm/index.js';
 import { startStdio } from '../mcp/index.js';
@@ -35,6 +36,12 @@ Commands:
                         --dry-run (1 LLM call, preview only, writes nothing),
                         --force (re-consolidate, replacing prior output).
                         Requires ABS_LLM_BASE_URL + ABS_LLM_MODEL.
+  install-hooks         Register the Claude Code memory hooks in ~/.claude/settings.json
+                        (opt-in, idempotent, backup-first). Adds SessionEnd (auto-ingest),
+                        SessionStart (baseline + staleness), UserPromptSubmit (FTS recall).
+  hook <event>          Internal: run a lifecycle hook (what install-hooks registers).
+                        event ∈ session-end | session-start | user-prompt-submit.
+                        Reads the hook payload on stdin; non-fatal (always exits 0).
 
 Options:
   -h, --help            Show this help.
@@ -227,6 +234,36 @@ async function cmdConsolidate(args: string[]): Promise<void> {
   }
 }
 
+/**
+ * `abs hook <event>` — dispatched by the registered Claude Code hooks. Reads the
+ * payload on stdin and runs the matching handler behind the non-fatal/timeout
+ * contract (ADR-0004): it ALWAYS exits 0 so a session is never blocked. stdout is
+ * reserved for the hook protocol (a context-injection JSON line, when applicable).
+ */
+async function cmdHook(args: string[]): Promise<void> {
+  const event = positional(args);
+  if (!event) {
+    // No event arg: stay non-fatal — emit nothing, exit 0.
+    return;
+  }
+  await dispatchHook(event);
+}
+
+/** `abs install-hooks` — register the memory hooks in settings.json (opt-in). */
+async function cmdInstallHooks(): Promise<void> {
+  const result = installHooks();
+  if (result.added.length > 0) {
+    out(`registered hooks: ${result.added.join(', ')} → ${result.settingsPath}`);
+    if (result.backupPath) out(`backup: ${result.backupPath}`);
+  }
+  if (result.alreadyPresent.length > 0) {
+    out(`already present (no change): ${result.alreadyPresent.join(', ')}`);
+  }
+  if (result.added.length === 0 && result.alreadyPresent.length === 0) {
+    out('no hooks to register');
+  }
+}
+
 /** Read the value following a `--flag` token. */
 function optionValue(args: string[], flag: string): string | undefined {
   const i = args.indexOf(flag);
@@ -266,6 +303,10 @@ async function main(): Promise<void> {
       return cmdUi(rest);
     case 'consolidate':
       return cmdConsolidate(rest);
+    case 'hook':
+      return cmdHook(rest);
+    case 'install-hooks':
+      return cmdInstallHooks();
     default:
       err(`unknown command '${command}'\n`);
       err(USAGE);
