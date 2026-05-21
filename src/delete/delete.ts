@@ -83,6 +83,11 @@ function idsForSession(memory: Memory, sessionId: number): number[] {
   return memory.store.listObservations({ sessionId }).map((o) => o.id);
 }
 
+/** True when the session has zero remaining observations (safe to drop its row). */
+function sessionIsEmpty(memory: Memory, sessionId: number): boolean {
+  return memory.store.listObservations({ sessionId, limit: 1 }).length === 0;
+}
+
 /**
  * Resolve the observation ids for a project (or NULL project). Reuses store reads
  * only — never deletes here. Sessions are listed, filtered by project, then each
@@ -190,15 +195,58 @@ export function preview(memory: Memory, selector: DeleteSelector): DeletePreview
 }
 
 /**
+ * Decide which session rows the empty-session cleanup may consider for a selector.
+ *
+ *   - `bySession`: the one named session.
+ *   - `byProject`: the distinct sessions the pinned observations belong to (gathered
+ *     from the live obs rows BEFORE deletion, so a session that since gained no obs
+ *     in the pinned set is never touched).
+ *   - `byIds` / `bySearch`: NONE — the user deleted specific observations, not "the
+ *     session/project", so session rows are always left as-is.
+ *
+ * Returns an empty array when the selector must not clean up any session row.
+ */
+function cleanupCandidateSessions(
+  memory: Memory,
+  selector: DeleteSelector,
+  pinnedIds: number[],
+): number[] {
+  if ('bySession' in selector) return [selector.bySession];
+  if ('byProject' in selector) {
+    const sessionIds = new Set<number>();
+    for (const id of pinnedIds) {
+      const obs = memory.store.getObservation(id);
+      if (obs) sessionIds.add(obs.sessionId);
+    }
+    return [...sessionIds];
+  }
+  // byIds / bySearch: never sweep session rows.
+  return [];
+}
+
+/**
  * Delete the pinned set of observation ids (the shared deletion mechanic). Each
  * id goes through `deleteObservation` (which prunes its vec0 + fts5 rows); ids
  * already gone land in `notFound`. A final `pruneIndexOrphans` is a defensive
  * sweep so no index row can outlive its observation. NO cursor clamp (C1).
+ *
+ * Empty-session cleanup (selector-aware, TOCTOU-safe): when the selector is
+ * `bySession`/`byProject`, after the observation deletes any candidate session that
+ * is now EMPTY (zero remaining observations) has its row dropped too — so "delete a
+ * whole session/project" leaves no orphan hub. A session that gained NEW
+ * observations between preview and execute is therefore NON-empty and survives, and
+ * those new observations are never swept (only the pinned set is deleted). For
+ * `byIds`/`bySearch` no session row is touched. Cleanup runs INSIDE the same
+ * transaction as the observation deletes, so it is atomic.
  */
-function deletePinned(memory: Memory, ids: number[]): DeleteResult {
+function deletePinned(memory: Memory, ids: number[], selector: DeleteSelector): DeleteResult {
   const deleted: number[] = [];
   const notFound: number[] = [];
   const tx = memory.store.transaction(() => {
+    // Snapshot the sessions the cleanup may consider BEFORE deleting (byProject reads
+    // the pinned obs' session ids from their still-present rows).
+    const candidateSessions = cleanupCandidateSessions(memory, selector, ids);
+
     for (const id of ids) {
       if (memory.store.getObservation(id) === null) {
         notFound.push(id);
@@ -207,6 +255,14 @@ function deletePinned(memory: Memory, ids: number[]): DeleteResult {
       memory.store.deleteObservation(id);
       deleted.push(id);
     }
+
+    // Empty-session cleanup: drop only candidate sessions that are now empty. A
+    // session that gained a new obs between preview and execute is non-empty here,
+    // so it survives untouched (TOCTOU-safe).
+    for (const sessionId of candidateSessions) {
+      if (sessionIsEmpty(memory, sessionId)) memory.store.deleteSession(sessionId);
+    }
+
     // Defensive: guarantee index rows never outlive their observation rows.
     memory.store.pruneIndexOrphans();
   });
@@ -218,9 +274,17 @@ function deletePinned(memory: Memory, ids: number[]): DeleteResult {
  * Delete a caller-pinned id list directly, skipping the handle cache. The CLI
  * pins its own ids from a `previewSelector` it just ran in the same process, so
  * there is no replay/TOCTOU surface a cache would guard against.
+ *
+ * Treated as a `byIds` delete for session-row cleanup: the CLI confirms each id
+ * individually, so it may approve only SOME observations of a session/project.
+ * Sweeping the session row would contradict that explicit per-id choice — so
+ * `executeIds` deletes exactly the named observations and never touches session
+ * rows. (A CLI that wants whole-session cleanup deletes every obs id; the row is
+ * then left empty by design — the MCP/UI `bySession`/`byProject` paths are the
+ * ones that clean up empty hubs.)
  */
 export function executeIds(memory: Memory, ids: number[]): DeleteResult {
-  return deletePinned(memory, ids);
+  return deletePinned(memory, ids, { byIds: ids });
 }
 
 /**
@@ -242,7 +306,7 @@ export function execute(memory: Memory, handle: string): DeleteResult {
   // a concurrent one) can't find it again.
   deleteCache.delete(handle);
 
-  return deletePinned(memory, entry.ids);
+  return deletePinned(memory, entry.ids, entry.selectorEcho);
 }
 
 /**

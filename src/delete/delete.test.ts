@@ -118,7 +118,16 @@ describe('preview/execute — happy path per selector', () => {
     expect(p.count).toBe(2);
     const res = execute(memory, p.handle);
     expect(res.deleted.length).toBe(2);
-    expect(memory.store.counts()).toMatchObject({ observations: 1, vectors: 1, fts: 1 });
+    // bySession also drops the now-empty session row (no orphan hub); the other
+    // session + its obs survive.
+    expect(memory.store.counts()).toMatchObject({
+      sessions: 1,
+      observations: 1,
+      vectors: 1,
+      fts: 1,
+    });
+    expect(memory.store.getSession(s)).toBeNull();
+    expect(memory.store.getSession(other)).not.toBeNull();
     memory.close();
   });
 
@@ -135,7 +144,17 @@ describe('preview/execute — happy path per selector', () => {
     expect(p.count).toBe(2);
     const res = execute(memory, p.handle);
     expect(res.deleted.length).toBe(2);
-    expect(memory.store.counts()).toMatchObject({ observations: 1, vectors: 1, fts: 1 });
+    // byProject drops every now-empty session row of the project; the 'other'
+    // session + its obs survive.
+    expect(memory.store.counts()).toMatchObject({
+      sessions: 1,
+      observations: 1,
+      vectors: 1,
+      fts: 1,
+    });
+    expect(memory.store.getSession(s1)).toBeNull();
+    expect(memory.store.getSession(s2)).toBeNull();
+    expect(memory.store.getSession(sOther)).not.toBeNull();
     memory.close();
   });
 
@@ -341,6 +360,125 @@ describe('no-cursor-clamp staleness correctness (C1)', () => {
     executeIds(memory, [a, b]);
     expect(memory.store.countObservationsSince(cursor)).toBe(0);
     expect(memory.store.getMeta(OPTIMIZE_CURSOR_KEY)).toBe(String(cursor));
+    memory.close();
+  });
+});
+
+describe('empty-session cleanup (bySession / byProject)', () => {
+  it('bySession deletes obs + the now-empty session row atomically', async () => {
+    const memory = newMemory();
+    const s = memory.store.createSession({ externalId: 's1' });
+    await seedObs(memory, s, 'one');
+    await seedObs(memory, s, 'two');
+
+    const p = preview(memory, { bySession: s });
+    execute(memory, p.handle);
+
+    expect(memory.store.getSession(s)).toBeNull();
+    expect(memory.store.counts()).toMatchObject({
+      sessions: 0,
+      observations: 0,
+      vectors: 0,
+      fts: 0,
+    });
+    memory.close();
+  });
+
+  it('byProject deletes obs + ALL its now-empty session rows', async () => {
+    const memory = newMemory();
+    const s1 = memory.store.createSession({ externalId: 's1', project: 'proj' });
+    const s2 = memory.store.createSession({ externalId: 's2', project: 'proj' });
+    await seedObs(memory, s1, 'a');
+    await seedObs(memory, s2, 'b');
+
+    const p = preview(memory, { byProject: 'proj' });
+    execute(memory, p.handle);
+
+    expect(memory.store.getSession(s1)).toBeNull();
+    expect(memory.store.getSession(s2)).toBeNull();
+    expect(memory.store.counts()).toMatchObject({
+      sessions: 0,
+      observations: 0,
+      vectors: 0,
+      fts: 0,
+    });
+    memory.close();
+  });
+
+  it('byProject null deletes obs + the now-empty NULL-project session row', async () => {
+    const memory = newMemory();
+    const sNull = memory.store.createSession({ externalId: 's-null' });
+    const sLiteral = memory.store.createSession({ externalId: 's-lit', project: 'null' });
+    await seedObs(memory, sNull, 'nullproj');
+    await seedObs(memory, sLiteral, 'literal');
+
+    const p = preview(memory, { byProject: null });
+    execute(memory, p.handle);
+
+    expect(memory.store.getSession(sNull)).toBeNull();
+    // the literal-'null' session is untouched (different selector domain).
+    expect(memory.store.getSession(sLiteral)).not.toBeNull();
+    expect(memory.store.counts()).toMatchObject({ sessions: 1, observations: 1 });
+    memory.close();
+  });
+
+  it('byIds leaves the session row intact even after its last obs is deleted', async () => {
+    const memory = newMemory();
+    const s = memory.store.createSession({ externalId: 's1' });
+    const a = await seedObs(memory, s, 'only');
+
+    const p = preview(memory, { byIds: [a] });
+    execute(memory, p.handle);
+
+    // the user deleted a specific observation, not "the session" — row survives.
+    expect(memory.store.getSession(s)).not.toBeNull();
+    expect(memory.store.counts()).toMatchObject({
+      sessions: 1,
+      observations: 0,
+      vectors: 0,
+      fts: 0,
+    });
+    memory.close();
+  });
+
+  it('bySearch leaves the session row intact even after its last obs is deleted', async () => {
+    const memory = newMemory();
+    const s = memory.store.createSession({ externalId: 's1' });
+    await seedObs(memory, s, 'the lonely needle');
+
+    const p = preview(memory, { bySearch: { query: 'needle' } });
+    expect(p.count).toBe(1);
+    execute(memory, p.handle);
+
+    expect(memory.store.getSession(s)).not.toBeNull();
+    expect(memory.store.counts()).toMatchObject({ sessions: 1, observations: 0 });
+    memory.close();
+  });
+
+  it('TOCTOU: bySession on a session that gains a NEW obs between preview and execute → only the previewed obs go, the session SURVIVES (non-empty), the new obs is untouched', async () => {
+    const memory = newMemory();
+    const s = memory.store.createSession({ externalId: 's1' });
+    const a = await seedObs(memory, s, 'first');
+    const b = await seedObs(memory, s, 'second');
+
+    const p = preview(memory, { bySession: s });
+    expect(p.count).toBe(2);
+
+    // A NEW observation lands on the same session AFTER preview.
+    const late = await seedObs(memory, s, 'late arrival');
+
+    const res = execute(memory, p.handle);
+    expect(res.deleted.sort((x, y) => x - y)).toEqual([a, b]);
+
+    // The session is NON-empty (it still has `late`), so it is NOT swept.
+    expect(memory.store.getSession(s)).not.toBeNull();
+    expect(memory.store.getObservation(late)).not.toBeNull();
+    expect(memory.store.counts()).toMatchObject({
+      sessions: 1,
+      observations: 1,
+      vectors: 1,
+      fts: 1,
+    });
     memory.close();
   });
 });

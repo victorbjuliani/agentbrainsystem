@@ -255,50 +255,6 @@ export class MemoryStore {
     return rows.map(rowToSession);
   }
 
-  /**
-   * Delete every session whose `project` matches, plus all their observations and
-   * index entries, in ONE transaction (atomic — all or nothing).
-   *
-   * The `null` selector targets sessions with a NULL project: `project = ?` never
-   * matches NULL in SQLite, so we branch on `project === null` and use `IS NULL`.
-   * The literal string `'null'` is a normal project value and is matched only by
-   * the string selector, never by the `null` selector (and vice-versa).
-   *
-   * Index pruning reuses the existing `removeVector` (binds rowid as BigInt for
-   * vec0) + `removeFts` (binds as number for fts5) helpers per observation rather
-   * than inlining DELETEs — those helpers encode the rowid-binding contract. The
-   * `DELETE FROM sessions` then cascades the observation rows via the FK.
-   */
-  deleteSessionsByProject(project: string | null): { sessions: number; observations: number } {
-    const db = this.conn();
-    const tx = db.transaction(() => {
-      const obsSql =
-        project === null
-          ? `SELECT o.id FROM observations o
-             JOIN sessions s ON s.id = o.session_id
-             WHERE s.project IS NULL`
-          : `SELECT o.id FROM observations o
-             JOIN sessions s ON s.id = o.session_id
-             WHERE s.project = ?`;
-      const obsRows = (
-        project === null ? db.prepare(obsSql).all() : db.prepare(obsSql).all(project)
-      ) as Array<{ id: number }>;
-      for (const { id: obsId } of obsRows) {
-        this.removeVector(obsId);
-        this.removeFts(obsId);
-      }
-
-      const delSql =
-        project === null
-          ? 'DELETE FROM sessions WHERE project IS NULL'
-          : 'DELETE FROM sessions WHERE project = ?';
-      const info = project === null ? db.prepare(delSql).run() : db.prepare(delSql).run(project);
-
-      return { sessions: Number(info.changes), observations: obsRows.length };
-    });
-    return tx();
-  }
-
   /** Delete a session. Observations cascade; their vector/fts entries are pruned too. */
   deleteSession(id: number): void {
     const db = this.conn();

@@ -97,6 +97,14 @@ describe('createUiServer (HTTP contract)', () => {
     expect(html).not.toContain('__ABS_CSRF__');
     expect(html).toContain(`content="${__csrfTokenForTests()}"`);
   });
+
+  it('serves / with defence-in-depth security headers (SEC-02)', async () => {
+    const r = await fetch(`${base}/`);
+    expect(r.status).toBe(200);
+    expect(r.headers.get('content-security-policy')).toBe("default-src 'self'");
+    expect(r.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(r.headers.get('x-frame-options')).toBe('DENY');
+  });
 });
 
 // --- Selector parsing (ADR-0007 query-string contract) ----------------------
@@ -123,6 +131,15 @@ describe('parseDeleteSelector', () => {
     expect(() => parse('sel=search')).toThrow();
     expect(() => parse('sel=bogus')).toThrow();
     expect(() => parse('')).toThrow();
+  });
+
+  it('rejects a byIds selector that exceeds the cardinality cap (SEC-01)', () => {
+    // 10_001 ids → over the 10_000 cap → SelectorError (→ 400), never a resolve.
+    const tooMany = Array.from({ length: 10_001 }, (_, i) => i + 1).join(',');
+    expect(() => parse(`sel=ids&ids=${tooMany}`)).toThrow(/cap/);
+    // exactly at the cap is accepted.
+    const atCap = Array.from({ length: 10_000 }, (_, i) => i + 1).join(',');
+    expect(() => parse(`sel=ids&ids=${atCap}`)).not.toThrow();
   });
 });
 
@@ -299,5 +316,64 @@ describe('delete write path (4 controls)', () => {
       headers: goodHeaders(),
     });
     expect(r.status).toBe(400);
+  });
+});
+
+// --- SEC-03: an unexpected core fault → generic 500 (no detail leak) ----------
+
+/** A store whose `getObservation` blows up with a detail-bearing message. */
+function explodingStore(): MemoryStore {
+  return {
+    getObservation() {
+      throw new Error('SECRET internal path /Users/secret/db.sqlite');
+    },
+  } as unknown as MemoryStore;
+}
+
+describe('SEC-03 — generic 500 body', () => {
+  let server: ReturnType<typeof createUiServer>;
+  let base: string;
+  const token = __csrfTokenForTests();
+  let stderr: string;
+  let restore: (() => void) | undefined;
+
+  beforeEach(async () => {
+    // Capture stderr so the deliberate fault log doesn't pollute test output, and so
+    // we can assert the detail IS logged server-side (just never sent to the client).
+    stderr = '';
+    const original = process.stderr.write.bind(process.stderr);
+    const spy = (chunk: string | Uint8Array): boolean => {
+      stderr += typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString();
+      return true;
+    };
+    process.stderr.write = spy as typeof process.stderr.write;
+    restore = () => {
+      process.stderr.write = original;
+    };
+
+    server = createUiServer(fakeMemory(explodingStore()), { staticDir: STATIC_DIR });
+    await new Promise<void>((res) => server.listen(0, '127.0.0.1', res));
+    const addr = server.address();
+    const port = addr && typeof addr === 'object' ? addr.port : 0;
+    base = `http://127.0.0.1:${port}`;
+  });
+
+  afterEach(async () => {
+    await new Promise<void>((res) => server.close(() => res()));
+    restore?.();
+  });
+
+  it('an unexpected fault in preview → 500 with a generic body, detail only on stderr', async () => {
+    const r = await fetch(`${base}/api/delete/preview?sel=ids&ids=1`, {
+      method: 'POST', // POST is the preview method
+      headers: { 'X-ABS-CSRF': token },
+    });
+    expect(r.status).toBe(500);
+    const body = (await r.json()) as { error: string };
+    expect(body.error).toBe('internal error');
+    // The client body must NOT carry the internal detail …
+    expect(JSON.stringify(body)).not.toContain('SECRET internal path');
+    // … but it IS logged server-side for the operator.
+    expect(stderr).toContain('SECRET internal path');
   });
 });

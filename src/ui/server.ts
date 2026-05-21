@@ -113,6 +113,13 @@ function positiveIntParam(raw: string | null): number | undefined {
 class SelectorError extends Error {}
 
 /**
+ * Hard cap on the number of ids a single `byIds` selector may name (SEC-01). Each
+ * id costs a `getObservation` at resolve time, so an unbounded array is a local DoS
+ * vector. 10_000 is well above any realistic manual delete while bounding the work.
+ */
+const MAX_BY_IDS = 10_000;
+
+/**
  * Map the `/api/delete*` query string to a core `DeleteSelector`. The selector
  * never comes from a request body — `URLSearchParams` already percent/unicode
  * decodes, so the parser only validates shape + numeric domains. Throws a
@@ -130,8 +137,12 @@ export function parseDeleteSelector(params: URLSearchParams): DeleteSelector {
     case 'ids': {
       const raw = params.get('ids');
       if (raw === null || raw.trim() === '') throw new SelectorError('ids selector needs ?ids=');
+      const parts = raw.split(',');
+      if (parts.length > MAX_BY_IDS) {
+        throw new SelectorError(`ids selector exceeds the ${MAX_BY_IDS}-id cap`);
+      }
       const seen = new Set<number>();
-      for (const part of raw.split(',')) {
+      for (const part of parts) {
         const n = positiveIntParam(part.trim());
         if (n === undefined) throw new SelectorError(`invalid id in ?ids=: ${part}`);
         seen.add(n);
@@ -201,10 +212,43 @@ function deleteGuards(req: IncomingMessage): string | null {
   return null;
 }
 
+/**
+ * Defence-in-depth headers for served HTML/static (SEC-02). `default-src 'self'`
+ * is safe for this app: the client loads only same-origin assets (`/static/app.js`,
+ * `/static/app.css`, `/static/fonts/*`) and fetches only same-origin `/api/*` — it
+ * uses no inline `<script>`/`style=` and no dynamic code evaluation (runtime
+ * `element.style` mutation is NOT governed by CSP), so nothing here is broken by the
+ * policy. `nosniff` stops MIME-confusion; `DENY` blocks click-jacking via framing.
+ */
+const SECURITY_HEADERS: Record<string, string> = {
+  'Content-Security-Policy': "default-src 'self'",
+  'X-Content-Type-Options': 'nosniff',
+  'X-Frame-Options': 'DENY',
+};
+
 function sendJson(res: import('node:http').ServerResponse, status: number, body: unknown): void {
   const text = JSON.stringify(body);
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(text);
+}
+
+/**
+ * Log a server-side fault to stderr and return a GENERIC 500 body (SEC-03). The
+ * core's `e.message` is never echoed to the client — it may carry internal detail
+ * (paths, SQL, schema) that aids an attacker. The deliberate, machine-readable 4xx
+ * responses (400 bad selector, 403 csrf/host, 409 unknown-handle) are unaffected;
+ * only the unexpected-fault 500 path is generalized.
+ */
+function sendInternalError(
+  res: import('node:http').ServerResponse,
+  context: string,
+  e: unknown,
+): void {
+  // Server-side fault log (stderr) — never sent to the client.
+  process.stderr.write(
+    `[ui-server] ${context}: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}\n`,
+  );
+  sendJson(res, 500, { error: 'internal error' });
 }
 
 function sendText(res: import('node:http').ServerResponse, status: number, body: string): void {
@@ -244,7 +288,7 @@ async function serveStatic(
   }
   try {
     const data = await readFile(real);
-    res.writeHead(200, { 'Content-Type': contentType });
+    res.writeHead(200, { 'Content-Type': contentType, ...SECURITY_HEADERS });
     res.end(data);
   } catch {
     sendText(res, 404, 'not found');
@@ -277,7 +321,7 @@ async function serveIndex(res: import('node:http').ServerResponse, dir: string):
   try {
     const html = await readFile(real, 'utf8');
     const templated = html.split(CSRF_PLACEHOLDER).join(CSRF_TOKEN);
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...SECURITY_HEADERS });
     res.end(templated);
   } catch {
     sendText(res, 404, 'not found');
@@ -306,7 +350,7 @@ function handleDeletePreview(
       notFound: result.notFound,
     });
   } catch (e) {
-    sendJson(res, 500, { error: e instanceof Error ? e.message : String(e) });
+    sendInternalError(res, 'delete preview failed', e);
   }
 }
 
@@ -333,7 +377,7 @@ function handleDeleteExecute(
       sendJson(res, 409, { error: e.message, reason: e.reason });
       return;
     }
-    sendJson(res, 500, { error: e instanceof Error ? e.message : String(e) });
+    sendInternalError(res, 'delete execute failed', e);
   }
 }
 
@@ -402,7 +446,7 @@ export function createUiServer(memory: Memory, opts: UiServerOptions = {}): Serv
         const data = buildGraph(memory.store, query);
         sendJson(res, 200, data);
       } catch (e) {
-        sendJson(res, 500, { error: e instanceof Error ? e.message : String(e) });
+        sendInternalError(res, 'graph build failed', e);
       }
       return;
     }

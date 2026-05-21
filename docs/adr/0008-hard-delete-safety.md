@@ -56,16 +56,38 @@ refusal*, applied to a destructive operation instead of a write.
    `{ error, reason: 'unknown-handle' }` rather than throwing out of the tool, so the
    caller can branch without string-matching.
 
-5. **The `deleteSessionsByProject` primitive: transactionality + `IS NULL`
-   semantics.** Project deletes go through one store primitive that, in a **single
-   transaction**, prunes each affected observation's vec0 + fts5 rows then
-   `DELETE`s the sessions (cascading observation rows via FK) — all-or-nothing. Its
-   `null` selector targets sessions whose `project IS NULL` (SQLite's `project = ?`
-   never matches NULL, so the code branches on `project === null` and uses `IS NULL`).
-   The literal string `'null'` is an ordinary project value matched only by the string
-   selector — never by the null selector, and vice-versa. The surfaces preserve this:
-   `--null-project` (CLI) / `nullProject` (MCP) is the NULL selector; `--project null`
-   / `project: "null"` is the literal string.
+5. **Per-observation delete + selector-aware empty-session cleanup (no separate
+   destructive primitive).** There is **no** standalone "delete a project/session"
+   store primitive. ALL deletion routes through the preview/handle core's pinned id
+   set (`deletePinned`), which deletes the pinned observations via
+   `deleteObservation` (pruning each row's vec0 + fts5). After the observation deletes
+   — **inside the same transaction**, so it is atomic — the core does a
+   **selector-aware empty-session cleanup**:
+   - **`bySession`**: if the named session now has ZERO remaining observations, its
+     `sessions` row is dropped too — so "delete a whole session" leaves no orphan hub.
+   - **`byProject`** (string or `null`): the distinct session ids of the previewed
+     observations are gathered (from their still-present rows, before deletion); after
+     the deletes, each of those sessions that is now empty has its row dropped.
+   - **`byIds` / `bySearch`**: session rows are **never** touched — the user deleted
+     specific observations, not "the session/project", so a session left empty by such
+     a delete keeps its row. The CLI's `executeIds` (caller-pinned ids, per-id
+     confirm) is treated as `byIds` for this reason: it may approve only some of a
+     session's observations, and sweeping the row would contradict that explicit
+     choice.
+
+   **Empty-only is the TOCTOU-safe rule.** Cleanup only ever drops a session that is
+   empty *at execute time*. A session that gained a NEW observation between preview and
+   execute is therefore non-empty and **survives untouched**, and that new observation
+   is never swept (only the pinned set is deleted) — the same pin-at-preview guarantee
+   that protects observations now protects session rows.
+
+   **`null` vs literal `'null'` semantics** (preserved by the project selector at the
+   resolve layer, `idsForProject`): the `null` selector targets sessions whose
+   `project IS NULL` (SQLite's `project = ?` never matches NULL, so the code branches on
+   `project === null`); the literal string `'null'` is an ordinary project value matched
+   only by the string selector — never by the null selector, and vice-versa. The
+   surfaces preserve this: `--null-project` (CLI) / `nullProject` (MCP) is the NULL
+   selector; `--project null` / `project: "null"` is the literal string.
 
 6. **No cursor clamp (C1) — by design, load-bearing.** Deleting observations does
    **not** touch the optimize staleness cursor (`optimize:cursorObsId`). The staleness
@@ -110,8 +132,15 @@ refusal*, applied to a destructive operation instead of a write.
   opens `ensure:false` and never embeds (FTS-only), apply-deletes; MCP tool list
   includes `forget_preview`/`forget`, `forget_preview` returns a handle + count,
   `forget(handle)` deletes and a replay → `unknown-handle` (consumed), `forget(bogus)`
-  → `unknown-handle`, and zero/multiple selectors are rejected. All tests run against a
-  tmp / `:memory:` store — none touch a real `~/.claude`.
+  → `unknown-handle`, and zero/multiple selectors are rejected; empty-session cleanup
+  (bySession drops the now-empty session row atomically; byProject drops every empty
+  session row of the project; byIds/bySearch leave session rows; the TOCTOU-survival
+  case — a session that gains a new obs between preview and execute keeps its row and
+  the new obs); the `byIds` cardinality cap (10 000) on the UI + MCP surfaces; the UI
+  serves `/` with `Content-Security-Policy: default-src 'self'` + `nosniff` + `DENY`,
+  and an unexpected core fault yields a generic `{ error: 'internal error' }` 500 with
+  detail only on stderr (the deliberate 400/403/409 responses are unchanged). All
+  tests run against a tmp / `:memory:` store — none touch a real `~/.claude`.
 
 ## Alternatives rejected
 
@@ -130,3 +159,11 @@ refusal*, applied to a destructive operation instead of a write.
 - **Per-surface delete implementations.** Would duplicate the row-removal +
   index-prune + transaction envelope — the exact code that must not drift. One sync
   core, three thin surfaces.
+- **A standalone `deleteSessionsByProject` store primitive.** The original design
+  had a project-scoped destructive store method, but it ended up with zero production
+  callers (the core deletes per-observation through the pinned set) — an unguarded
+  destructive surface reachable outside the preview/handle TOCTOU guard. It was
+  **removed**; project/session deletion is fully covered by the per-observation delete
+  plus the selector-aware empty-session cleanup above, which routes through the same
+  pinned-set core. Invariant: **no destructive store primitive is reachable except
+  behind the preview/handle core.**
