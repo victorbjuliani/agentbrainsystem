@@ -43,3 +43,11 @@ models/
 *.swp
 # Added by code-review-graph
 .code-review-graph/
+
+# === Personal agent / dev tooling (machine-specific; not needed to clone & build) ===
+# Local Claude Code config + code-review-graph hooks/skills (paths are hardcoded
+# per machine), the code-review-graph MCP registration, and the atualizar-docs
+# skill state file. Reproduced per-dev via each tool's install — never shared.
+.claude/
+.mcp.json
+.atualizar-docs.json
