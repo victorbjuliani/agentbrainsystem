@@ -64,6 +64,13 @@ export interface ListObservationsOptions {
   kind?: string;
   limit?: number;
   /**
+   * Keyset cursor: return only rows with `id > afterId`. Combined with `order:'asc'`
+   * and `limit`, this paginates the table one closed query at a time — used by the
+   * indexer rebuild to walk the whole store WITHOUT holding a row cursor open while
+   * it writes vectors back to the same connection (#34).
+   */
+  afterId?: number;
+  /**
    * Row order by `id`. Defaults to `'asc'` (oldest first) — the contract every
    * existing caller (ingest, indexer rebuild, export, recall) relies on. Pass
    * `'desc'` to read the NEWEST rows first, e.g. a capped most-recent tail.
