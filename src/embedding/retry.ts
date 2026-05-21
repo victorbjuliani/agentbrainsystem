@@ -122,6 +122,15 @@ export async function fetchWithRetry(
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const retriesLeft = attempt < maxAttempts;
+
+    // An abort that landed between attempts (or during a backoff sleep) must stop
+    // the loop immediately — never spend another attempt on a cancelled request.
+    if (init.signal?.aborted) {
+      throw init.signal.reason instanceof Error
+        ? init.signal.reason
+        : new DOMException('The operation was aborted', 'AbortError');
+    }
+
     try {
       const res = await fetch(url, init);
 
@@ -144,6 +153,12 @@ export async function fetchWithRetry(
           : backoffWithJitter(attempt, baseDelayMs, maxDelayMs, random);
       await sleep(delay);
     } catch (err) {
+      // A timeout/cancellation must STOP retrying, not be retried: an aborted signal
+      // or an AbortError thrown by fetch means the caller (or our own timeout) asked
+      // to stop, so re-running the request would defeat the abort entirely.
+      if (init.signal?.aborted || (err instanceof Error && err.name === 'AbortError')) {
+        throw err;
+      }
       // Network-level failure: no response to inspect, no Retry-After available.
       lastError = err;
       if (!retriesLeft) {

@@ -239,6 +239,58 @@ describe('fetchWithRetry', () => {
     // Malformed Retry-After is ignored → exp backoff with random()=1 → 250 (not NaN).
     expect(sleep.delays).toEqual([250]);
   });
+
+  it('does NOT retry a pre-aborted signal — rejects with AbortError, fetch called at most once', async () => {
+    // A timeout/cancellation must STOP retrying, not be retried. With a pre-aborted
+    // signal, the loop must reject immediately without spinning through attempts.
+    const fetchMock = vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+      // Mirror real fetch: a pre-aborted signal makes fetch reject with an AbortError.
+      if (init.signal?.aborted) {
+        const err = new Error('The operation was aborted');
+        err.name = 'AbortError';
+        return Promise.reject(err);
+      }
+      return Promise.resolve(makeResponse(200, { ok: true }));
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const sleep = recordingSleep();
+
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      fetchWithRetry(
+        'https://example.test',
+        { signal: controller.signal },
+        { maxAttempts: 4, sleep: sleep.fn, random: () => 1 },
+      ),
+    ).rejects.toThrow(/abort/i);
+
+    // Crucially: NOT retried 4×. At most one fetch, and no backoff sleeps.
+    expect(fetchMock.mock.calls.length).toBeLessThanOrEqual(1);
+    expect(sleep.delays).toHaveLength(0);
+  });
+
+  it('stops retrying when a thrown error is an AbortError (timeout mid-flight)', async () => {
+    // fetch throws an AbortError (e.g. AbortSignal.timeout fired during the request).
+    // The catch block must rethrow it, not treat it as a retryable network blip.
+    const abortErr = new Error('The operation was aborted due to timeout');
+    abortErr.name = 'AbortError';
+    const fetchMock = vi.fn().mockRejectedValue(abortErr);
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const sleep = recordingSleep();
+
+    await expect(
+      fetchWithRetry(
+        'https://example.test',
+        {},
+        { maxAttempts: 4, sleep: sleep.fn, random: () => 1 },
+      ),
+    ).rejects.toThrow(/abort/i);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(sleep.delays).toHaveLength(0);
+  });
 });
 
 // ---------------------------------------------------------------------------

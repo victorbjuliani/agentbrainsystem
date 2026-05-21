@@ -15,6 +15,7 @@
 | **Contract** | MCP tool inputs/outputs (recall, save, export, import) | high |
 | **E2E / smoke** | ingest fixture transcript → recall returns it → export → re-import → recall still works | high |
 | **UI** | graph UI (`abs ui`) — `buildGraph` projection unit tests, HTTP server contract tests (read-only/405/path-traversal/cap-clamp), boot smoke; canvas paint audited visually via `frontend-auditor`, not unit-tested | medium |
+| **LLM consolidation** | `abs consolidate` — pure `distill` unit tests (prompt/parse/zod/injection-golden), orchestrator integration (idempotency, `--force` replace, dry-run-writes-nothing, batch rollback, default-latest, guards) against a temp store with an **injected stub `LlmProvider`**; the OpenAI-compat client tested via **mocked `fetch`** | high |
 
 ## Non-Negotiable Coverage
 
@@ -36,3 +37,8 @@
 > **UI test dependency:** the server/smoke tests read the bundled assets under `dist/ui/static/`.
 > `npm test` runs a `pretest` hook (`npm run build:ui`) so `npm run check` is self-contained on a
 > clean checkout; CI builds before testing as well.
+
+> **No network LLM/embedder in CI:** consolidation tests inject a stub `LlmProvider` and the
+> OpenAI-compat client is tested with a mocked `fetch` — never a real endpoint. The real LLM
+> path is validated manually (`abs consolidate --dry-run` against a local Ollama) before
+> release. The local embedding model downloads once (~one-time, slow) and runs offline after.

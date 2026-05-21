@@ -309,6 +309,37 @@ export class MemoryStore {
     }
   }
 
+  /**
+   * Observations tagged with `metadata.sourceSession = N` — i.e. the lessons/decisions
+   * a consolidation run produced FROM session N. Used for idempotency checks and
+   * --force replace. Optionally narrow by `source` (e.g. 'consolidate') so an
+   * unrelated user observation that merely carries a sourceSession value can't
+   * false-positive.
+   *
+   * `json_extract` returns NULL for NULL/absent metadata, and `NULL = @sourceSession`
+   * is false in SQL, so rows without the field are cleanly excluded — no exception.
+   */
+  listObservationsBySourceSession(
+    sourceSession: number,
+    opts?: { source?: string },
+  ): Observation[] {
+    const db = this.conn();
+    const params: Record<string, unknown> = { sourceSession };
+    let sourceClause = '';
+    if (opts?.source !== undefined) {
+      sourceClause = ' AND source = @source';
+      params.source = opts.source;
+    }
+    const rows = db
+      .prepare(
+        `SELECT * FROM observations
+         WHERE json_extract(metadata, '$.sourceSession') = @sourceSession${sourceClause}
+         ORDER BY id ASC`,
+      )
+      .all(params) as ObservationRow[];
+    return rows.map(rowToObservation);
+  }
+
   /** Build the parameterized SELECT shared by list + iterate. */
   private buildObservationQuery(options: ListObservationsOptions): {
     sql: string;

@@ -10,8 +10,10 @@
 import { spawn } from 'node:child_process';
 import { platform } from 'node:os';
 import { loadConfig } from '../config.js';
+import { consolidate } from '../consolidate/index.js';
 import { exportStore, importStore } from '../export/index.js';
 import { ingestClaudeProjects } from '../ingest/index.js';
+import { createLlmProvider } from '../llm/index.js';
 import { startStdio } from '../mcp/index.js';
 import { openMemory } from '../memory.js';
 import { startUiServer } from '../ui/index.js';
@@ -28,12 +30,18 @@ Commands:
   export <path>         Export the whole store to a portable artifact.
   import <path>         Import an artifact. Options: --mode replace|merge (default merge).
   ui [--port N]         Open the local read-only memory graph (127.0.0.1, default port 7717).
+  consolidate [opts]    Distill a session into durable lessons/decisions via an LLM.
+                        Options: --session N (default: newest un-consolidated),
+                        --dry-run (1 LLM call, preview only, writes nothing),
+                        --force (re-consolidate, replacing prior output).
+                        Requires ABS_LLM_BASE_URL + ABS_LLM_MODEL.
 
 Options:
   -h, --help            Show this help.
   -v, --version         Show version.
 
-Env: ABS_HOME, ABS_DB_PATH, ABS_EMBED_PROVIDER, ABS_EMBED_MODEL, ABS_EMBED_DIM.`;
+Env: ABS_HOME, ABS_DB_PATH, ABS_EMBED_PROVIDER, ABS_EMBED_MODEL, ABS_EMBED_DIM.
+     ABS_LLM_BASE_URL, ABS_LLM_MODEL, ABS_LLM_API_KEY, ABS_LLM_TIMEOUT_MS, ABS_LLM_PRICE_PER_1K (consolidate).`;
 
 /** Log to stderr so stdout stays clean for the MCP transport. */
 function err(msg: string): void {
@@ -160,6 +168,65 @@ async function cmdUi(args: string[]): Promise<void> {
   // Server keeps the event loop alive; nothing further to await.
 }
 
+async function cmdConsolidate(args: string[]): Promise<void> {
+  const rawSession = optionValue(args, '--session');
+  let sessionId: number | undefined;
+  if (rawSession !== undefined) {
+    const n = Number.parseInt(rawSession, 10);
+    if (!Number.isInteger(n) || n < 1) {
+      throw new Error(`--session must be a positive integer (got '${rawSession}')`);
+    }
+    sessionId = n;
+  }
+  const dryRun = args.includes('--dry-run');
+  const force = args.includes('--force');
+
+  const config = loadConfig();
+  // Throws an actionable error if no LLM endpoint is configured — propagates to main().
+  const llm = createLlmProvider(config.llm);
+  const memory = await openMemory(config, { ensure: false });
+  try {
+    const result = await consolidate(memory, llm, {
+      ...(sessionId !== undefined ? { sessionId } : {}),
+      dryRun,
+      force,
+      ...(config.llm?.pricePer1k !== undefined ? { pricePer1k: config.llm.pricePer1k } : {}),
+    });
+
+    if (result.skipped) {
+      const reason =
+        result.skipped === 'already-consolidated'
+          ? `session ${result.sessionId} is already consolidated (use --force to redo)`
+          : result.skipped === 'no-observations'
+            ? `session ${result.sessionId} has no distillable observations`
+            : 'no un-consolidated session to process';
+      out(`skipped: ${reason}`);
+      return;
+    }
+
+    const verb = result.dryRun ? 'would write' : 'wrote';
+    out(`session ${result.sessionId} — ${verb} ${result.candidates.length} lesson(s):`);
+    for (const c of result.candidates) {
+      out(`  [${c.kind}] ${c.content}`);
+    }
+
+    const e = result.estimate;
+    const parts = [`prompt ~${e.promptCharEstimateTokens} tokens (estimate)`];
+    if (e.usage) {
+      parts.push(
+        `actual prompt=${e.usage.promptTokens ?? '?'} completion=${e.usage.completionTokens ?? '?'}`,
+      );
+    }
+    if (e.costEstimate !== undefined) {
+      parts.push(`cost ~$${e.costEstimate.toFixed(6)}`);
+    }
+    out(parts.join(' | '));
+    if (result.dryRun) out('(dry-run — nothing was written)');
+  } finally {
+    memory.close();
+  }
+}
+
 /** Read the value following a `--flag` token. */
 function optionValue(args: string[], flag: string): string | undefined {
   const i = args.indexOf(flag);
@@ -197,6 +264,8 @@ async function main(): Promise<void> {
       return cmdImport(rest);
     case 'ui':
       return cmdUi(rest);
+    case 'consolidate':
+      return cmdConsolidate(rest);
     default:
       err(`unknown command '${command}'\n`);
       err(USAGE);

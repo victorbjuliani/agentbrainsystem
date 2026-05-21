@@ -9,6 +9,7 @@
  */
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
+import type { LlmConfig } from './llm/types.js';
 
 /** Provider identifiers understood by the embedding factory (#4). */
 export type EmbeddingProviderId = 'local' | 'gemini' | 'voyage';
@@ -28,7 +29,14 @@ export interface AppConfig {
   /** Absolute path to the SQLite memory store. */
   dbPath: string;
   embedding: EmbeddingConfig;
+  /**
+   * LLM provider config for consolidation (#12). Opt-in: only present when
+   * `ABS_LLM_BASE_URL` is set, so the default stays $0/offline.
+   */
+  llm?: LlmConfig;
 }
+
+const DEFAULT_LLM_TIMEOUT_MS = 60000;
 
 const DEFAULT_LOCAL_MODEL = 'Xenova/all-MiniLM-L6-v2';
 const VALID_PROVIDERS: readonly EmbeddingProviderId[] = ['local', 'gemini', 'voyage'];
@@ -83,7 +91,51 @@ export function loadConfig(): AppConfig {
     dataDir,
     dbPath,
     embedding: { provider, model, dimensions },
+    llm: loadLlmConfig(),
   };
+}
+
+/**
+ * Resolve the optional LLM block. Returns `undefined` when `ABS_LLM_BASE_URL` is
+ * unset so consolidation stays opt-in and the default remains $0/offline. When a
+ * base URL is present the rest is validated at the boundary and throws an
+ * actionable error rather than letting a bad value reach a request.
+ */
+function loadLlmConfig(): LlmConfig | undefined {
+  const baseUrl = process.env.ABS_LLM_BASE_URL;
+  if (!baseUrl) return undefined;
+
+  const model = process.env.ABS_LLM_MODEL;
+  if (!model) {
+    throw new Error(
+      'ABS_LLM_BASE_URL is set but ABS_LLM_MODEL is missing — set the model name ' +
+        '(e.g. ABS_LLM_MODEL=qwen2.5)',
+    );
+  }
+
+  const apiKey = process.env.ABS_LLM_API_KEY || undefined;
+
+  let timeoutMs = DEFAULT_LLM_TIMEOUT_MS;
+  if (process.env.ABS_LLM_TIMEOUT_MS) {
+    timeoutMs = Number.parseInt(process.env.ABS_LLM_TIMEOUT_MS, 10);
+    if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
+      throw new Error(
+        `invalid ABS_LLM_TIMEOUT_MS '${process.env.ABS_LLM_TIMEOUT_MS}' — expected a positive integer`,
+      );
+    }
+  }
+
+  let pricePer1k: number | undefined;
+  if (process.env.ABS_LLM_PRICE_PER_1K) {
+    pricePer1k = Number(process.env.ABS_LLM_PRICE_PER_1K);
+    if (!Number.isFinite(pricePer1k) || pricePer1k < 0) {
+      throw new Error(
+        `invalid ABS_LLM_PRICE_PER_1K '${process.env.ABS_LLM_PRICE_PER_1K}' — expected a finite number >= 0`,
+      );
+    }
+  }
+
+  return { baseUrl, model, apiKey, timeoutMs, pricePer1k };
 }
 
 export const DEFAULTS = {

@@ -46,10 +46,31 @@ abs status                # real health: db path, schema, counts, index stalenes
 abs export <path>         # write the whole store to a portable artifact
 abs import <path> [--mode replace|merge]   # load an artifact (default merge)
 abs ui [--port N]         # serve the interactive memory graph at http://127.0.0.1:7717
+abs consolidate [--session N] [--dry-run] [--force]   # distill a session into durable lessons (opt-in, needs an LLM)
 abs --help | --version
 ```
 
 (During development, run any command without building via `npm run dev -- <command>`.)
+
+### LLM consolidation
+
+`abs consolidate` distills a session's raw turns into 3–5 durable **lessons/decisions**,
+stored as first-class observations that recall surfaces alongside (and above the noise of)
+raw chatter. It is **opt-in and off by default** — it only runs when an LLM endpoint is
+configured (`ABS_LLM_BASE_URL` + `ABS_LLM_MODEL`), so the default install stays $0/offline.
+
+```bash
+# point at any OpenAI-compatible endpoint — local (Ollama/llama.cpp/LM Studio/vLLM) or hosted
+export ABS_LLM_BASE_URL=http://localhost:11434/v1   # e.g. Ollama
+export ABS_LLM_MODEL=llama3.1
+abs consolidate --dry-run     # preview the distilled lessons (1 LLM call, writes nothing)
+abs consolidate               # distill the most recent un-consolidated session
+abs consolidate --session 5   # a specific session  ·  --force re-distills (replaces)
+```
+
+It is idempotent (a consolidated session is skipped unless `--force`), writes nothing on
+error, and contains untrusted transcript content to a strict lesson/decision schema. See
+`docs/adr/0003-optional-llm-consolidation.md`.
 
 ### Memory graph UI
 
@@ -95,6 +116,11 @@ Then ingest your history (`abs ingest`) and Claude Code can call the `recall`,
 | `ABS_EMBED_PROVIDER` | `local` | `local` \| `gemini` \| `voyage` |
 | `ABS_EMBED_MODEL` | `Xenova/all-MiniLM-L6-v2` | model id for the provider |
 | `ABS_EMBED_DIM` | per provider (local 384, gemini 768, voyage 1024) | vector width; only set to override |
+| `ABS_LLM_BASE_URL` | _(unset → consolidation off)_ | OpenAI-compatible chat endpoint for `abs consolidate`, e.g. `http://localhost:11434/v1` |
+| `ABS_LLM_MODEL` | _(required when base set)_ | chat model id, e.g. `llama3.1` |
+| `ABS_LLM_API_KEY` | _(optional)_ | bearer token for hosted endpoints; local backends need none |
+| `ABS_LLM_TIMEOUT_MS` | `60000` | per-request timeout for the LLM call |
+| `ABS_LLM_PRICE_PER_1K` | _(optional)_ | $ per 1k tokens; only set to get a cost line in consolidate output |
 
 Hosted providers retry transient failures — HTTP `429`/`503` and network errors — with
 capped exponential backoff + jitter, honoring `Retry-After`. A momentary rate-limit or
@@ -106,6 +132,7 @@ See also:
 - `docs/agent-handbook.md` — onboarding for AI agents and contributors
 - `docs/adr/0001-storage-and-embeddings.md` — storage/embedding decisions
 - `docs/adr/0002-ui-build-pipeline-and-frontend-stack.md` — UI build pipeline & frontend stack
+- `docs/adr/0003-optional-llm-consolidation.md` — optional LLM consolidation & chat provider
 - `docs/DESIGN.md` — visual identity for the graph UI
 - `docs/export-format.md` — the export artifact format
 - [GitHub Issues](https://github.com/victorbjuliani/agentbrainsystem/issues) — requirements and roadmap (source of truth)

@@ -369,4 +369,112 @@ describe('MemoryStore', () => {
       expect(store.knn(unitVector(0), 1)[0]?.id).toBe(live);
     });
   });
+
+  describe('listObservationsBySourceSession', () => {
+    let sessionId: number;
+    beforeEach(() => {
+      sessionId = store.createSession({ externalId: 'consolidation-target' });
+    });
+
+    it('returns observations tagged with metadata.sourceSession (any source), excluding others', () => {
+      // sourceSession=5 with the consolidate source
+      const cA = store.createObservation({
+        sessionId,
+        kind: 'lesson',
+        content: 'lesson A from session 5',
+        metadata: { sourceSession: 5 },
+        source: 'consolidate',
+      });
+      const cB = store.createObservation({
+        sessionId,
+        kind: 'decision',
+        content: 'decision B from session 5',
+        metadata: { sourceSession: 5 },
+        source: 'consolidate',
+      });
+      // sourceSession=5 but a DIFFERENT source (e.g. a user observation that merely carries the field)
+      const userTagged = store.createObservation({
+        sessionId,
+        kind: 'note',
+        content: 'user note that happens to carry sourceSession',
+        metadata: { sourceSession: 5 },
+        source: 'user',
+      });
+      // sourceSession=5 with absent source (NULL)
+      const noSource = store.createObservation({
+        sessionId,
+        kind: 'note',
+        content: 'tagged but no source',
+        metadata: { sourceSession: 5 },
+      });
+      // no metadata at all
+      store.createObservation({ sessionId, kind: 'note', content: 'no metadata' });
+      // metadata present but no sourceSession field
+      store.createObservation({
+        sessionId,
+        kind: 'note',
+        content: 'metadata without sourceSession',
+        metadata: { confidence: 0.5 },
+      });
+      // a different sourceSession
+      store.createObservation({
+        sessionId,
+        kind: 'lesson',
+        content: 'lesson from session 7',
+        metadata: { sourceSession: 7 },
+        source: 'consolidate',
+      });
+
+      // No source filter: every row whose metadata.sourceSession === 5, regardless of source.
+      const all = store.listObservationsBySourceSession(5);
+      expect(all.map((o) => o.id)).toEqual([cA, cB, userTagged, noSource]);
+
+      // source filter: only the consolidate-sourced ones.
+      const consolidated = store.listObservationsBySourceSession(5, { source: 'consolidate' });
+      expect(consolidated.map((o) => o.id)).toEqual([cA, cB]);
+    });
+
+    it('excludes rows with null/absent metadata and returns [] when nothing matches', () => {
+      store.createObservation({ sessionId, kind: 'note', content: 'no metadata' });
+      store.createObservation({
+        sessionId,
+        kind: 'note',
+        content: 'metadata without the field',
+        metadata: { foo: 'bar' },
+      });
+      store.createObservation({
+        sessionId,
+        kind: 'lesson',
+        content: 'tagged for 5',
+        metadata: { sourceSession: 5 },
+        source: 'consolidate',
+      });
+
+      expect(store.listObservationsBySourceSession(999)).toEqual([]);
+      // the absent-field / null-metadata rows never leak in
+      expect(store.listObservationsBySourceSession(5).map((o) => o.kind)).toEqual(['lesson']);
+    });
+
+    it('orders results by id ASC and maps rows fully (metadata parsed, source surfaced)', () => {
+      const first = store.createObservation({
+        sessionId,
+        kind: 'lesson',
+        content: 'first',
+        metadata: { sourceSession: 5, rank: 1 },
+        source: 'consolidate',
+      });
+      const second = store.createObservation({
+        sessionId,
+        kind: 'lesson',
+        content: 'second',
+        metadata: { sourceSession: 5, rank: 2 },
+        source: 'consolidate',
+      });
+
+      const rows = store.listObservationsBySourceSession(5, { source: 'consolidate' });
+      expect(rows.map((o) => o.id)).toEqual([first, second]);
+      expect(rows[0]?.metadata).toEqual({ sourceSession: 5, rank: 1 });
+      expect(rows[0]?.source).toBe('consolidate');
+    });
+  });
 });
