@@ -33,6 +33,7 @@ Shared onboarding layer for AI coding agents in this repository. Keep project fa
 | `src/ground-truth/` | verifiable-memory port (#24) | `GroundTruthProvider` interface + code-review-graph adapter (read-only SQLite) + null adapter (graceful degradation); `git.ts` branch helper. Anti-corruption boundary for the graph (ADR 0009) |
 | `src/anchoring/` | anchor verify + self-heal (#26/#28) | `sweepAnchors` promotes claimed→verified; `healAnchors`/`verifyOnRecall` re-anchor on rename, mark stale on removal (never delete). Fail-open (ADR 0009) |
 | `scripts/build-ui.mjs` | UI bundler | esbuild: `src/ui/client` → `dist/ui/static/{app.js,app.css,fonts}` (self-hosted, offline) |
+| `e2e/` | full-system E2E suite (opt-in) | `harness.ts` (isolated `HOME`/`ABS_HOME`, spawns the built binary + MCP stdio + UI + fake LLM) · `*.e2e.ts` (Vitest: CLI/MCP/optimize) · `*.pw.ts` (Playwright: UI) · `global-setup.ts` (cache warm-up + build guard). Run via `npm run test:e2e`; configs `vitest.e2e.config.ts` / `playwright.config.ts` / `tsconfig.e2e.json` |
 | `docs/adr/` | architecture decision records | committed; 0001 storage+embeddings · 0002 UI build pipeline · 0003 LLM consolidation · 0004 hook model · 0005 per-prompt injection perf · 0006 gated-apply safety · 0007 UI write-path security · 0008 hard-delete safety · 0009 verifiable-memory anchoring |
 | `docs/DESIGN.md` | visual identity | source-of-truth for the graph UI (palette, type, motion, graph language) |
 | `.github/workflows/` | CI | `ci.yml` runs lint → typecheck → build → (pack assertion) → test |
@@ -50,7 +51,8 @@ storage/embedding decisions.
 - Lint: `npm run lint` (autofix: `npm run lint:fix`)
 - Typecheck: `npm run typecheck` (runs both `tsconfig.json` and the browser-client `tsconfig.ui.json`)
 - Build: `npm run build` (`tsc` → `dist/`, then `build:ui` bundles the graph UI → `dist/ui/static/`)
-- **Full gate (CI parity):** `npm run check` (lint → typecheck → test). `test` has a `pretest` hook that builds the UI bundle, so the gate is self-contained on a clean checkout.
+- **Full gate (CI parity):** `npm run check` (lint → typecheck → test). `test` has a `pretest` hook that builds the UI bundle, so the gate is self-contained on a clean checkout. Lint + typecheck also cover `e2e/` (via `tsconfig.e2e.json`), but `check` does **not** run the slow E2E suite.
+- **End-to-end system suite (opt-in):** `npm run test:e2e` — drives the built binary, MCP stdio, hooks, optimize/delete, and the UI (headless Playwright) against a throwaway `HOME`/`ABS_HOME`; self-cleaning, offline, real store untouched. One-time: `npx playwright install chromium`. Lives in `e2e/`; see `docs/testing-strategy.md` → "End-to-End System Suite".
 - Run a TS entrypoint in dev: `npm run dev`
 - Distill a session into lessons (opt-in, needs `ABS_LLM_BASE_URL`+`ABS_LLM_MODEL`): `abs consolidate [--session N] [--dry-run] [--force]`
 - Register the Claude Code memory hooks (auto-ingest + context injection; opt-in, idempotent, backup-first): `abs install-hooks`. The registered hooks call `abs hook <session-end|session-start|user-prompt-submit>` internally — non-fatal/timeout-bounded, never invoked by hand. See ADR 0004/0005.
