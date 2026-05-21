@@ -28,11 +28,26 @@
 
 ## Commands
 
-- Full gate (CI parity): `npm run check` (lint → typecheck → test)
+- Full gate (CI parity): `npm run check` (lint → typecheck → test). Lint (Biome) and typecheck (`tsconfig.e2e.json`) cover `e2e/` too, so harness/scenario code is statically checked here without *running* the slow E2E suite.
 - Test: `npm test` (watch: `npm run test:watch`); single area while iterating: `npx vitest run src/ui`
-- Typecheck: `npm run typecheck` (runs both `tsconfig.json` and the client `tsconfig.ui.json`)
+- Typecheck: `npm run typecheck` (runs `tsconfig.json`, the client `tsconfig.ui.json`, and `tsconfig.e2e.json`)
 - Build (incl. UI bundle): `npm run build` → must produce `dist/ui/static/app.js`
 - Packaging check: `npm pack --dry-run --json` → assert `dist/ui/static/app.js` ships (also enforced in CI)
+- **End-to-end system suite (opt-in): `npm run test:e2e`** — see below. Kept OUT of `npm run check` (slow: builds, then spawns the real binary + a browser).
+
+## End-to-End System Suite (`e2e/`, `npm run test:e2e`)
+
+A real, full-system suite that drives the **built** binary (`dist/cli/cli.js`), the MCP
+server over stdio, the lifecycle hooks, the optimize/delete write-paths, and the
+localhost UI in a headless browser — the surfaces the module-level `*.test.ts` do not
+exercise end to end. Run it before a release or after touching a cross-surface contract.
+
+- **Command:** `npm run test:e2e` = `npm run build` → `vitest run -c vitest.e2e.config.ts` (scenarios A–H) → `playwright test -c playwright.config.ts` (UI scenarios I–J). One-time browser install: `npx playwright install chromium`.
+- **Runners (disjoint globs, never overlap):** Vitest picks up `e2e/**/*.e2e.ts`; Playwright picks up `e2e/**/*.pw.ts`; the default `vitest.config.ts` (`src/**`) picks up neither.
+- **Total isolation (the "leave no trace" contract):** every spawned `abs` process inherits a throwaway `HOME` + `ABS_HOME` from `e2e/harness.ts` → `makeHome()`. `ABS_HOME` isolates the store; `HOME` isolates the hooks' `settings.json` and optimize's auto-memory dir. Teardown is `rm -rf` of the temp home. The real `~/.agentbrainsystem` and `~/.claude` are **never** touched.
+- **Offline / $0:** the embedding model cache lives in `node_modules/@huggingface/transformers/.cache` (not under `HOME`), so the temp-`HOME` override is safe and does not re-download. Offline is a consequence of the cache being warm — there is **no** env flag that enforces it (`@huggingface/transformers@4.x` ignores `TRANSFORMERS_OFFLINE`/`HF_HUB_OFFLINE`). The Vitest `globalSetup` (`e2e/global-setup.ts`) warms the cache once (the only step allowed to hit the network) and guards that `dist/` is built. The LLM path (consolidate) is exercised against a **fake localhost OpenAI-compatible server**, never a real endpoint.
+- **Scenario matrix:** A ingest→status (isMeta turn dropped) · B persistence across a process restart · C export→import round-trip (replace/merge) · D MCP tool contract · E forget two-phase (single-use handle/replay) · F consolidate (dry-run/write/idempotent/`--force`) · G install-hooks + `abs hook` (snake_case payload, always exit 0) · H optimize preview→apply (CLAUDE.md + backup) + protected-memory guard · I UI graph + DOM-driven "excluir busca" delete · J UI write-path gates (CSRF/Origin 403, method 405, bad handle 409).
+- **Determinism notes:** the canvas paint is audited visually via `frontend-auditor`, not asserted here; the UI delete uses the deterministic "excluir busca" buttons (waiting out the 250 ms search debounce), not a physics-positioned node click. Playwright artifacts land under `e2e/.tmp/` (gitignored).
 
 > **UI test dependency:** the server/smoke tests read the bundled assets under `dist/ui/static/`.
 > `npm test` runs a `pretest` hook (`npm run build:ui`) so `npm run check` is self-contained on a
