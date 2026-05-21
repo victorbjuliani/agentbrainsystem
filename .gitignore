@@ -35,6 +35,12 @@ data/
 .cache/
 models/
 
+# === E2E suite (Playwright artifacts + temp scratch; suite is self-cleaning) ===
+e2e/.tmp/
+playwright-report/
+test-results/
+.playwright/
+
 # === Editor / OS ===
 .DS_Store
 .idea/

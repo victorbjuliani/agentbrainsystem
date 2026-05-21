@@ -34,6 +34,7 @@ Requires **Node ≥ 22**.
 npm install        # install deps (sqlite-vec, transformers.js, MCP SDK)
 npm run build      # compile to dist/  (provides the `abs` CLI)
 npm run check      # lint → typecheck → test
+npm run test:e2e   # opt-in full-system E2E (built binary + MCP + hooks + UI); needs `npx playwright install chromium` once
 ```
 
 The first embedding call downloads the local model (~one-time, ~35 s); after that it
