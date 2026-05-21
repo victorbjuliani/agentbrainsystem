@@ -190,6 +190,12 @@ export function parseLine(line: string): ParsedEntry | null {
   const type = asString(obj.type);
   if (type !== 'user' && type !== 'assistant') return null; // not a conversation turn
 
+  // Harness-injected turns (skill bodies, hook notifications, other system
+  // context) carry top-level `isMeta: true` (#38). They are not the human's
+  // conversation — storing them inflates the store and pollutes recall — and the
+  // user's real intent survives in the non-meta turns, so drop them outright.
+  if (obj.isMeta === true) return null;
+
   const sessionId = asString(obj.sessionId);
   if (!sessionId) return null; // can't group it — skip
 
