@@ -234,6 +234,25 @@ describe('buildGraph', () => {
     expect(g.nodes.filter((n) => n.id === `o:${lessonId}`)).toHaveLength(1);
   });
 
+  it('enforces the requested limit even after pinning consolidated nodes (#42 P1)', () => {
+    const s = store.createSession({ externalId: 'sess', project: 'proj' });
+    for (let i = 0; i < 30; i++) {
+      store.createObservation({ sessionId: s, kind: 'user', content: `m${i}` });
+    }
+    // Consolidated nodes (highest ids) would be pinned ahead of the scope set.
+    store.createObservation({ sessionId: s, kind: 'lesson', content: 'L1' });
+    store.createObservation({ sessionId: s, kind: 'decision', content: 'D1' });
+
+    const g = buildGraph(store, { session: s, limit: 10 });
+    expect(g.scope.limit).toBe(10);
+    // The per-request budget is honored even though pins were prepended.
+    expect(g.nodes.length).toBeLessThanOrEqual(10);
+    // Pins win the budget over the scope tail (they render first).
+    const types = new Set(g.nodes.map((n) => n.type));
+    expect(types.has('lesson')).toBe(true);
+    expect(types.has('decision')).toBe(true);
+  });
+
   // ---- Search mode (#35) ----------------------------------------------------
 
   it('search resolves FTS matches store-wide, ignoring scope/recency', () => {

@@ -293,12 +293,16 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
     ]),
   ]);
 
-  // --- No-search-results state (#35) — distinct from "memory is empty" ------
-  // A 0-hit search on a POPULATED store must not read as "the store is empty".
+  // --- Zero-node state (#35/#43) — distinct from "memory is empty" ----------
+  // A populated store that resolves to zero nodes must NOT read as "empty store".
+  // Two flavours: a 0-hit search, or a non-search scope that resolves nothing
+  // (e.g. a deleted/missing session id) — both get guidance, never a blank canvas.
+  const noResultsTitle = el('h1', { class: 'empty-title' }, ['nenhum resultado']);
+  const noResultsSub = el('p', { class: 'empty-sub' }, ['nenhuma memória corresponde à busca']);
   const noResults = el('div', { id: 'no-results', class: 'empty', hidden: '' }, [
     el('div', { class: 'empty-glyph', 'aria-hidden': 'true' }, ['⌕']),
-    el('h1', { class: 'empty-title' }, ['nenhum resultado']),
-    el('p', { class: 'empty-sub' }, ['nenhuma memória corresponde à busca']),
+    noResultsTitle,
+    noResultsSub,
   ]);
 
   root.append(topLeft, topRight, legend, inspector, emptyState, noResults);
@@ -336,14 +340,20 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
         truncBanner.hidden = true;
       }
 
-      // Empty state: ONLY when the store itself is empty. A 0-hit search on a
-      // populated store gets the distinct "nenhum resultado" state instead (#35).
+      // Empty state: ONLY when the store itself is empty. A populated store that
+      // resolves to zero nodes gets the distinct zero-node state instead — for a
+      // 0-hit search OR a non-search scope that resolves nothing (e.g. a missing
+      // session id), so the user never faces a silent blank canvas (#35/#43).
+      const zeroOnPopulated = data.nodes.length === 0 && !meta.emptyStore;
       emptyState.hidden = !meta.emptyStore;
-      noResults.hidden = !(
-        data.scope.mode === 'search' &&
-        data.nodes.length === 0 &&
-        !meta.emptyStore
-      );
+      noResults.hidden = !zeroOnPopulated;
+      if (zeroOnPopulated) {
+        const searching = data.scope.mode === 'search';
+        noResultsTitle.textContent = searching ? 'nenhum resultado' : 'escopo vazio';
+        noResultsSub.textContent = searching
+          ? 'nenhuma memória corresponde à busca'
+          : 'nenhum nó neste escopo — tente outra sessão ou top 200';
+      }
     },
     showInspector(node: ViewNode | null): void {
       if (!node) {

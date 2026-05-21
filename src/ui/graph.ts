@@ -176,9 +176,13 @@ export function buildGraph(store: MemoryStore, query: GraphQuery): GraphData {
     obsCountBySession.set(o.sessionId, (obsCountBySession.get(o.sessionId) ?? 0) + 1);
   }
 
+  // Cap the rendered node count at the per-request budget (already clamped to
+  // NODE_CAP). Pins render FIRST (they lead `observations`), so enforcing the
+  // budget here keeps the `scope.limit` contract honest even after pinning —
+  // the lowest-priority scope tail is what gets dropped, never the pins.
   const includedSessionIds = new Set<number>();
   for (const s of sessions) {
-    if (nodes.length >= NODE_CAP) {
+    if (nodes.length >= nodeBudget) {
       truncated = true;
       break;
     }
@@ -197,7 +201,7 @@ export function buildGraph(store: MemoryStore, query: GraphQuery): GraphData {
   const includedObsIds = new Set<number>();
   const renderedObs: Observation[] = [];
   for (const o of observations) {
-    if (nodes.length >= NODE_CAP) {
+    if (nodes.length >= nodeBudget) {
       truncated = true;
       break;
     }
