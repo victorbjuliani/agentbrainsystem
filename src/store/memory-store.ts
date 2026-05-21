@@ -514,6 +514,31 @@ export class MemoryStore {
 
   // -------------------------------------------------------------------- counts
 
+  /**
+   * The highest observation `id` currently in the store, or 0 when empty. Because
+   * ids are monotonic autoincrement, this is a cheap high-water mark — the
+   * SessionStart staleness flag (#16) and the optimizer cursor (#21) use it to
+   * count "new since last time" without scanning rows.
+   */
+  maxObservationId(): number {
+    const row = this.conn().prepare('SELECT COALESCE(MAX(id), 0) AS m FROM observations').get() as {
+      m: number;
+    };
+    return row.m;
+  }
+
+  /**
+   * Count observations with `id > minIdExclusive`. Drives the SessionStart
+   * "N optimizations pending" staleness flag (#16): how many observations have
+   * landed since the last optimization cursor. Pure count — never mutates.
+   */
+  countObservationsSince(minIdExclusive: number): number {
+    const row = this.conn()
+      .prepare('SELECT COUNT(*) AS c FROM observations WHERE id > ?')
+      .get(minIdExclusive) as { c: number };
+    return row.c;
+  }
+
   /** REAL row counts across the relational + index tables. */
   counts(): CountsResult {
     const db = this.conn();
