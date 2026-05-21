@@ -23,7 +23,7 @@ Shared onboarding layer for AI coding agents in this repository. Keep project fa
 | --- | --- | --- |
 | `/` | repo root | thin wrappers + config live here |
 | `docs/` | shared documentation | canonical onboarding/workflow/testing/docs-standards |
-| `src/` | application code | TS source; tests colocated as `*.test.ts`. Layers: `config → store → embedding → indexer → recall → {mcp ⨁ ingest ⨁ export ⨁ ui ⨁ consolidate ⨁ hooks ⨁ optimize ⨁ delete} → memory.ts → cli` |
+| `src/` | application code | TS source; tests colocated as `*.test.ts`. Layers: `config → store → embedding → indexer → recall → ground-truth → anchoring → {mcp ⨁ ingest ⨁ export ⨁ ui ⨁ consolidate ⨁ hooks ⨁ optimize ⨁ delete} → memory.ts → cli` |
 | `src/ui/` | localhost graph UI (#11) + delete write-path (#20) | `node:http` server (`server.ts`) + pure `buildGraph` projection (`graph.ts`) + shared wire contract (`graph-types.ts`); browser client in `src/ui/client/` (vanilla TS + force-graph, bundled by esbuild). No longer read-only: two delete routes guarded by CSRF token + Host/Origin allowlist + handle confirmation (ADR 0007) |
 | `src/llm/` | LLM chat provider (#12) | one generic OpenAI-compatible `/chat/completions` client (`client.ts`); covers local (Ollama/llama.cpp/LM Studio/vLLM) + hosted; reuses `embedding/retry.ts` |
 | `src/consolidate/` | session → lessons (#12) | pure `distill.ts` (prompt + tolerant parse + zod schema) + `consolidate.ts` orchestrator; lessons written via the indexer (recallable), idempotent, opt-in |
