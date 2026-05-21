@@ -3,9 +3,13 @@
  * Protocol so Claude Code can recall and store memories as tools.
  *
  * Tools:
- *   - `recall`        — hybrid semantic + keyword search, returns ranked hits.
- *   - `remember`      — persist a new observation (index-at-write).
- *   - `memory_status` — real index counts + staleness (never cosmetic).
+ *   - `recall`         — hybrid semantic + keyword search, returns ranked hits.
+ *   - `remember`       — persist a new observation (index-at-write).
+ *   - `memory_status`  — real index counts + staleness (never cosmetic).
+ *   - `optimize`       — generate evidence-backed candidate diffs (read-only).
+ *   - `apply`          — write ONE previewed candidate to disk (gated).
+ *   - `forget_preview` — resolve what a delete would remove, mint a handle (read-only).
+ *   - `forget`         — DELETE the previewed set for a handle (IRREVERSIBLE).
  *
  * `createMcpServer` builds the server from an open `Memory`; `startStdio` is the
  * process entrypoint the CLI/packaging launches over stdio.
@@ -14,6 +18,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { loadConfig } from '../config.js';
+import { DeleteRefusalError, type DeleteSelector, execute, preview } from '../delete/index.js';
 import { defaultClaudeProjectsDir } from '../ingest/index.js';
 import { type Memory, openMemory } from '../memory.js';
 import {
@@ -183,6 +188,120 @@ export function createMcpServer(memory: Memory): McpServer {
         projectsDir: defaultClaudeProjectsDir(),
       });
       return jsonContent(result);
+    },
+  );
+
+  // Selective hard-delete (Phase B). `forget_preview` resolves a selector to a
+  // concrete id set and mints a handle (the core parks the pinned ids in its own
+  // TTL cache); `forget` deletes ONLY that handle's pinned set. The two-tool split
+  // is the trust boundary: `forget` takes a handle — never a raw selector — so the
+  // agent can only delete a set the server previewed and the USER saw and approved
+  // (mirrors optimize/apply). A handle is single-use: it is consumed on `forget`, so
+  // a replay (or a second call) returns `unknown-handle`. There is deliberately NO
+  // `.abs-bak` for deletes (unlike apply) — hard-delete is IRREVERSIBLE and
+  // export-first (the `export` surface) is the only recovery.
+
+  server.registerTool(
+    'forget_preview',
+    {
+      title: 'Preview a memory delete',
+      description:
+        'Resolve what a delete would remove. Read-only — deletes NOTHING. Show the items to the user and get explicit approval before calling forget. Returns a single-use handle that forget consumes. Pass exactly one selector.',
+      inputSchema: {
+        ids: z
+          .array(z.number().int().positive())
+          .min(1)
+          .max(10_000)
+          .optional()
+          // `.min(1)`: an empty `ids:[]` must hard-error like the CLI/UI, not silently
+          // resolve to a count-0 selector that looks like a valid (no-op) delete.
+          .describe('Explicit observation ids to delete (1–10000).'),
+        session: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe('Delete every observation of this session id.'),
+        project: z
+          .string()
+          .optional()
+          .describe(
+            'Delete observations of every session with this project name (literal string).',
+          ),
+        nullProject: z
+          .boolean()
+          .optional()
+          .describe(
+            'Delete observations of sessions with NO project (distinct from the literal "null").',
+          ),
+        search: z
+          .string()
+          .optional()
+          .describe('Delete observations matched by FTS keyword recall (no embedding).'),
+        limit: z
+          .number()
+          .int()
+          .positive()
+          .max(200)
+          .optional()
+          .describe('Cap for the search selector (default uses the FTS default).'),
+      },
+    },
+    async ({ ids, session, project, nullProject, search, limit }) => {
+      const chosen = [
+        ids !== undefined,
+        session !== undefined,
+        project !== undefined,
+        nullProject === true,
+        search !== undefined,
+      ].filter(Boolean).length;
+      if (chosen !== 1) {
+        return jsonContent({
+          error:
+            'forget_preview requires exactly one selector: ids, session, project, nullProject, or search',
+        });
+      }
+      let selector: DeleteSelector;
+      if (ids !== undefined) selector = { byIds: ids };
+      else if (session !== undefined) selector = { bySession: session };
+      else if (project !== undefined) selector = { byProject: project };
+      else if (nullProject === true) selector = { byProject: null };
+      else
+        selector = {
+          bySearch: { query: search as string, ...(limit !== undefined ? { limit } : {}) },
+        };
+
+      const result = preview(memory, selector);
+      return jsonContent({
+        handle: result.handle,
+        count: result.count,
+        items: result.items,
+        notFound: result.notFound,
+        selectorEcho: result.selectorEcho,
+      });
+    },
+  );
+
+  server.registerTool(
+    'forget',
+    {
+      title: 'Execute a previewed delete',
+      description:
+        'DELETE the previously-previewed set for this handle. IRREVERSIBLE. Only on explicit user approval; never automatic. Recovery is export-first only.',
+      inputSchema: {
+        handle: z.string().describe('The handle returned by a prior forget_preview call.'),
+      },
+    },
+    async ({ handle }) => {
+      try {
+        const result = execute(memory, handle);
+        return jsonContent(result);
+      } catch (e) {
+        if (e instanceof DeleteRefusalError) {
+          return jsonContent({ error: e.message, reason: e.reason });
+        }
+        throw e;
+      }
     },
   );
 

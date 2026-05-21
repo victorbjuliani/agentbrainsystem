@@ -178,6 +178,17 @@ export class MemoryStore {
     return row.v;
   }
 
+  /**
+   * Run `fn` inside ONE atomic transaction and return its result. better-sqlite3
+   * is synchronous, so the whole closure commits or rolls back as a unit; nested
+   * `db.transaction` calls (e.g. `deleteObservation`) fold into savepoints. Lets a
+   * higher layer (the delete core, #N) make a multi-row delete atomic without
+   * reaching into the private connection.
+   */
+  transaction<T>(fn: () => T): () => T {
+    return this.conn().transaction(fn);
+  }
+
   // ------------------------------------------------------------ session CRUD
 
   createSession(input: CreateSessionInput): number {

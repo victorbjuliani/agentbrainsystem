@@ -10,6 +10,13 @@
  * Shares the wire contract with the backend via `../graph-types.js`.
  */
 import { GRAPH_CONTRACT_VERSION, type GraphData, type NodeType } from '../graph-types.js';
+import {
+  type ClientSelector,
+  confirmDelete,
+  executeDelete,
+  previewDelete,
+  StaleTokenError,
+} from './delete-client.js';
 import { mountOverlays, type SessionOption } from './overlays.js';
 import { createRenderer, radiusFor } from './render.js';
 import type { ScopeMode, Theme, ViewEdge, ViewGraph, ViewNode } from './types.js';
@@ -95,6 +102,56 @@ async function main(): Promise<void> {
     'decision',
   ]);
 
+  let lastSearch = '';
+
+  /**
+   * The single write-path orchestrator (ADR-0007): preview → confirm dialog →
+   * execute → re-fetch the graph. `summary` makes the scope explicit so a capped
+   * search delete never reads as an uncapped total. A stale CSRF token reloads `/`.
+   */
+  async function runDelete(selector: ClientSelector, summary: string): Promise<void> {
+    try {
+      const previewResult = await previewDelete(selector);
+      if (previewResult.count === 0) {
+        showError('nothing matched — nothing to delete');
+        return;
+      }
+      const ok = await confirmDelete(previewResult, summary);
+      if (!ok) return;
+      const result = await executeDelete(previewResult.handle);
+      renderer.select(null);
+      overlays.showInspector(null);
+      await load(); // refresh the graph so the deleted nodes disappear
+      // H1: confirm the positive outcome (don't drop notFound). Announced politely.
+      const n = result.deleted.length;
+      let msg = `excluídas ${n} ${n === 1 ? 'memória' : 'memórias'}`;
+      if (result.notFound.length > 0) {
+        const m = result.notFound.length;
+        msg += ` · ${m} já não ${m === 1 ? 'existia' : 'existiam'}`;
+      }
+      showStatus(msg);
+    } catch (err) {
+      if (err instanceof StaleTokenError) return; // page is reloading for a fresh token
+      showError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  /** Map a clicked node id (`o:<id>` | `s:<id>`) to its delete selector + summary. */
+  function deleteForNode(node: ViewNode): { selector: ClientSelector; summary: string } | null {
+    if (node.type === 'session') {
+      const id = Number(node.id.slice(2));
+      return {
+        selector: { sel: 'session', id },
+        summary: `Excluir todas as observações da sessão "${node.label}".`,
+      };
+    }
+    const id = Number(node.id.slice(2));
+    return {
+      selector: { sel: 'ids', ids: [id] },
+      summary: `Excluir esta observação (#${id}).`,
+    };
+  }
+
   const renderer = createRenderer(mount, {
     onSelect: (node) => overlays.showInspector(node),
   });
@@ -105,7 +162,17 @@ async function main(): Promise<void> {
       else visibleTypes.delete(type);
       renderer.setVisibleTypes(new Set(visibleTypes));
     },
-    onSearch: (query) => renderer.setSearch(query),
+    onSearch: (query) => {
+      lastSearch = query.trim();
+      renderer.setSearch(query);
+    },
+    onSearchDelete: () => {
+      if (!lastSearch) return;
+      void runDelete(
+        { sel: 'search', q: lastSearch, limit: 50 },
+        `Excluir exatamente os itens previstos que correspondem a "${lastSearch}" (conjunto resolvido pela busca FTS, já limitado — não um total irrestrito).`,
+      );
+    },
     onScopeChange: (next) => {
       scope.mode = next.mode;
       scope.sessionId = next.sessionId;
@@ -122,6 +189,10 @@ async function main(): Promise<void> {
       renderer.select(null);
       overlays.showInspector(null);
     },
+    onInspectorDelete: (node) => {
+      const plan = deleteForNode(node);
+      if (plan) void runDelete(plan.selector, plan.summary);
+    },
   });
 
   function sizeCanvas(): void {
@@ -129,6 +200,34 @@ async function main(): Promise<void> {
   }
   window.addEventListener('resize', sizeCanvas);
   sizeCanvas();
+
+  /** Surface a failure on-brand in the error banner rather than a blank canvas. */
+  function showError(message: string): void {
+    const banner = document.getElementById('error-banner');
+    if (banner) {
+      banner.textContent = message;
+      banner.hidden = false;
+    }
+  }
+
+  /**
+   * Announce a positive outcome (a successful delete) via the polite aria-live
+   * region, and auto-dismiss it after a few seconds. Clears any prior error banner
+   * so a success doesn't sit beside a stale failure.
+   */
+  let statusTimer = 0;
+  function showStatus(message: string): void {
+    const errBanner = document.getElementById('error-banner');
+    if (errBanner) errBanner.hidden = true;
+    const banner = document.getElementById('status-banner');
+    if (!banner) return;
+    banner.textContent = message;
+    banner.hidden = false;
+    window.clearTimeout(statusTimer);
+    statusTimer = window.setTimeout(() => {
+      banner.hidden = true;
+    }, 6000);
+  }
 
   async function load(): Promise<void> {
     document.body.setAttribute('aria-busy', 'true');
@@ -138,12 +237,7 @@ async function main(): Promise<void> {
       renderer.setData(toViewGraph(data));
       renderer.setVisibleTypes(new Set(visibleTypes));
     } catch (err) {
-      // Surface the failure on-brand rather than a blank canvas.
-      const banner = document.getElementById('error-banner');
-      if (banner) {
-        banner.textContent = err instanceof Error ? err.message : String(err);
-        banner.hidden = false;
-      }
+      showError(err instanceof Error ? err.message : String(err));
       // eslint-disable-next-line no-console
       console.error('failed to load graph', err);
     } finally {

@@ -70,6 +70,12 @@
   --radius-lg: 16px;
   --radius-full: 9999px;
 
+  /* --- Danger (destructive delete; ADR-0008) --- */
+  /* Dark default: luminous red reads on the deep void. Light theme overrides this
+     to a deeper red so the irreversibility warning clears WCAG AA (≥4.5:1) on the
+     pale surface. One token — dialog + banner + affordances never drift. */
+  --danger: #f87171;
+
   /* --- Motion (DESIGN §9) --- */
   --ease-primary: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
@@ -125,6 +131,9 @@
   --elevation: 0 4px 12px -2px rgba(20, 16, 27, 0.1);
   --elevation-lg: 0 12px 32px -6px rgba(20, 16, 27, 0.14);
   --vignette: none;
+  /* Deeper red so the irreversibility warning + danger text clear WCAG AA on the
+     pale surface (#dc2626 on #ffffff ≈ 4.5:1; the light #f87171 fails). */
+  --danger: #dc2626;
 }
 
 * {
@@ -571,9 +580,28 @@ body {
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   color: var(--neutral-50);
-  background: color-mix(in oklab, #f87171 30%, var(--surface-solid));
-  border: 1px solid #f87171;
+  background: color-mix(in oklab, var(--danger) 30%, var(--surface-solid));
+  border: 1px solid var(--danger);
   border-radius: var(--radius-base);
+  pointer-events: auto;
+}
+
+/* Polite success channel (e.g. "excluídas N memórias") — calm, on-brand violet,
+   sits where the error banner does but reads as a confirmation, not an alarm. */
+.status-banner {
+  position: absolute;
+  bottom: var(--space-4);
+  right: var(--space-4);
+  margin: 0;
+  max-width: 24rem;
+  padding: var(--space-3) var(--space-4);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--fg);
+  background: color-mix(in oklab, var(--violet-500) 16%, var(--surface-solid));
+  border: 1px solid color-mix(in oklab, var(--violet-500) 45%, var(--surface-solid));
+  border-radius: var(--radius-base);
+  box-shadow: var(--elevation);
   pointer-events: auto;
 }
 
@@ -628,4 +656,157 @@ body {
   .empty-glyph {
     animation: none;
   }
+}
+
+/* ===== Write path: delete affordances + confirmation dialog (ADR-0007) ===== */
+
+.inspect-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.inspect-delete,
+.search-delete,
+.delete-confirm {
+  color: var(--danger);
+}
+
+.inspect-delete:hover {
+  background: color-mix(in oklab, var(--danger) 18%, transparent);
+}
+
+.search-delete {
+  border-color: color-mix(in oklab, var(--danger) 38%, var(--surface-solid));
+}
+
+/* Modal backdrop: dims the void, centers the dialog above all overlays. */
+.delete-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: var(--space-4);
+  background: color-mix(in oklab, var(--neutral-950) 62%, transparent);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+.delete-dialog {
+  width: min(34rem, 92vw);
+  max-height: 82vh;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-6);
+  border-radius: var(--radius-lg);
+  background: var(--surface-solid);
+  box-shadow: var(--elevation);
+}
+
+.delete-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.delete-title {
+  font-family: var(--font-mono);
+  font-size: var(--text-lg);
+  color: var(--label-fg);
+}
+
+.delete-count {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--danger);
+}
+
+.delete-summary {
+  font-size: var(--text-sm);
+  color: var(--label-fg);
+  opacity: 0.86;
+}
+
+.delete-list-wrap {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow-y: auto;
+}
+
+.delete-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.delete-item {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  padding: var(--space-1) 0;
+}
+
+.delete-item-kind {
+  flex: 0 0 auto;
+  opacity: 0.7;
+}
+
+.delete-item-snippet {
+  flex: 1 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--label-fg);
+}
+
+.delete-more {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  opacity: 0.6;
+  padding-top: var(--space-1);
+}
+
+.delete-warn {
+  font-size: var(--text-xs);
+  color: var(--danger);
+  font-weight: 600;
+}
+
+/* L1: ids that no longer exist (preview notFound) — muted, never alarming. */
+.delete-notfound {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+  padding-top: var(--space-1);
+}
+
+.delete-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+/* M1: Cancel is the calm, primary-looking default. The destructive confirm stays
+   distinct (danger-tinted) but visually secondary — it is not the focal button. */
+.delete-cancel {
+  border-color: var(--violet-500);
+  background: color-mix(in oklab, var(--violet-500) 14%, var(--surface-solid));
+}
+
+.delete-confirm {
+  border-color: color-mix(in oklab, var(--danger) 50%, var(--surface-solid));
+  background: transparent;
+}
+
+.delete-confirm:hover {
+  background: color-mix(in oklab, var(--danger) 16%, var(--surface-solid));
 }

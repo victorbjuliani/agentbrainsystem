@@ -47,8 +47,16 @@ abs export <path>         # write the whole store to a portable artifact
 abs import <path> [--mode replace|merge]   # load an artifact (default merge)
 abs ui [--port N]         # serve the interactive memory graph at http://127.0.0.1:7717
 abs consolidate [--session N] [--dry-run] [--force]   # distill a session into durable lessons (opt-in, needs an LLM)
+abs forget [selector] [--apply] [--yes]   # selectively hard-delete memories — IRREVERSIBLE, export first
 abs --help | --version
 ```
+
+`abs forget` takes exactly one selector: `--ids a,b,c` (observation ids),
+`--session N`, `--project NAME`, `--null-project` (sessions with no project, NOT the
+literal `"null"`), or `--search "q" [--limit N]` (FTS keyword recall, no embedding).
+It is **preview-only by default** — nothing is deleted without `--apply`, which prompts
+per id `[y/N]` (or pass `--yes` to skip prompts). Hard-delete is irreversible and has no
+backup: run `abs export <path>` first. See `docs/adr/0008-hard-delete-safety.md`.
 
 (During development, run any command without building via `npm run dev -- <command>`.)
 
@@ -75,12 +83,19 @@ error, and contains untrusted transcript content to a strict lesson/decision sch
 ### Memory graph UI
 
 `abs ui` starts a localhost server (default port `7717`, override with `--port`) and
-opens a browser to a **read-only**, force-directed graph of the live store: session
-hubs and their observations, colored by kind, with optional similarity edges
-(`?similarity=1`). It binds to `127.0.0.1` only, never mutates the store, and ships
-self-contained (no CDN — works offline). The default view is scoped to the most
-recently active session; switch sessions or use top-N from the on-canvas controls.
-Visual intent is documented in `docs/DESIGN.md`.
+opens a browser to a force-directed graph of the live store: session hubs and their
+observations, colored by kind, with optional similarity edges (`?similarity=1`). It
+binds to `127.0.0.1` only and ships self-contained (no CDN — works offline). The default
+view is scoped to the most recently active session; switch sessions or use top-N from
+the on-canvas controls. Visual intent is documented in `docs/DESIGN.md`.
+
+The UI also offers **selective delete** (preview → confirm → execute, mirroring the CLI
+two-phase contract): click a node to delete one observation or a whole session from the
+inspector, or run a search and use "excluir busca" to delete the previewed (capped) set.
+Deletes are guarded by the localhost CSRF/Origin controls — every delete call carries a
+per-process token and the server rejects cross-origin requests; see
+`docs/adr/0007-ui-write-path-security.md`. Hard-delete is irreversible
+(`docs/adr/0008-hard-delete-safety.md`) — export first.
 
 ### Connect to Claude Code
 
@@ -104,9 +119,13 @@ Or per-project, add to `.mcp.json`:
 }
 ```
 
-Then ingest your history (`abs ingest`) and Claude Code can call the `recall`,
-`remember`, and `memory_status` tools. Configure a hosted embedder if you prefer
-(`ABS_EMBED_PROVIDER=gemini|voyage` with the matching API key) — local stays the default.
+Then ingest your history (`abs ingest`) and Claude Code can call the MCP tools:
+`recall`, `remember`, `memory_status`, `optimize`/`apply` (gated memory edits), and
+`forget_preview`/`forget` (selective hard-delete — `forget_preview` resolves what a
+delete would remove and mints a single-use handle, read-only; `forget` consumes that
+handle to delete exactly the previewed set, and is IRREVERSIBLE). Configure a hosted
+embedder if you prefer (`ABS_EMBED_PROVIDER=gemini|voyage` with the matching API key) —
+local stays the default.
 
 ### Embedding providers & environment
 

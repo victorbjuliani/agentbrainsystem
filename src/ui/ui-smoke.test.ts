@@ -43,6 +43,14 @@ describe('UI smoke (startUiServer end-to-end)', () => {
     expect(root.status).toBe(200);
     expect(root.headers.get('content-type')).toContain('text/html');
 
+    // The served markup carries both feedback channels for the delete write path:
+    // an assertive error banner and a polite aria-live status region (ADR-0008 a11y).
+    const html = await root.text();
+    expect(html).toContain('id="error-banner"');
+    expect(html).toContain('role="alert"');
+    expect(html).toContain('id="status-banner"');
+    expect(html).toContain('aria-live="polite"');
+
     const graph = await fetch(`${url}/api/graph`);
     expect(graph.status).toBe(200);
   });
