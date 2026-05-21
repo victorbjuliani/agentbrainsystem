@@ -253,6 +253,22 @@ describe('buildGraph', () => {
     expect(types.has('decision')).toBe(true);
   });
 
+  it('caps pinned-hub footprint so pinned obs still render under a small limit (#42 P2)', () => {
+    const focus = store.createSession({ externalId: 'focus', project: 'focus' });
+    store.createObservation({ sessionId: focus, kind: 'user', content: 'q' });
+    // 12 OTHER sessions, each with a single lesson → each pin needs its own hub.
+    // Without a footprint cap, the hubs alone would fill a small budget and the
+    // lessons would never render (only session hubs would).
+    for (let i = 0; i < 12; i++) {
+      const s = store.createSession({ externalId: `o${i}` });
+      store.createObservation({ sessionId: s, kind: 'lesson', content: `L${i}` });
+    }
+    const g = buildGraph(store, { session: focus, limit: 8 });
+    expect(g.nodes.length).toBeLessThanOrEqual(8);
+    // At least one pinned lesson OBS renders — hubs don't consume the whole budget.
+    expect(g.nodes.some((n) => n.type === 'lesson')).toBe(true);
+  });
+
   // ---- Search mode (#35) ----------------------------------------------------
 
   it('search resolves FTS matches store-wide, ignoring scope/recency', () => {

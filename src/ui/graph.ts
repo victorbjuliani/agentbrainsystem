@@ -160,7 +160,7 @@ export function buildGraph(store: MemoryStore, query: GraphQuery): GraphData {
   // NODE_CAP guard below then drops the lowest-priority (scope) tail, not the pins.
   // NOT applied in search mode: a search defines its own result set explicitly.
   if (mode !== 'search') {
-    const merged = mergePinnedConsolidated(store, observations, sessions);
+    const merged = mergePinnedConsolidated(store, observations, sessions, nodeBudget);
     observations = merged.observations;
     sessions = merged.sessions;
   }
@@ -394,31 +394,48 @@ function resolveSearch(store: MemoryStore, rawQuery: string): ResolvedSet {
 /**
  * Prepend the newest consolidated observations (lesson/decision) and their session
  * hubs to the scope set (#35), deduped by id so a pin already in scope is not
- * counted twice. Pins go FIRST so the downstream NODE_CAP guard drops the
+ * counted twice. Pins go FIRST so the downstream node-budget guard drops the
  * lower-priority scope tail rather than the pins. A no-op when the store holds no
  * such observations — every pre-#35 caller path is unchanged.
+ *
+ * The pin footprint (pinned obs + the hubs they pull in) is bounded to at most HALF
+ * the node budget. Node rendering emits all session hubs before any observation, so
+ * an unbounded set of single-pin sessions could fill the budget with hubs and starve
+ * the very pins it was meant to surface (#42 P2). By admitting pins one at a time and
+ * charging each its hub cost, every pin we COMMIT to is guaranteed a render slot, and
+ * at least half the budget stays free for the scope view.
  */
 function mergePinnedConsolidated(
   store: MemoryStore,
   observations: Observation[],
   sessions: Session[],
+  nodeBudget: number,
 ): { observations: Observation[]; sessions: Session[] } {
   const pinned = store.listObservations({ kinds: PIN_KINDS, order: 'desc', limit: PIN_CAP });
   if (pinned.length === 0) return { observations, sessions };
 
   const scopeIds = new Set(observations.map((o) => o.id));
-  const extra = pinned.filter((o) => !scopeIds.has(o.id));
-  if (extra.length === 0) return { observations, sessions };
+  const candidates = pinned.filter((o) => !scopeIds.has(o.id));
+  if (candidates.length === 0) return { observations, sessions };
 
+  const pinBudget = Math.max(1, Math.floor(nodeBudget / 2));
   const haveSession = new Set(sessions.map((s) => s.id));
   const mergedSessions = [...sessions];
-  for (const o of extra) {
-    if (haveSession.has(o.sessionId)) continue;
-    const s = store.getSession(o.sessionId);
-    if (s) {
+  const accepted: Observation[] = [];
+  let spent = 0;
+  for (const o of candidates) {
+    const needsHub = !haveSession.has(o.sessionId);
+    const cost = needsHub ? 2 : 1; // the pin itself, plus its hub when not yet present
+    if (spent + cost > pinBudget) break;
+    if (needsHub) {
+      const s = store.getSession(o.sessionId);
+      if (!s) continue; // session vanished — skip rather than orphan the pin
       mergedSessions.push(s);
       haveSession.add(o.sessionId);
     }
+    accepted.push(o);
+    spent += cost;
   }
-  return { observations: [...extra, ...observations], sessions: mergedSessions };
+  if (accepted.length === 0) return { observations, sessions };
+  return { observations: [...accepted, ...observations], sessions: mergedSessions };
 }

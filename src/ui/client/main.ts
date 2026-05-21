@@ -251,19 +251,26 @@ async function main(): Promise<void> {
     }, 6000);
   }
 
+  // Monotonic request token: search fires load() per debounced keystroke, so
+  // multiple fetches can be in flight. Only the LATEST may apply its payload —
+  // a slower earlier response must not overwrite newer results (#42 P2).
+  let loadSeq = 0;
   async function load(): Promise<void> {
+    const seq = ++loadSeq;
     document.body.setAttribute('aria-busy', 'true');
     try {
       const data = await fetchGraph(scope);
+      if (seq !== loadSeq) return; // superseded by a newer load — drop stale payload
       overlays.syncFromData(data, sessionOptions(data));
       renderer.setData(toViewGraph(data));
       renderer.setVisibleTypes(new Set(visibleTypes));
     } catch (err) {
+      if (seq !== loadSeq) return; // stale failure from a superseded request
       showError(err instanceof Error ? err.message : String(err));
       // eslint-disable-next-line no-console
       console.error('failed to load graph', err);
     } finally {
-      document.body.removeAttribute('aria-busy');
+      if (seq === loadSeq) document.body.removeAttribute('aria-busy');
     }
   }
 
