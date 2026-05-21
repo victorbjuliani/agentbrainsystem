@@ -38,8 +38,6 @@ export interface Renderer {
   setData(graph: ViewGraph): void;
   /** Visibility predicate from the type-filter pills. */
   setVisibleTypes(types: Set<NodeType>): void;
-  /** Search query: matched nodes glow, the rest dim. Empty string clears it. */
-  setSearch(query: string): void;
   /** Programmatically select a node (or clear with null) — drives the synapse + inspector. */
   select(node: ViewNode | null): void;
   /** Re-read palette CSS vars after a theme switch and repaint. */
@@ -53,7 +51,6 @@ export function createRenderer(mount: HTMLElement, cb: RendererCallbacks): Rende
 
   let data: ViewGraph = { nodes: [], links: [] };
   let visibleTypes: Set<NodeType> | null = null;
-  let searchQuery = '';
   let hoverNode: ViewNode | null = null;
   let selectedNode: ViewNode | null = null;
   /** Ids one hop from the focused node (hover or selection) — the synapse set. */
@@ -72,12 +69,6 @@ export function createRenderer(mount: HTMLElement, cb: RendererCallbacks): Rende
 
   function isVisible(node: ViewNode): boolean {
     return visibleTypes === null || visibleTypes.has(node.type);
-  }
-
-  function matchesSearch(node: ViewNode): boolean {
-    if (!searchQuery) return false;
-    const q = searchQuery.toLowerCase();
-    return node.label.toLowerCase().includes(q) || node.id.toLowerCase().includes(q);
   }
 
   function rebuildAdjacency(): void {
@@ -112,15 +103,12 @@ export function createRenderer(mount: HTMLElement, cb: RendererCallbacks): Rende
     if (!isVisible(node)) return;
     const color = colorForType(node.type);
     const focusNode = focused();
-    const searching = searchQuery.length > 0;
-    const isMatch = matchesSearch(node);
     const inSynapse = focusNode !== null && neighbourIds.has(node.id);
     const isFocus = focusNode !== null && node.id === focusNode.id;
 
-    // Dimming: synapse (§9 #3) dims non-neighbours ~40%; search dims non-matches.
+    // Dimming: synapse (§9 #3) dims non-neighbours ~40%.
     let dim = 1;
-    if (searching) dim = isMatch ? 1 : 0.18;
-    else if (focusNode) dim = inSynapse ? 1 : 0.4;
+    if (focusNode) dim = inSynapse ? 1 : 0.4;
 
     // Breathing (§9 #2): subtle scale+opacity loop, desync per node, gated by RM.
     let breath = 1;
@@ -133,8 +121,8 @@ export function createRenderer(mount: HTMLElement, cb: RendererCallbacks): Rende
 
     const r = node.radius * breath;
 
-    // Glow halo as elevation (DESIGN §8). Emphasis when focus/match; ambient otherwise.
-    const emphasised = isFocus || isMatch || inSynapse;
+    // Glow halo as elevation (DESIGN §8). Emphasis when focused/in-synapse; ambient otherwise.
+    const emphasised = isFocus || inSynapse;
     const haloAlpha = (emphasised ? 0.55 : 0.28 + breathGlow * 0.12) * dim;
     const haloR = r * (emphasised ? 3.4 : 2.4);
     const grad = ctx.createRadialGradient(
@@ -273,9 +261,6 @@ export function createRenderer(mount: HTMLElement, cb: RendererCallbacks): Rende
     setVisibleTypes(types: Set<NodeType>): void {
       visibleTypes = types;
       graph.nodeVisibility(isVisible);
-    },
-    setSearch(query: string): void {
-      searchQuery = query.trim();
     },
     select(node: ViewNode | null): void {
       selectedNode = node;
