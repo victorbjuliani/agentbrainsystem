@@ -13,7 +13,7 @@
 import type { Database } from 'better-sqlite3';
 
 /** The schema version the running code expects. Bump when adding a migration. */
-export const CURRENT_SCHEMA_VERSION = 2;
+export const CURRENT_SCHEMA_VERSION = 3;
 
 /**
  * Run a multi-statement DDL/SQL batch on the connection. Thin wrapper over
@@ -93,6 +93,43 @@ export const MIGRATIONS: readonly Migration[] = [
           key   TEXT PRIMARY KEY,
           value TEXT NOT NULL
         );`,
+      );
+    },
+  },
+  {
+    version: 3,
+    name: 'fact-anchors',
+    up(db) {
+      // The verifiable-memory layer (E): each fact (observation) can carry one
+      // or more anchors tying it to a concrete code location. `state` tracks
+      // verifiability — `claimed` (seeded from a tool-call, not yet checked),
+      // `verified` (resolved against the ground-truth graph, carries
+      // file:line@commit), or `stale` (the anchor's symbol/file no longer
+      // resolves; self-healing marks, never deletes — auditable).
+      //
+      // The reverse indexes on `qualified_name` and `file_path` are the whole
+      // point of a dedicated table (ADR-0008 / discovery D1): self-healing asks
+      // "which facts anchored to symbol X / file Y?" and needs O(log n), which
+      // a JSON metadata column cannot serve.
+      runDdl(
+        db,
+        `CREATE TABLE fact_anchors (
+          id              INTEGER PRIMARY KEY AUTOINCREMENT,
+          observation_id  INTEGER NOT NULL REFERENCES observations(id) ON DELETE CASCADE,
+          anchor_kind     TEXT NOT NULL,
+          qualified_name  TEXT,
+          file_path       TEXT NOT NULL,
+          line            INTEGER,
+          commit_sha      TEXT,
+          state           TEXT NOT NULL DEFAULT 'claimed',
+          verified_at     TEXT,
+          created_at      TEXT NOT NULL
+        );
+
+        CREATE INDEX idx_anchors_observation ON fact_anchors(observation_id);
+        CREATE INDEX idx_anchors_qname ON fact_anchors(qualified_name);
+        CREATE INDEX idx_anchors_file ON fact_anchors(file_path);
+        CREATE INDEX idx_anchors_state ON fact_anchors(state);`,
       );
     },
   },
