@@ -400,6 +400,10 @@ export class MemoryStore {
       clauses.push('kind = @kind');
       params.kind = options.kind;
     }
+    if (options.afterId !== undefined) {
+      clauses.push('id > @afterId');
+      params.afterId = options.afterId;
+    }
     const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
     const limit = options.limit !== undefined ? 'LIMIT @limit' : '';
     if (options.limit !== undefined) params.limit = options.limit;

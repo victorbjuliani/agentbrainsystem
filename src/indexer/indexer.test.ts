@@ -165,6 +165,34 @@ describe('Indexer — deterministic rebuild gate', () => {
     expect(result.reason).toBe('fresh');
     store.close();
   });
+
+  // Regression (#34): rebuild() walked observations via an open `iterate()` cursor
+  // and wrote vectors/FTS to the SAME connection inside the loop. better-sqlite3
+  // rejects a write while a cursor is open ("This database connection is busy
+  // executing a query"), so any rebuild over more than one batch threw — breaking
+  // every high-volume ingest and trapping the store (each reopen re-tripped it).
+  it('rebuilds a store larger than the embed batch without a busy-connection error', async () => {
+    const store = newStore(8);
+    // A small batch forces a mid-iteration flush — the exact window the bug needs.
+    const indexer = new Indexer(store, new FakeProvider(), { batchSize: 2 });
+    const sessionId = store.createSession({ externalId: 's1' });
+    // Write unindexed rows straight to the store, more than one batch worth.
+    const ids: number[] = [];
+    for (let i = 0; i < 5; i++) {
+      ids.push(store.createObservation({ sessionId, kind: 'note', content: `row ${i}` }));
+    }
+    expect(store.counts()).toMatchObject({ observations: 5, vectors: 0 });
+
+    const result = await indexer.ensureIndex();
+
+    expect(result.rebuilt).toBe(true);
+    expect(store.counts()).toMatchObject({ observations: 5, vectors: 5, fts: 5 });
+    expect(indexer.status().stale).toBe(false);
+    // every row is recallable by its own vector after the rebuild
+    const [q] = await new FakeProvider().embed(['row 3']);
+    expect(store.knn(q as number[], 1)[0]?.id).toBe(ids[3]);
+    store.close();
+  });
 });
 
 describe('Indexer — restart survival (integration, real local embeddings)', () => {
