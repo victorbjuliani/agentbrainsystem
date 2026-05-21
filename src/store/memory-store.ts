@@ -105,6 +105,7 @@ interface FactAnchorRow {
   file_path: string;
   line: number | null;
   commit_sha: string | null;
+  branch: string | null;
   state: string;
   verified_at: string | null;
   created_at: string;
@@ -119,6 +120,7 @@ function rowToAnchor(row: FactAnchorRow): FactAnchor {
     filePath: row.file_path,
     line: row.line ?? undefined,
     commitSha: row.commit_sha ?? undefined,
+    branch: row.branch ?? undefined,
     state: row.state as AnchorState,
     verifiedAt: row.verified_at ?? undefined,
     createdAt: row.created_at,
@@ -547,8 +549,8 @@ export class MemoryStore {
     const info = db
       .prepare(
         `INSERT INTO fact_anchors
-           (observation_id, anchor_kind, qualified_name, file_path, line, commit_sha, state, verified_at, created_at)
-         VALUES (@observationId, @anchorKind, @qualifiedName, @filePath, @line, @commitSha, @state, @verifiedAt, @createdAt)`,
+           (observation_id, anchor_kind, qualified_name, file_path, line, commit_sha, branch, state, verified_at, created_at)
+         VALUES (@observationId, @anchorKind, @qualifiedName, @filePath, @line, @commitSha, @branch, @state, @verifiedAt, @createdAt)`,
       )
       .run({
         observationId: input.observationId,
@@ -557,6 +559,7 @@ export class MemoryStore {
         filePath: input.filePath,
         line: input.line ?? null,
         commitSha: input.commitSha ?? null,
+        branch: input.branch ?? null,
         state: input.state ?? 'claimed',
         verifiedAt: input.verifiedAt ?? null,
         createdAt: input.createdAt ?? nowIso(),
@@ -609,7 +612,7 @@ export class MemoryStore {
   updateAnchorState(
     id: number,
     state: AnchorState,
-    opts: { commitSha?: string; line?: number; verifiedAt?: string } = {},
+    opts: { commitSha?: string; line?: number; branch?: string; verifiedAt?: string } = {},
   ): void {
     this.conn()
       .prepare(
@@ -617,6 +620,7 @@ export class MemoryStore {
          SET state = @state,
              commit_sha = COALESCE(@commitSha, commit_sha),
              line = COALESCE(@line, line),
+             branch = COALESCE(@branch, branch),
              verified_at = COALESCE(@verifiedAt, verified_at)
          WHERE id = @id`,
       )
@@ -625,6 +629,7 @@ export class MemoryStore {
         state,
         commitSha: opts.commitSha ?? null,
         line: opts.line ?? null,
+        branch: opts.branch ?? null,
         verifiedAt: opts.verifiedAt ?? (state === 'verified' ? nowIso() : null),
       });
   }
@@ -636,7 +641,7 @@ export class MemoryStore {
    */
   reanchorAnchor(
     id: number,
-    location: { filePath: string; line?: number; commitSha?: string },
+    location: { filePath: string; line?: number; commitSha?: string; branch?: string },
   ): void {
     this.conn()
       .prepare(
@@ -644,6 +649,7 @@ export class MemoryStore {
          SET file_path = @filePath,
              line = @line,
              commit_sha = COALESCE(@commitSha, commit_sha),
+             branch = COALESCE(@branch, branch),
              verified_at = @verifiedAt
          WHERE id = @id`,
       )
@@ -652,6 +658,7 @@ export class MemoryStore {
         filePath: location.filePath,
         line: location.line ?? null,
         commitSha: location.commitSha ?? null,
+        branch: location.branch ?? null,
         verifiedAt: nowIso(),
       });
   }

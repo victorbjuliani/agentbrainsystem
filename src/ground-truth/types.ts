@@ -31,6 +31,8 @@ export interface GroundTruthProvider {
   resolveSymbol(name: string, opts?: { filePath?: string }): ResolvedSymbol | null;
   /** Resolve a file by absolute path. Returns null when absent/unavailable. */
   resolveFile(filePath: string): ResolvedSymbol | null;
+  /** Current branch of the underlying repo (FR-C1), or undefined when unknown. */
+  currentBranch(): string | undefined;
   /** Release any held resources (e.g. an open SQLite handle). Safe to call twice. */
   close(): void;
 }

@@ -112,6 +112,8 @@ export interface FactAnchor {
   line?: number;
   /** Commit the verification was pinned to (`verified` anchors). */
   commitSha?: string;
+  /** Branch the anchor was last verified true on (FR-C1); undefined when unknown. */
+  branch?: string;
   state: AnchorState;
   /** ISO timestamp of the last successful verification. */
   verifiedAt?: string;
@@ -126,6 +128,7 @@ export interface CreateFactAnchorInput {
   filePath: string;
   line?: number;
   commitSha?: string;
+  branch?: string;
   /** Defaults to `claimed` when omitted. */
   state?: AnchorState;
   verifiedAt?: string;

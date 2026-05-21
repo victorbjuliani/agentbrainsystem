@@ -44,6 +44,7 @@ export function sweepAnchors(
   // Fail-open: no ground truth → nothing is verifiable, clean no-op.
   if (!provider.isAvailable()) return result;
 
+  const branch = provider.currentBranch();
   const claimed = store.listAnchorsByState('claimed', options.limit);
   for (const anchor of claimed) {
     result.processed++;
@@ -56,6 +57,7 @@ export function sweepAnchors(
       store.updateAnchorState(anchor.id, 'verified', {
         commitSha: resolved.commitSha,
         line: resolved.line,
+        branch,
       });
       result.verified++;
     } else {

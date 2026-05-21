@@ -25,6 +25,9 @@ class FakeProvider implements GroundTruthProvider {
   resolveFile(filePath: string): ResolvedSymbol | null {
     return this.files.has(filePath) ? { qualifiedName: filePath, filePath, commitSha: 'c1' } : null;
   }
+  currentBranch(): string | undefined {
+    return 'main';
+  }
   close(): void {}
 }
 

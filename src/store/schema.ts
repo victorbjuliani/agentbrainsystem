@@ -13,7 +13,7 @@
 import type { Database } from 'better-sqlite3';
 
 /** The schema version the running code expects. Bump when adding a migration. */
-export const CURRENT_SCHEMA_VERSION = 3;
+export const CURRENT_SCHEMA_VERSION = 4;
 
 /**
  * Run a multi-statement DDL/SQL batch on the connection. Thin wrapper over
@@ -131,6 +131,18 @@ export const MIGRATIONS: readonly Migration[] = [
         CREATE INDEX idx_anchors_file ON fact_anchors(file_path);
         CREATE INDEX idx_anchors_state ON fact_anchors(state);`,
       );
+    },
+  },
+  {
+    version: 4,
+    name: 'anchor-branch',
+    up(db) {
+      // Branch scoping (FR-C1): the branch the anchor was last verified true on.
+      // Set at verify/heal time from the ground-truth repo's HEAD (accurate —
+      // unlike ingest time, where the transcript does not record a per-turn
+      // branch). Recall uses it to tag cross-branch facts. Nullable: claimed
+      // anchors and offline/no-git contexts simply leave it unset.
+      runDdl(db, 'ALTER TABLE fact_anchors ADD COLUMN branch TEXT;');
     },
   },
 ];

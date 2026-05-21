@@ -28,15 +28,30 @@ function foldState(states: AnchorState[]): AnchorState | undefined {
 }
 
 /**
- * Attach `anchorState` to each hit from its observation's anchors, then reorder
- * so `stale` facts sink to the bottom (stable otherwise). Pure w.r.t. the store
- * (reads only). Returns a new array; inputs are not mutated.
+ * Attach `anchorState` (and, when `currentBranch` is supplied, `crossBranch`) to
+ * each hit from its observation's anchors, then reorder so `stale` facts sink to
+ * the bottom (stable otherwise). Pure w.r.t. the store (reads only). Returns a
+ * new array; inputs are not mutated.
+ *
+ * `crossBranch` (FR-C1, #31): set when an anchor was verified on a branch other
+ * than the current one — the fact may not hold here. Facts with no recorded
+ * branch (or no current branch) are never flagged.
  */
-export function annotateFreshness(store: MemoryStore, hits: RecallHit[]): RecallHit[] {
+export function annotateFreshness(
+  store: MemoryStore,
+  hits: RecallHit[],
+  currentBranch?: string,
+): RecallHit[] {
   const annotated = hits.map((hit) => {
     const anchors = store.getAnchorsForObservation(hit.observation.id);
     const anchorState = foldState(anchors.map((a) => a.state));
-    return anchorState ? { ...hit, anchorState } : { ...hit };
+    const crossBranch =
+      currentBranch !== undefined &&
+      anchors.some((a) => a.branch !== undefined && a.branch !== currentBranch);
+    const next: RecallHit = { ...hit };
+    if (anchorState) next.anchorState = anchorState;
+    if (crossBranch) next.crossBranch = true;
+    return next;
   });
   // Demote stale to the end while preserving relative order (stable partition).
   const fresh = annotated.filter((h) => h.anchorState !== 'stale');

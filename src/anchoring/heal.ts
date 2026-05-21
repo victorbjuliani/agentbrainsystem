@@ -41,6 +41,7 @@ function healOne(
   store: MemoryStore,
   provider: GroundTruthProvider,
   anchor: FactAnchor,
+  branch: string | undefined,
 ): HealOutcome {
   if (anchor.anchorKind === 'symbol' && anchor.qualifiedName) {
     // Same-file first: cheapest and the common case.
@@ -49,6 +50,7 @@ function healOne(
       store.updateAnchorState(anchor.id, 'verified', {
         line: here.line,
         commitSha: here.commitSha,
+        branch,
       });
       return 'ok';
     }
@@ -59,6 +61,7 @@ function healOne(
         filePath: moved.filePath,
         line: moved.line,
         commitSha: moved.commitSha,
+        branch,
       });
       return 'reanchored';
     }
@@ -68,7 +71,7 @@ function healOne(
 
   // File anchor: alive iff the file still resolves.
   if (provider.resolveFile(anchor.filePath)) {
-    store.updateAnchorState(anchor.id, 'verified', {});
+    store.updateAnchorState(anchor.id, 'verified', { branch });
     return 'ok';
   }
   store.updateAnchorState(anchor.id, 'stale');
@@ -81,9 +84,10 @@ function tally(
   anchors: FactAnchor[],
 ): HealResult {
   const result: HealResult = { ...EMPTY };
+  const branch = provider.currentBranch();
   for (const anchor of anchors) {
     result.processed++;
-    const outcome = healOne(store, provider, anchor);
+    const outcome = healOne(store, provider, anchor, branch);
     result[outcome]++;
   }
   return result;

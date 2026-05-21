@@ -10,6 +10,7 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
+import { currentBranch } from './git.js';
 import type { GroundTruthProvider, ResolvedSymbol } from './types.js';
 
 const SYMBOL_KINDS = "('Function', 'Class', 'Test', 'Type')";
@@ -88,6 +89,10 @@ export class CodeReviewGraphProvider implements GroundTruthProvider {
     } catch {
       return null;
     }
+  }
+
+  currentBranch(): string | undefined {
+    return currentBranch(this.repoRoot);
   }
 
   resolveFile(filePath: string): ResolvedSymbol | null {

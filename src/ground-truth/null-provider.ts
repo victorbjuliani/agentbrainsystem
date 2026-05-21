@@ -18,6 +18,10 @@ export class NullGroundTruthProvider implements GroundTruthProvider {
     return null;
   }
 
+  currentBranch(): string | undefined {
+    return undefined;
+  }
+
   close(): void {
     // nothing to release
   }

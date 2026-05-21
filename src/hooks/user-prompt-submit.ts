@@ -17,6 +17,7 @@
  */
 
 import { verifyOnRecall } from '../anchoring/index.js';
+import { currentBranch } from '../ground-truth/git.js';
 import { createGroundTruthProvider } from '../ground-truth/index.js';
 import type { Memory } from '../memory.js';
 import { openMemory } from '../memory.js';
@@ -76,7 +77,8 @@ export function renderRecallBlock(hits: RecallHit[]): string {
     seen.add(key);
 
     const kind = hit.observation.kind;
-    const line = `- [${kind}${freshnessTag(hit.anchorState)}] ${content.replace(/\s+/g, ' ')}`;
+    const branchTag = hit.crossBranch ? ' ⎇other-branch' : '';
+    const line = `- [${kind}${freshnessTag(hit.anchorState)}${branchTag}] ${content.replace(/\s+/g, ' ')}`;
     // Stop once adding this line would blow the budget (keep at least one line).
     if (items.length > 0 && used + line.length > CHAR_BUDGET) break;
     items.push(line.length > CHAR_BUDGET ? `${line.slice(0, CHAR_BUDGET - 1)}…` : line);
@@ -106,8 +108,9 @@ async function recallFromStore(prompt: string): Promise<RecallHit[]> {
     } finally {
       provider.close();
     }
-    // Label each hit with its (now-healed) ground-truth freshness; demote stale.
-    return annotateFreshness(memory.store, hits);
+    // Label each hit with its (now-healed) ground-truth freshness; demote stale;
+    // flag facts verified on another branch (FR-C1).
+    return annotateFreshness(memory.store, hits, currentBranch(process.cwd()));
   } finally {
     memory.close();
   }
