@@ -96,19 +96,42 @@ function asString(value: unknown): string | undefined {
 }
 
 /**
+ * Harness-injected wrappers that ride along inside a user turn but are NOT the
+ * human's prose (#36): the system-reminder Claude Code appends, and the
+ * slash-command / local-command echo. We strip these whole blocks so recall and
+ * consolidation see what the user actually wrote, not the injected payload.
+ *
+ * Skill injection ("Base directory for this skill: …<body>…") is deliberately
+ * NOT handled here: there is no machine-readable boundary between the injected
+ * skill body and the user's appended args, so it needs its own design (#38).
+ */
+const INJECTED_WRAPPER =
+  /<(system-reminder|command-name|command-message|command-args|command-contents|local-command-stdout|local-command-caveat)>[\s\S]*?<\/\1>/g;
+
+/** Remove injected wrappers and collapse the whitespace they leave behind. */
+function stripInjectedWrappers(text: string): string {
+  return text
+    .replace(INJECTED_WRAPPER, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+/**
  * Pull the readable text out of a `message.content`, which is either a string
  * or an array of content blocks. Returns the trimmed join, or '' when there is
- * nothing extractable (tool-only / thinking-only / empty).
+ * nothing extractable (tool-only / thinking-only / empty / injected-only).
  */
 function extractText(content: unknown): string {
-  if (typeof content === 'string') return content.trim();
+  if (typeof content === 'string') return stripInjectedWrappers(content);
   if (!Array.isArray(content)) return '';
   const parts: string[] = [];
   for (const block of content) {
     if (!isRecord(block)) continue;
     if (block.type !== 'text') continue; // skip thinking / tool_use / tool_result
     const text = asString(block.text);
-    if (text && text.trim().length > 0) parts.push(text.trim());
+    if (text === undefined) continue;
+    const cleaned = stripInjectedWrappers(text);
+    if (cleaned.length > 0) parts.push(cleaned);
   }
   return parts.join('\n\n').trim();
 }
