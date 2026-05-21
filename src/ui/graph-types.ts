@@ -52,8 +52,13 @@ export interface GraphEdge {
 
 /** The resolved scope the backend actually rendered (after clamping to caps). */
 export interface GraphScope {
-  /** `session` = one session's observations; `topN` = most-recent observations store-wide. */
-  mode: 'session' | 'topN';
+  /**
+   * `session` = one session's observations; `topN` = most-recent observations
+   * store-wide; `search` = FTS matches store-wide (#35). Additive: an old client
+   * that never sends `search` never sees this mode, so the wire shape stays
+   * backward-compatible and GRAPH_CONTRACT_VERSION does not bump.
+   */
+  mode: 'session' | 'topN' | 'search';
   /** Present in `session` mode: the session whose subgraph was rendered. */
   sessionId?: number;
   /** Node budget actually applied (clamped to NODE_CAP). */
@@ -96,4 +101,11 @@ export interface GraphQuery {
   limit?: number;
   /** Compute similarity edges from stored vectors. */
   similarity?: boolean;
+  /**
+   * Free-text search (#35). When present and non-empty, switches to `search` mode:
+   * the backend resolves matches store-wide via FTS (`toFtsQuery` → `searchFts`),
+   * so a query reaches observations OUTSIDE the recency/scope window. Takes
+   * precedence over `session`/`topN`.
+   */
+  search?: string;
 }

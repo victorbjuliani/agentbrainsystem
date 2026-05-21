@@ -3,8 +3,8 @@
  * top-bar that eats the canvas — they float with backdrop-blur over the graph.
  *
  * Pieces:
- *   - Type-filter pills (colored by taxonomy; reserved types marked "pós-#12").
- *   - Search input (mono) that highlights matches and dims the rest.
+ *   - Type-filter pills (colored by taxonomy; dimmed when absent from the payload).
+ *   - Search input (mono) driving a store-wide server search (#35).
  *   - Scope controls: session dropdown / topN toggle + similarity-edges toggle.
  *   - Inspector (on select): compact mono metadata panel, glow-md surface.
  *   - Theme toggle (dark/light).
@@ -42,8 +42,6 @@ export interface Overlays {
   showInspector(node: ViewNode | null): void;
   setTheme(theme: Theme): void;
 }
-
-const RESERVED_NOTE = 'pós-#12';
 
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -95,6 +93,15 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
   let similarity = false;
 
   function emitScope(): void {
+    // A scope change exits search (#35): clear the box so it never shows a stale
+    // query against a non-search payload, and hide its delete affordance. Cancel
+    // any pending search debounce so a timer mid-flight can't fire a redundant
+    // onSearch('') after we've already blanked the input.
+    window.clearTimeout(searchDebounce);
+    if (searchInput.value !== '') {
+      searchInput.value = '';
+      searchDeleteBtn.hidden = true;
+    }
     const sel = sessionSelect.value;
     cb.onScopeChange({
       mode,
@@ -109,7 +116,11 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
     emitScope();
   });
   topNBtn.addEventListener('click', () => {
-    mode = mode === 'topN' ? 'session' : 'topN';
+    // Toggle off the VISIBLE button state, not the internal `mode` — a search
+    // unpresses the button via syncFromData while leaving `mode` stale, so reading
+    // `mode` here would mis-toggle (topN→session) when exiting search (#42 P2).
+    const pressed = topNBtn.getAttribute('aria-pressed') === 'true';
+    mode = pressed ? 'session' : 'topN';
     topNBtn.setAttribute('aria-pressed', String(mode === 'topN'));
     emitScope();
   });
@@ -192,28 +203,19 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
       'button',
       {
         type: 'button',
-        class: `pill${meta.reserved ? ' pill-reserved' : ''}`,
+        class: 'pill',
         'data-type': meta.type,
-        'aria-pressed': meta.reserved ? 'false' : 'true',
+        'aria-pressed': 'true',
         'aria-label': `Filtrar nós do tipo ${meta.label}`,
-        ...(meta.reserved
-          ? { disabled: '', title: `Aparece após consolidação (${RESERVED_NOTE})` }
-          : {}),
       },
-      [
-        swatch,
-        el('span', { class: 'pill-label' }, [meta.label]),
-        ...(meta.reserved ? [el('span', { class: 'pill-note' }, [RESERVED_NOTE])] : []),
-      ],
+      [swatch, el('span', { class: 'pill-label' }, [meta.label])],
     );
-    if (!meta.reserved) {
-      pill.addEventListener('click', () => {
-        const next = pill.getAttribute('aria-pressed') !== 'true';
-        pill.setAttribute('aria-pressed', String(next));
-        cb.onToggleType(meta.type, next);
-      });
-      pillMap.set(meta.type, pill as HTMLButtonElement);
-    }
+    pill.addEventListener('click', () => {
+      const next = pill.getAttribute('aria-pressed') !== 'true';
+      pill.setAttribute('aria-pressed', String(next));
+      cb.onToggleType(meta.type, next);
+    });
+    pillMap.set(meta.type, pill as HTMLButtonElement);
     return pill;
   });
   const legend = el(
@@ -295,7 +297,19 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
     ]),
   ]);
 
-  root.append(topLeft, topRight, legend, inspector, emptyState);
+  // --- Zero-node state (#35/#43) — distinct from "memory is empty" ----------
+  // A populated store that resolves to zero nodes must NOT read as "empty store".
+  // Two flavours: a 0-hit search, or a non-search scope that resolves nothing
+  // (e.g. a deleted/missing session id) — both get guidance, never a blank canvas.
+  const noResultsTitle = el('h1', { class: 'empty-title' }, ['nenhum resultado']);
+  const noResultsSub = el('p', { class: 'empty-sub' }, ['nenhuma memória corresponde à busca']);
+  const noResults = el('div', { id: 'no-results', class: 'empty', hidden: '' }, [
+    el('div', { class: 'empty-glyph', 'aria-hidden': 'true' }, ['⌕']),
+    noResultsTitle,
+    noResultsSub,
+  ]);
+
+  root.append(topLeft, topRight, legend, inspector, emptyState, noResults);
 
   return {
     syncFromData(data: GraphData, sessions: SessionOption[]): void {
@@ -330,8 +344,20 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
         truncBanner.hidden = true;
       }
 
-      // Empty state.
-      emptyState.hidden = !meta.emptyStore && data.nodes.length > 0;
+      // Empty state: ONLY when the store itself is empty. A populated store that
+      // resolves to zero nodes gets the distinct zero-node state instead — for a
+      // 0-hit search OR a non-search scope that resolves nothing (e.g. a missing
+      // session id), so the user never faces a silent blank canvas (#35/#43).
+      const zeroOnPopulated = data.nodes.length === 0 && !meta.emptyStore;
+      emptyState.hidden = !meta.emptyStore;
+      noResults.hidden = !zeroOnPopulated;
+      if (zeroOnPopulated) {
+        const searching = data.scope.mode === 'search';
+        noResultsTitle.textContent = searching ? 'nenhum resultado' : 'escopo vazio';
+        noResultsSub.textContent = searching
+          ? 'nenhuma memória corresponde à busca'
+          : 'nenhum nó neste escopo — tente outra sessão ou top 200';
+      }
     },
     showInspector(node: ViewNode | null): void {
       if (!node) {

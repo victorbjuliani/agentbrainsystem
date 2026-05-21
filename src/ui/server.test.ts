@@ -9,7 +9,12 @@ import { MemoryStore } from '../store/index.js';
 import { NODE_CAP } from './graph.js';
 import type { GraphData } from './graph-types.js';
 import { GRAPH_CONTRACT_VERSION } from './graph-types.js';
-import { __csrfTokenForTests, createUiServer, parseDeleteSelector } from './server.js';
+import {
+  __csrfTokenForTests,
+  createUiServer,
+  parseDeleteSelector,
+  parseGraphQuery,
+} from './server.js';
 
 const DIM = 8;
 
@@ -104,6 +109,30 @@ describe('createUiServer (HTTP contract)', () => {
     expect(r.headers.get('content-security-policy')).toBe("default-src 'self'");
     expect(r.headers.get('x-content-type-options')).toBe('nosniff');
     expect(r.headers.get('x-frame-options')).toBe('DENY');
+  });
+});
+
+// --- Graph query parsing (#35) ----------------------------------------------
+
+describe('parseGraphQuery', () => {
+  const parse = (qs: string) => parseGraphQuery(new URLSearchParams(qs));
+
+  it('parses session/topN/limit/similarity', () => {
+    expect(parse('session=7')).toEqual({ session: 7 });
+    expect(parse('topN=200')).toEqual({ topN: 200 });
+    expect(parse('limit=50')).toEqual({ limit: 50 });
+    expect(parse('similarity=1')).toEqual({ similarity: true });
+  });
+
+  it('reads a non-empty search param (#35)', () => {
+    expect(parse('search=unicorn')).toEqual({ search: 'unicorn' });
+    expect(parse('search=hello%20world')).toEqual({ search: 'hello world' });
+  });
+
+  it('drops an empty / whitespace-only search so it never shadows the scope', () => {
+    expect(parse('search=').search).toBeUndefined();
+    expect(parse('search=%20%20').search).toBeUndefined();
+    expect(parse('topN=200&search=')).toEqual({ topN: 200 });
   });
 });
 

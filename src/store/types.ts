@@ -62,6 +62,12 @@ export interface CreateObservationInput {
 export interface ListObservationsOptions {
   sessionId?: number;
   kind?: string;
+  /**
+   * Restrict to observations whose `kind` is one of these values (SQL `kind IN`).
+   * Empty array is treated as "no filter". Composes with every other option; used
+   * by the UI graph to PIN consolidated types (`lesson`/`decision`) into view (#35).
+   */
+  kinds?: readonly string[];
   limit?: number;
   /**
    * Keyset cursor: return only rows with `id > afterId`. Combined with `order:'asc'`
