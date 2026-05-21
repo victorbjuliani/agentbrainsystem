@@ -3,7 +3,7 @@
 > Documento canônico de identidade visual. Lido por `frontend-design`, `frontend-auditor`, `vercel:shadcn`.
 > Atualizar via `design-discovery` em modo REFRESH quando references mudarem.
 
-**Última atualização:** 2026-05-21 (#35: `lesson`/`decision` deixam de ser reservados — pills habilitam quando presentes, nós fixados em view via `mergePinnedConsolidated`, e busca server-side por FTS (`mode:'search'`) os alcança store-wide)
+**Última atualização:** 2026-05-21 (#35/#43: `lesson`/`decision` deixam de ser reservados — pills habilitam quando presentes, nós fixados em view via `mergePinnedConsolidated`; busca server-side por FTS (`mode:'search'`) os alcança store-wide, substituindo o highlight client-side; escopo da UI revisado para refletir o write-path de delete gated, ADR-0007)
 **Modo de captura:** initial + refresh parcial (§4/§11)
 **Status do recon:** completo (Obsidian, Observable, Neo4j Bloom — tokens computados extraídos via agent-browser)
 **Escopo primário:** issue #11 — UI localhost de grafo interativo (read-only) da memória do agente.
@@ -61,7 +61,7 @@ Dark-first (o grafo brilha no escuro) com **light toggle** desde o MVP. Os três
 
 ### Node accents (semantic — mapeiam tipo de nó ao enum `kind` real do store)
 
-A taxonomia segue o que **existe nos dados hoje**: um nó `session` (hub/container) e nós `observation` coloridos por `kind`. `concept`/`lesson` populados dependem da consolidação LLM (issue #12) — ficam **reservados** até lá (ver nota).
+A taxonomia segue o que **existe nos dados hoje**: um nó `session` (hub/container) e nós `observation` coloridos por `kind`. `lesson`/`decision` são populados pela consolidação LLM (issue #12); desde #35 deixaram de ser reservados — a pill habilita quando há nós desses tipos e eles são fixados em view (ver nota).
 
 | Token | Mapeia | Hex | Status MVP (#11) |
 |---|---|---|---|
@@ -274,9 +274,9 @@ Spec específica do grafo — o que `frontend-design` constrói e `frontend-audi
 ### Overlays / chrome (mínimos, flutuantes)
 - **Inspector de nó** (ao selecionar): painel lateral compact, surface `--neutral-800` (dark) com hairline luminoso e `--glow-md`. Mostra metadados crus em mono.
 - **Filtros por tipo:** pills (full radius) coloridas pela taxonomia, canto superior; toggle on/off de tipos.
-- **Search/recall:** input mono que destaca (glow + spring) os nós correspondentes e esmaece o resto.
+- **Search/recall:** input mono que dispara uma busca **server-side store-wide** (FTS, `mode:'search'`) — alcança nós fora da janela de recência/escopo e renderiza só os matches (#35). Sem hit, mostra estado "nenhum resultado" distinto do "memory is empty".
 - **Theme toggle** dark/light.
 - Controles flutuam sobre o canvas com leve `backdrop-blur` — nunca uma top-bar opaca que come o canvas.
 
-### Read-only (escopo MVP)
-Sem edição de memória pela UI, sem auth, sem hosting (out of scope do #11). Interação = explorar: hover, select, zoom/pan, filtrar, buscar.
+### Escopo da UI
+Read-only por padrão (explorar: hover, select, zoom/pan, filtrar, buscar), sem auth e sem hosting (localhost-only). A única exceção de escrita é o **hard-delete seletivo** via UI (preview → confirmar), gated por CSRF token + allowlist de Host/Origin + confirmação de handle — ver ADR-0007.
