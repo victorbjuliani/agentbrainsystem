@@ -14,14 +14,20 @@ class FakeProvider implements GroundTruthProvider {
   constructor(
     private readonly symbols: Record<string, ResolvedSymbol>,
     private readonly files: Set<string>,
+    /** Names that resolve to MORE than one location (homonyms). */
+    private readonly ambiguous: Set<string> = new Set(),
   ) {}
   isAvailable(): boolean {
     return true;
   }
-  resolveSymbol(name: string, opts: { filePath?: string } = {}): ResolvedSymbol | null {
+  resolveSymbol(
+    name: string,
+    opts: { filePath?: string; unique?: boolean } = {},
+  ): ResolvedSymbol | null {
     const hit = this.symbols[name];
     if (!hit) return null;
     if (opts.filePath && opts.filePath !== hit.filePath) return null; // not at that file
+    if (opts.unique && this.ambiguous.has(name)) return null; // ambiguous → refuse
     return hit;
   }
   resolveFile(filePath: string): ResolvedSymbol | null {
@@ -86,6 +92,29 @@ describe('self-healing (#28)', () => {
     const a = store.findAnchorsBySymbol('foo')[0];
     expect(a?.state).toBe('verified');
     expect(a?.filePath).toBe('/r/new.ts');
+  });
+
+  it('does NOT re-anchor to a homonym — ambiguous name goes stale (Codex P1)', () => {
+    // `helper` was verified in old.ts; old.ts no longer has it, and `helper`
+    // now exists in MULTIPLE other files. Re-anchoring would bind to an unrelated
+    // homonym, so the fact must go stale instead.
+    store.createAnchor({
+      observationId: obsId,
+      anchorKind: 'symbol',
+      qualifiedName: 'helper',
+      filePath: '/r/old.ts',
+      state: 'verified',
+    });
+    const provider = new FakeProvider(
+      { helper: { qualifiedName: 'helper', filePath: '/r/elsewhere.ts', line: 1 } },
+      new Set(),
+      new Set(['helper']), // homonym: resolves to >1 location
+    );
+    const res = healAnchors(store, provider);
+    expect(res).toMatchObject({ reanchored: 0, staled: 1 });
+    const a = store.findAnchorsBySymbol('helper')[0];
+    expect(a?.state).toBe('stale');
+    expect(a?.filePath).toBe('/r/old.ts'); // not moved to the homonym
   });
 
   it('marks stale when the symbol no longer resolves anywhere (remove)', () => {

@@ -61,7 +61,10 @@ export class CodeReviewGraphProvider implements GroundTruthProvider {
     return this.conn() !== null;
   }
 
-  resolveSymbol(name: string, opts: { filePath?: string } = {}): ResolvedSymbol | null {
+  resolveSymbol(
+    name: string,
+    opts: { filePath?: string; unique?: boolean } = {},
+  ): ResolvedSymbol | null {
     const db = this.conn();
     if (!db) return null;
     try {
@@ -71,15 +74,20 @@ export class CodeReviewGraphProvider implements GroundTruthProvider {
         fileClause = ' AND file_path = ?';
         params.push(opts.filePath);
       }
-      const row = db
+      // LIMIT 2 so we can detect ambiguity for the `unique` caller without
+      // scanning every match.
+      const rows = db
         .prepare(
           `SELECT qualified_name, file_path, line_start
            FROM nodes
            WHERE name = ? AND kind IN ${SYMBOL_KINDS}${fileClause}
-           LIMIT 1`,
+           LIMIT 2`,
         )
-        .get(...params) as NodeRow | undefined;
-      if (!row) return null;
+        .all(...params) as NodeRow[];
+      if (rows.length === 0) return null;
+      // Ambiguous bare-name match: refuse rather than guess a homonym.
+      if (opts.unique && rows.length > 1) return null;
+      const row = rows[0] as NodeRow;
       return {
         qualifiedName: row.qualified_name,
         filePath: row.file_path,

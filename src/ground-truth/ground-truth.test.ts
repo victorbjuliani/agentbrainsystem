@@ -90,6 +90,22 @@ describe('GroundTruthProvider', () => {
       expect(p.resolveSymbol('foo')).toBeNull();
       p.close();
     });
+
+    it('refuses an ambiguous bare-name match under unique (Codex P1)', () => {
+      // Two `dup` symbols in different files.
+      const graphDir = join(repoRoot, '.code-review-graph');
+      const db = new Database(join(graphDir, 'graph.db'));
+      const ins = db.prepare(
+        'INSERT INTO nodes (id, kind, name, qualified_name, file_path, line_start) VALUES (?, ?, ?, ?, ?, ?)',
+      );
+      ins.run(10, 'Function', 'dup', 'a.dup', '/repo/src/a.ts', 1);
+      ins.run(11, 'Function', 'dup', 'b.dup', '/repo/src/b.ts', 2);
+      db.close();
+      const p = new CodeReviewGraphProvider(repoRoot);
+      expect(p.resolveSymbol('dup', { unique: true })).toBeNull(); // ambiguous → null
+      expect(p.resolveSymbol('dup')).not.toBeNull(); // non-unique still returns first
+      p.close();
+    });
   });
 
   describe('factory', () => {
@@ -107,6 +123,16 @@ describe('GroundTruthProvider', () => {
       const root = mkdtempSync(join(tmpdir(), 'abs-gt-factory-'));
       seedGraph(root);
       expect(createGroundTruthProvider(root)).toBeInstanceOf(CodeReviewGraphProvider);
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it('discovers the graph from a parent directory (Codex P2)', () => {
+      const root = mkdtempSync(join(tmpdir(), 'abs-gt-factory-'));
+      seedGraph(root);
+      const deep = join(root, 'packages', 'app', 'src');
+      mkdirSync(deep, { recursive: true });
+      // Called from a subdirectory: still finds the graph at the repo root.
+      expect(createGroundTruthProvider(deep)).toBeInstanceOf(CodeReviewGraphProvider);
       rmSync(root, { recursive: true, force: true });
     });
   });

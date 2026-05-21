@@ -54,8 +54,11 @@ function healOne(
       });
       return 'ok';
     }
-    // Moved? Resolve the symbol without the file hint (rename/relocation).
-    const moved = provider.resolveSymbol(anchor.qualifiedName);
+    // Moved? Resolve the symbol without the file hint (rename/relocation), but
+    // require a UNIQUE match: anchors seed unqualified names (e.g. `helper`), so
+    // re-anchoring to any same-named symbol could bind to an unrelated homonym
+    // and mislabel an obsolete fact as verified. Ambiguous → fall through to stale.
+    const moved = provider.resolveSymbol(anchor.qualifiedName, { unique: true });
     if (moved) {
       store.reanchorAnchor(anchor.id, {
         filePath: moved.filePath,

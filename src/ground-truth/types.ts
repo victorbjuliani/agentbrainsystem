@@ -25,10 +25,16 @@ export interface GroundTruthProvider {
   isAvailable(): boolean;
   /**
    * Resolve a symbol by name. Pass `filePath` to disambiguate when the same
-   * name exists in several files. Returns null when not found OR unavailable —
-   * never throws (fail-open).
+   * name exists in several files. Pass `unique: true` to require an unambiguous
+   * match — when the bare name resolves to more than one location the result is
+   * null (used by self-healing's move path so a deleted symbol is never
+   * re-anchored onto an unrelated homonym). Returns null when not found, when
+   * ambiguous under `unique`, OR when unavailable — never throws (fail-open).
    */
-  resolveSymbol(name: string, opts?: { filePath?: string }): ResolvedSymbol | null;
+  resolveSymbol(
+    name: string,
+    opts?: { filePath?: string; unique?: boolean },
+  ): ResolvedSymbol | null;
   /** Resolve a file by absolute path. Returns null when absent/unavailable. */
   resolveFile(filePath: string): ResolvedSymbol | null;
   /** Current branch of the underlying repo (FR-C1), or undefined when unknown. */
