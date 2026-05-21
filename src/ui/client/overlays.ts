@@ -148,7 +148,8 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
     {
       type: 'button',
       class: 'control toggle search-delete',
-      'aria-label': 'Excluir as memórias que correspondem à busca',
+      'aria-label':
+        'Excluir as memórias previstas pela busca (conjunto limitado, não tudo que corresponde)',
       hidden: '',
     },
     ['excluir busca'],

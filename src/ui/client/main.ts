@@ -118,10 +118,18 @@ async function main(): Promise<void> {
       }
       const ok = await confirmDelete(previewResult, summary);
       if (!ok) return;
-      await executeDelete(previewResult.handle);
+      const result = await executeDelete(previewResult.handle);
       renderer.select(null);
       overlays.showInspector(null);
       await load(); // refresh the graph so the deleted nodes disappear
+      // H1: confirm the positive outcome (don't drop notFound). Announced politely.
+      const n = result.deleted.length;
+      let msg = `excluídas ${n} ${n === 1 ? 'memória' : 'memórias'}`;
+      if (result.notFound.length > 0) {
+        const m = result.notFound.length;
+        msg += ` · ${m} já não ${m === 1 ? 'existia' : 'existiam'}`;
+      }
+      showStatus(msg);
     } catch (err) {
       if (err instanceof StaleTokenError) return; // page is reloading for a fresh token
       showError(err instanceof Error ? err.message : String(err));
@@ -200,6 +208,25 @@ async function main(): Promise<void> {
       banner.textContent = message;
       banner.hidden = false;
     }
+  }
+
+  /**
+   * Announce a positive outcome (a successful delete) via the polite aria-live
+   * region, and auto-dismiss it after a few seconds. Clears any prior error banner
+   * so a success doesn't sit beside a stale failure.
+   */
+  let statusTimer = 0;
+  function showStatus(message: string): void {
+    const errBanner = document.getElementById('error-banner');
+    if (errBanner) errBanner.hidden = true;
+    const banner = document.getElementById('status-banner');
+    if (!banner) return;
+    banner.textContent = message;
+    banner.hidden = false;
+    window.clearTimeout(statusTimer);
+    statusTimer = window.setTimeout(() => {
+      banner.hidden = true;
+    }, 6000);
   }
 
   async function load(): Promise<void> {

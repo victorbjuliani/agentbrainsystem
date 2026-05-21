@@ -210,9 +210,12 @@ export function createMcpServer(memory: Memory): McpServer {
       inputSchema: {
         ids: z
           .array(z.number().int().positive())
+          .min(1)
           .max(10_000)
           .optional()
-          .describe('Explicit observation ids to delete (max 10000).'),
+          // `.min(1)`: an empty `ids:[]` must hard-error like the CLI/UI, not silently
+          // resolve to a count-0 selector that looks like a valid (no-op) delete.
+          .describe('Explicit observation ids to delete (1–10000).'),
         session: z
           .number()
           .int()

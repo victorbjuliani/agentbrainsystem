@@ -147,20 +147,69 @@ function el<K extends keyof HTMLElementTagNameMap>(
  */
 export function confirmDelete(preview: PreviewResult, summary: string): Promise<boolean> {
   return new Promise((resolve) => {
+    // a11y (ADR-0008): a destructive, irreversible action must (1) trap focus inside
+    // the dialog so Tab can't reach the graph chrome behind the aria-modal surface,
+    // (2) focus the SAFE action (Cancel) on open so a reflexive Enter cancels rather
+    // than deletes, and (3) return focus to the trigger on close. Title/count are
+    // wired via aria-labelledby; the scope summary + irreversibility warning via
+    // aria-describedby, so a screen reader announces WHAT and that it cannot be undone.
+    const titleId = 'delete-title';
+    const countId = 'delete-count';
+    const summaryId = 'delete-summary';
+    const warnId = 'delete-warn';
+
+    // B3: remember what had focus so we can restore it when the dialog closes.
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+
     const backdrop = el('div', {
       class: 'delete-backdrop',
       role: 'dialog',
       'aria-modal': 'true',
-      'aria-label': 'Confirmar exclusão de memória',
+      'aria-labelledby': `${titleId} ${countId}`,
+      'aria-describedby': `${summaryId} ${warnId}`,
     });
 
     const close = (ok: boolean): void => {
       backdrop.remove();
       document.removeEventListener('keydown', onKey);
+      // B3: return focus to the trigger (trash / "excluir busca") if it's still around.
+      if (previouslyFocused && document.contains(previouslyFocused)) previouslyFocused.focus();
       resolve(ok);
     };
+
+    // B1: focusable elements inside the dialog, in DOM order, for the Tab trap.
+    const focusables = (): HTMLElement[] =>
+      Array.from(
+        backdrop.querySelectorAll<HTMLElement>(
+          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter((node) => !node.hasAttribute('disabled'));
+
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') close(false);
+      if (e.key === 'Escape') {
+        close(false);
+        return;
+      }
+      // B1: cycle Tab/Shift+Tab between the first and last focusable so focus never
+      // escapes the modal into the graph chrome behind it.
+      if (e.key === 'Tab') {
+        const items = focusables();
+        const first = items[0];
+        const last = items[items.length - 1];
+        if (!first || !last) return;
+        const active = document.activeElement;
+        if (e.shiftKey && active === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && active === last) {
+          e.preventDefault();
+          first.focus();
+        } else if (!backdrop.contains(active)) {
+          // Focus drifted out (e.g. nothing focused yet) — pull it back in.
+          e.preventDefault();
+          first.focus();
+        }
+      }
     };
     document.addEventListener('keydown', onKey);
     backdrop.addEventListener('click', (e) => {
@@ -172,14 +221,32 @@ export function confirmDelete(preview: PreviewResult, summary: string): Promise<
       list.append(
         el('li', { class: 'delete-item' }, [
           el('span', { class: 'delete-item-kind', 'data-type': item.kind }, [item.kind]),
-          el('span', { class: 'delete-item-snippet' }, [item.snippet]),
+          // M3: the snippet is truncated with ellipsis — expose the full text on hover
+          // so the user can see what they're about to irreversibly delete.
+          el('span', { class: 'delete-item-snippet', title: item.snippet }, [item.snippet]),
         ]),
       );
     }
     const more = preview.items.length - Math.min(preview.items.length, 12);
     const extra = more > 0 ? [el('li', { class: 'delete-more' }, [`…and ${more} more`])] : [];
 
-    const cancelBtn = el('button', { type: 'button', class: 'control toggle' }, ['cancelar']);
+    // L1: surface the preview's own notFound (ids that no longer exist) so the dialog
+    // doesn't silently drop them — the count above already excludes them.
+    if (preview.notFound.length > 0) {
+      extra.push(
+        el('li', { class: 'delete-notfound' }, [
+          `${preview.notFound.length} ${preview.notFound.length === 1 ? 'id' : 'ids'} já não ${
+            preview.notFound.length === 1 ? 'existe' : 'existem'
+          } (ignorado${preview.notFound.length === 1 ? '' : 's'})`,
+        ]),
+      );
+    }
+
+    // M1 + B2: Cancel is the calm default (and gets initial focus); the destructive
+    // confirm stays distinct (danger-colored) but is NOT styled as the focal primary.
+    const cancelBtn = el('button', { type: 'button', class: 'control toggle delete-cancel' }, [
+      'cancelar',
+    ]);
     const confirmBtn = el('button', { type: 'button', class: 'control delete-confirm' }, [
       `excluir ${preview.count}`,
     ]);
@@ -188,19 +255,20 @@ export function confirmDelete(preview: PreviewResult, summary: string): Promise<
 
     const dialog = el('div', { class: 'delete-dialog overlay' }, [
       el('header', { class: 'delete-head' }, [
-        el('span', { class: 'delete-title' }, ['excluir memória']),
-        el('span', { class: 'delete-count' }, [
+        el('span', { class: 'delete-title', id: titleId }, ['excluir memória']),
+        el('span', { class: 'delete-count', id: countId }, [
           `${preview.count} ${preview.count === 1 ? 'item' : 'itens'}`,
         ]),
       ]),
-      el('p', { class: 'delete-summary' }, [summary]),
+      el('p', { class: 'delete-summary', id: summaryId }, [summary]),
       el('ul', { class: 'delete-list-wrap' }, [list, ...extra]),
-      el('p', { class: 'delete-warn' }, ['Exclusão permanente e irreversível.']),
+      el('p', { class: 'delete-warn', id: warnId }, ['Exclusão permanente e irreversível.']),
       el('div', { class: 'delete-actions' }, [cancelBtn, confirmBtn]),
     ]);
 
     backdrop.append(dialog);
     document.body.append(backdrop);
-    confirmBtn.focus();
+    // B2: focus the SAFE action, never the destructive one.
+    cancelBtn.focus();
   });
 }

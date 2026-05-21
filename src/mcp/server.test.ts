@@ -114,6 +114,19 @@ describe('MCP server', () => {
     expect(many.error).toMatch(/exactly one selector/i);
   });
 
+  it('forget_preview rejects an empty ids array (parity with CLI/UI hard-error)', async () => {
+    const client = await connectedClient();
+    // `ids:[]` must NOT silently resolve to a count-0 no-op selector; the `.min(1)`
+    // schema rejects it at the boundary the way CLI (`--ids requires at least one id`)
+    // and the UI do. The MCP SDK surfaces a schema violation as an isError result.
+    const res = (await client.callTool({
+      name: 'forget_preview',
+      arguments: { ids: [] },
+    })) as { isError?: boolean; content: Array<{ text: string }> };
+    expect(res.isError).toBe(true);
+    expect(res.content[0]?.text).toMatch(/validation|too_small|>=1/i);
+  });
+
   it('remember persists and recall finds it via MCP', async () => {
     const client = await connectedClient();
 

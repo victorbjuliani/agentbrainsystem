@@ -70,6 +70,12 @@
   --radius-lg: 16px;
   --radius-full: 9999px;
 
+  /* --- Danger (destructive delete; ADR-0008) --- */
+  /* Dark default: luminous red reads on the deep void. Light theme overrides this
+     to a deeper red so the irreversibility warning clears WCAG AA (≥4.5:1) on the
+     pale surface. One token — dialog + banner + affordances never drift. */
+  --danger: #f87171;
+
   /* --- Motion (DESIGN §9) --- */
   --ease-primary: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
@@ -125,6 +131,9 @@
   --elevation: 0 4px 12px -2px rgba(20, 16, 27, 0.1);
   --elevation-lg: 0 12px 32px -6px rgba(20, 16, 27, 0.14);
   --vignette: none;
+  /* Deeper red so the irreversibility warning + danger text clear WCAG AA on the
+     pale surface (#dc2626 on #ffffff ≈ 4.5:1; the light #f87171 fails). */
+  --danger: #dc2626;
 }
 
 * {
@@ -571,9 +580,28 @@ body {
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   color: var(--neutral-50);
-  background: color-mix(in oklab, #f87171 30%, var(--surface-solid));
-  border: 1px solid #f87171;
+  background: color-mix(in oklab, var(--danger) 30%, var(--surface-solid));
+  border: 1px solid var(--danger);
   border-radius: var(--radius-base);
+  pointer-events: auto;
+}
+
+/* Polite success channel (e.g. "excluídas N memórias") — calm, on-brand violet,
+   sits where the error banner does but reads as a confirmation, not an alarm. */
+.status-banner {
+  position: absolute;
+  bottom: var(--space-4);
+  right: var(--space-4);
+  margin: 0;
+  max-width: 24rem;
+  padding: var(--space-3) var(--space-4);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--fg);
+  background: color-mix(in oklab, var(--violet-500) 16%, var(--surface-solid));
+  border: 1px solid color-mix(in oklab, var(--violet-500) 45%, var(--surface-solid));
+  border-radius: var(--radius-base);
+  box-shadow: var(--elevation);
   pointer-events: auto;
 }
 
@@ -641,16 +669,15 @@ body {
 .inspect-delete,
 .search-delete,
 .delete-confirm {
-  --danger: #f87171;
   color: var(--danger);
 }
 
 .inspect-delete:hover {
-  background: color-mix(in oklab, #f87171 18%, transparent);
+  background: color-mix(in oklab, var(--danger) 18%, transparent);
 }
 
 .search-delete {
-  border-color: color-mix(in oklab, #f87171 38%, var(--surface-solid));
+  border-color: color-mix(in oklab, var(--danger) 38%, var(--surface-solid));
 }
 
 /* Modal backdrop: dims the void, centers the dialog above all overlays. */
@@ -694,7 +721,7 @@ body {
 .delete-count {
   font-family: var(--font-mono);
   font-size: var(--text-sm);
-  color: #f87171;
+  color: var(--danger);
 }
 
 .delete-summary {
@@ -750,8 +777,16 @@ body {
 
 .delete-warn {
   font-size: var(--text-xs);
-  color: #f87171;
+  color: var(--danger);
   font-weight: 600;
+}
+
+/* L1: ids that no longer exist (preview notFound) — muted, never alarming. */
+.delete-notfound {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+  padding-top: var(--space-1);
 }
 
 .delete-actions {
@@ -760,11 +795,18 @@ body {
   gap: var(--space-2);
 }
 
+/* M1: Cancel is the calm, primary-looking default. The destructive confirm stays
+   distinct (danger-tinted) but visually secondary — it is not the focal button. */
+.delete-cancel {
+  border-color: var(--violet-500);
+  background: color-mix(in oklab, var(--violet-500) 14%, var(--surface-solid));
+}
+
 .delete-confirm {
-  border-color: color-mix(in oklab, #f87171 50%, var(--surface-solid));
-  background: color-mix(in oklab, #f87171 16%, var(--surface-solid));
+  border-color: color-mix(in oklab, var(--danger) 50%, var(--surface-solid));
+  background: transparent;
 }
 
 .delete-confirm:hover {
-  background: color-mix(in oklab, #f87171 28%, var(--surface-solid));
+  background: color-mix(in oklab, var(--danger) 16%, var(--surface-solid));
 }

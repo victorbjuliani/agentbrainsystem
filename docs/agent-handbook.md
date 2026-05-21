@@ -48,6 +48,8 @@ storage/embedding decisions.
 - **Full gate (CI parity):** `npm run check` (lint → typecheck → test). `test` has a `pretest` hook that builds the UI bundle, so the gate is self-contained on a clean checkout.
 - Run a TS entrypoint in dev: `npm run dev`
 - Distill a session into lessons (opt-in, needs `ABS_LLM_BASE_URL`+`ABS_LLM_MODEL`): `abs consolidate [--session N] [--dry-run] [--force]`
+- Selectively hard-delete memories (IRREVERSIBLE, preview-only without `--apply`): `abs forget [--ids a,b,c | --session N | --project NAME | --null-project | --search "q" [--limit N]] [--apply] [--yes]`. Export first — no backup. See ADR 0008.
+- MCP tools exposed to agents: `recall`, `remember`, `memory_status`, `optimize`/`apply` (gated edits), and `forget_preview`/`forget` (two-phase selective delete: preview mints a single-use handle, `forget` consumes it — IRREVERSIBLE; ADR 0008). The UI write path (delete) is gated by the localhost CSRF/Origin controls in ADR 0007.
 
 ## Architecture Notes
 

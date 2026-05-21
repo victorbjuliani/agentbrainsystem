@@ -22,6 +22,9 @@
       <!-- Floating chrome lives here; built by overlays.ts (never an opaque top-bar). -->
       <div id="overlays"></div>
       <p id="error-banner" class="error-banner" role="alert" hidden></p>
+      <!-- Positive outcomes (e.g. a successful delete) go here, announced politely so
+           they never interrupt; the error banner above is the assertive channel. -->
+      <p id="status-banner" class="status-banner" role="status" aria-live="polite" hidden></p>
     </main>
     <script type="module" src="/static/app.js"></script>
   </body>
