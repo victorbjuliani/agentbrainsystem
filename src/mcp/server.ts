@@ -13,7 +13,14 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
+import { loadConfig } from '../config.js';
+import { defaultClaudeProjectsDir } from '../ingest/index.js';
 import { type Memory, openMemory } from '../memory.js';
+import {
+  applyApprovedCandidate,
+  generateOptimizations,
+  type OptimizeCandidate,
+} from '../optimize/index.js';
 import { VERSION } from '../version.js';
 
 /** Default external session id used when a `remember` call omits one. */
@@ -97,6 +104,86 @@ export function createMcpServer(memory: Memory): McpServer {
       inputSchema: {},
     },
     async () => jsonContent(memory.indexer.status()),
+  );
+
+  // Optimize loop (#21). `optimize` generates evidence-backed candidate diffs
+  // (read-only); `apply` writes ONE of those candidates to disk through the gated
+  // applier. The cache makes `apply` accept only candidates THIS server generated
+  // — the agent cannot fabricate a diff/target — keeping the gated-apply trust
+  // boundary (#20). The proactive flow is: agent reads the SessionStart staleness
+  // flag → calls `optimize` → shows the diffs → the USER approves → agent calls
+  // `apply` per approved id. `apply` never auto-writes: it is an explicit call and
+  // the fail-closed user|feedback guard still refuses protected entries.
+  const optimizeCache = new Map<string, { candidate: OptimizeCandidate; projectRoot: string }>();
+
+  server.registerTool(
+    'optimize',
+    {
+      title: 'Generate memory optimizations',
+      description:
+        "Turn distilled memory (consolidated lessons/decisions) into evidence-backed candidate diffs for this project's CLAUDE.md / Claude Code auto-memory. Read-only — writes NOTHING. Show the diffs to the user and get approval before calling `apply`.",
+      inputSchema: {
+        project: z
+          .string()
+          .optional()
+          .describe('Project root whose CLAUDE.md / auto-memory are targets (default: cwd).'),
+        limit: z
+          .number()
+          .int()
+          .positive()
+          .max(50)
+          .optional()
+          .describe('Max candidates to return (default 20).'),
+      },
+    },
+    async ({ project, limit }) => {
+      const projectRoot = project ?? process.cwd();
+      const { candidates, estimate } = await generateOptimizations(memory, loadConfig(), {
+        projectRoot,
+        ...(limit !== undefined ? { limit } : {}),
+      });
+      optimizeCache.clear();
+      for (const c of candidates) optimizeCache.set(c.id, { candidate: c, projectRoot });
+      return jsonContent({
+        candidates: candidates.map((c) => ({
+          id: c.id,
+          priority: c.priority,
+          title: c.title,
+          rationale: c.rationale,
+          target: { kind: c.target.kind, path: c.target.absPath },
+          evidenceIds: c.evidenceIds,
+          diff: c.diff,
+        })),
+        estimate,
+      });
+    },
+  );
+
+  server.registerTool(
+    'apply',
+    {
+      title: 'Apply a memory optimization',
+      description:
+        'WRITES one optimization candidate (from a prior `optimize` call) to disk: backup + atomic write + rollback. Only apply candidates the user has approved. Refuses (no write) on a forbidden target or a protected user|feedback auto-memory entry.',
+      inputSchema: {
+        candidateId: z
+          .string()
+          .describe('The id of a candidate returned by a prior `optimize` call.'),
+      },
+    },
+    async ({ candidateId }) => {
+      const entry = optimizeCache.get(candidateId);
+      if (!entry) {
+        return jsonContent({
+          error: `unknown candidate id '${candidateId}' — call optimize first to generate candidates`,
+        });
+      }
+      const result = await applyApprovedCandidate(memory, entry.candidate, {
+        projectRoot: entry.projectRoot,
+        projectsDir: defaultClaudeProjectsDir(),
+      });
+      return jsonContent(result);
+    },
   );
 
   return server;

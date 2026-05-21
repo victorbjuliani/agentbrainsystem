@@ -34,7 +34,13 @@ describe('MCP stdio packaging', () => {
     await client.connect(transport);
 
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name).sort()).toEqual(['memory_status', 'recall', 'remember']);
+    expect(tools.map((t) => t.name).sort()).toEqual([
+      'apply',
+      'memory_status',
+      'optimize',
+      'recall',
+      'remember',
+    ]);
 
     await client.callTool({
       name: 'remember',

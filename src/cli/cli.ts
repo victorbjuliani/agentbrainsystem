@@ -9,14 +9,21 @@
  */
 import { spawn } from 'node:child_process';
 import { platform } from 'node:os';
+import { createInterface } from 'node:readline/promises';
 import { loadConfig } from '../config.js';
 import { consolidate } from '../consolidate/index.js';
 import { exportStore, importStore } from '../export/index.js';
 import { dispatchHook, installHooks } from '../hooks/index.js';
-import { ingestClaudeProjects } from '../ingest/index.js';
+import { defaultClaudeProjectsDir, ingestClaudeProjects } from '../ingest/index.js';
 import { createLlmProvider } from '../llm/index.js';
 import { startStdio } from '../mcp/index.js';
 import { openMemory } from '../memory.js';
+import {
+  type ApplyOptions,
+  applyApprovedCandidate,
+  generateOptimizations,
+  type OptimizeCandidate,
+} from '../optimize/index.js';
 import { startUiServer } from '../ui/index.js';
 import { VERSION } from '../version.js';
 
@@ -42,6 +49,12 @@ Commands:
   hook <event>          Internal: run a lifecycle hook (what install-hooks registers).
                         event ∈ session-end | session-start | user-prompt-submit.
                         Reads the hook payload on stdin; non-fatal (always exits 0).
+  optimize [opts]       Turn distilled memory into evidence-backed diffs for this
+                        project's CLAUDE.md / Claude Code auto-memory.
+                        Options: --project PATH (default: cwd), --limit N,
+                        --apply (review + write per-candidate, backup/atomic/rollback),
+                        --candidate ID (apply only that one), --yes (apply all, no prompt).
+                        Default is preview-only — nothing is written without --apply.
 
 Options:
   -h, --help            Show this help.
@@ -264,6 +277,103 @@ async function cmdInstallHooks(): Promise<void> {
   }
 }
 
+/** Print one candidate (header + rationale + evidence + indented diff) to stdout. */
+function printCandidate(c: OptimizeCandidate): void {
+  out(`[${c.priority}] ${c.id} → ${c.target.kind}: ${c.target.absPath}`);
+  out(`  ${c.title}`);
+  out(`  rationale: ${c.rationale}`);
+  out(`  evidence: obs ${c.evidenceIds.join(', ') || '(none)'}`);
+  out(
+    c.diff
+      .split('\n')
+      .map((l) => `  ${l}`)
+      .join('\n'),
+  );
+  out('');
+}
+
+/**
+ * `abs optimize` — the on-demand surface for the optimize loop (#21). Generates
+ * evidence-backed candidate diffs through the shared converge core
+ * (`generateOptimizations`), prints them, and — only with `--apply` — writes the
+ * approved ones through the gated applier (`applyApprovedCandidate`: allowlist +
+ * fail-closed user|feedback guard + backup/atomic/rollback, and it advances the
+ * staleness cursor on a real write). Default is preview-only: nothing is written
+ * without `--apply`. Approval is per-candidate (interactive y/N) unless `--yes`.
+ */
+async function cmdOptimize(args: string[]): Promise<void> {
+  const projectRoot = optionValue(args, '--project') ?? process.cwd();
+  const rawLimit = optionValue(args, '--limit');
+  let limit: number | undefined;
+  if (rawLimit !== undefined) {
+    const n = Number.parseInt(rawLimit, 10);
+    if (!Number.isInteger(n) || n < 1) {
+      throw new Error(`--limit must be a positive integer (got '${rawLimit}')`);
+    }
+    limit = n;
+  }
+  const doApply = args.includes('--apply');
+  const yes = args.includes('--yes');
+  const onlyId = optionValue(args, '--candidate');
+
+  const config = loadConfig();
+  // ensure:false — generation reads observations and (optionally) phrases via the
+  // LLM; it never embeds, so there is no reason to load the embedding model.
+  const memory = await openMemory(config, { ensure: false });
+  try {
+    const { candidates, estimate } = await generateOptimizations(memory, config, {
+      projectRoot,
+      ...(limit !== undefined ? { limit } : {}),
+    });
+
+    if (candidates.length === 0) {
+      out('no candidates — memory has nothing new to distill into CLAUDE.md / auto-memory.');
+      return;
+    }
+
+    out(
+      `${candidates.length} candidate(s) ${estimate.llmUsed ? '(LLM-phrased)' : '(heuristic, $0)'}:`,
+    );
+    out('');
+    for (const c of candidates) printCandidate(c);
+
+    if (!doApply) {
+      out('(preview — nothing written. Re-run with --apply to review and write per-candidate.)');
+      return;
+    }
+
+    const selected = onlyId ? candidates.filter((c) => c.id === onlyId) : candidates;
+    if (onlyId && selected.length === 0) throw new Error(`no candidate with id '${onlyId}'`);
+
+    const applyOptions: ApplyOptions = { projectRoot, projectsDir: defaultClaudeProjectsDir() };
+    // readline prompts go to stderr so stdout stays clean for result lines.
+    const rl = yes ? null : createInterface({ input: process.stdin, output: process.stderr });
+    try {
+      for (const c of selected) {
+        if (rl) {
+          const ans = (await rl.question(`apply ${c.id} → ${c.target.absPath}? [y/N] `))
+            .trim()
+            .toLowerCase();
+          if (ans !== 'y' && ans !== 'yes') {
+            out(`  ${c.id}: skipped`);
+            continue;
+          }
+        }
+        const result = await applyApprovedCandidate(memory, c, applyOptions);
+        if (result.applied) {
+          out(`  ${c.id}: applied → ${result.absPath} (backup ${result.backupPath})`);
+        } else {
+          out(`  ${c.id}: refused (${result.refused}) — nothing written`);
+        }
+      }
+    } finally {
+      rl?.close();
+    }
+  } finally {
+    memory.close();
+  }
+}
+
 /** Read the value following a `--flag` token. */
 function optionValue(args: string[], flag: string): string | undefined {
   const i = args.indexOf(flag);
@@ -307,6 +417,8 @@ async function main(): Promise<void> {
       return cmdHook(rest);
     case 'install-hooks':
       return cmdInstallHooks();
+    case 'optimize':
+      return cmdOptimize(rest);
     default:
       err(`unknown command '${command}'\n`);
       err(USAGE);
