@@ -30,8 +30,10 @@ Shared onboarding layer for AI coding agents in this repository. Keep project fa
 | `src/hooks/` | Claude Code hooks (#15/#16/#19) | `abs hook <event>` handlers (session-end auto-ingest, session-start baseline + staleness cursor, user-prompt-submit FTS-first injection) + idempotent `install-hooks` settings.json writer; non-fatal/timeout-bounded (ADR 0004/0005) |
 | `src/optimize/` | optimization loop (#18/#20/#21) | `run.ts` core: heuristic spine ($0) + optional LLM phrasing → evidence-backed candidate diffs; gated applier (backup/atomic/rollback, fail-closed `user\|feedback` guard) writes only `CLAUDE.md` + auto-memory (ADR 0006) |
 | `src/delete/` | selective hard-delete (#delete) | sync `preview`/`execute` core: preview pins a concrete id set behind a single-use handle (TTL), execute deletes only the pinned set (TOCTOU-closed) + empty-session cleanup + `pruneIndexOrphans`; drives CLI/MCP/UI (ADR 0008) |
+| `src/ground-truth/` | verifiable-memory port (#24) | `GroundTruthProvider` interface + code-review-graph adapter (read-only SQLite) + null adapter (graceful degradation); `git.ts` branch helper. Anti-corruption boundary for the graph (ADR 0009) |
+| `src/anchoring/` | anchor verify + self-heal (#26/#28) | `sweepAnchors` promotes claimed→verified; `healAnchors`/`verifyOnRecall` re-anchor on rename, mark stale on removal (never delete). Fail-open (ADR 0009) |
 | `scripts/build-ui.mjs` | UI bundler | esbuild: `src/ui/client` → `dist/ui/static/{app.js,app.css,fonts}` (self-hosted, offline) |
-| `docs/adr/` | architecture decision records | committed; 0001 storage+embeddings · 0002 UI build pipeline · 0003 LLM consolidation · 0004 hook model · 0005 per-prompt injection perf · 0006 gated-apply safety · 0007 UI write-path security · 0008 hard-delete safety |
+| `docs/adr/` | architecture decision records | committed; 0001 storage+embeddings · 0002 UI build pipeline · 0003 LLM consolidation · 0004 hook model · 0005 per-prompt injection perf · 0006 gated-apply safety · 0007 UI write-path security · 0008 hard-delete safety · 0009 verifiable-memory anchoring |
 | `docs/DESIGN.md` | visual identity | source-of-truth for the graph UI (palette, type, motion, graph language) |
 | `.github/workflows/` | CI | `ci.yml` runs lint → typecheck → build → (pack assertion) → test |
 
@@ -69,6 +71,7 @@ storage/embedding decisions.
 - **LLM consolidation** (`src/consolidate/`) writes lessons ONLY through the indexer (recallability invariant), is opt-in/idempotent, and treats ingested transcripts as untrusted (output constrained to the lesson/decision schema). See ADR 0003.
 - **Hooks** (`src/hooks/`) must stay non-fatal + timeout-bounded — any failure exits 0 and never blocks a Claude Code session (ADR 0004). The per-prompt injection path must stay FTS-first (no embedding cold-load) within the ADR 0005 latency baseline.
 - **Write-to-real-files paths are guarded and gated.** `src/optimize/` edits only `CLAUDE.md` + auto-memory with per-candidate approval + backup/atomic/rollback + a fail-closed `user|feedback` guard (ADR 0006). `src/delete/` is irreversible hard-delete behind preview→pinned-handle→execute (ADR 0008). The UI write-path adds CSRF token + Host/Origin allowlist + handle confirmation (ADR 0007). Change these with their dedicated tests; never make them automatic.
+- **The verifiable-memory layer is fail-open and read-only against ground truth** (ADR 0009). The PreToolUse guard (`src/hooks/pre-tool-use.ts`) only reads `tool_input` (never executes it), point-queries the graph read-only, warns by default (`ABS_GUARD_MODE=block` opts into deny), and degrades to silent-allow with no graph. Self-healing marks anchors `stale`, never deletes. `fact_anchors` lives in the index lifecycle (`embed → persist → recall`) — change with migration tests.
 
 ## Open Questions (resolved during discovery)
 

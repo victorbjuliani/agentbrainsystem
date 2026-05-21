@@ -7,7 +7,7 @@
  * Indexer (#5) is what makes the result survive a restart.
  */
 import type { EmbeddingProvider } from '../embedding/index.js';
-import type { MemoryStore, Observation } from '../store/index.js';
+import type { AnchorState, MemoryStore, Observation } from '../store/index.js';
 import { DEFAULT_RRF_K, reciprocalRankFusion } from './rrf.js';
 
 export interface RecallOptions {
@@ -24,6 +24,18 @@ export interface RecallHit {
   score: number;
   vectorRank?: number;
   ftsRank?: number;
+  /**
+   * Verifiability of this fact against ground truth (the E layer, #27).
+   * Set by `annotateFreshness`; absent means not-yet-annotated or a fact with
+   * no code anchors (conversational). `stale` is a trust warning.
+   */
+  anchorState?: AnchorState;
+  /**
+   * True when this fact was verified on a branch other than the current one
+   * (FR-C1, #31) — context that may not apply on this branch. Set by
+   * `annotateFreshness` only when a current branch is supplied.
+   */
+  crossBranch?: boolean;
 }
 
 export interface RecallFtsOptions {

@@ -238,7 +238,81 @@ describe('ingestClaudeProjects — missing tree', () => {
       filesSkipped: 0,
       observationsAdded: 0,
       observationsSkipped: 0,
+      anchorsSeeded: 0,
     });
+    memory.close();
+  });
+});
+
+describe('ingestClaudeProjects — anchor seeding (#25)', () => {
+  function writeSession(blocks: Array<Record<string, unknown>>[]): Memory {
+    const projDir = join(projectsDir, '-Users-me-Devs-foo');
+    mkdirSync(projDir, { recursive: true });
+    const lines = blocks.map((b, i) => assistantLine('sess-1', '/Users/me/Devs/foo', b, `a${i}`));
+    writeFileSync(join(projDir, 'session.jsonl'), lines.join('\n'));
+    return newMemory();
+  }
+
+  it('seeds a file anchor and per-symbol anchors from an Edit with prose', async () => {
+    const memory = writeSession([
+      [
+        { type: 'text', text: 'Adding the helper.' },
+        {
+          type: 'tool_use',
+          name: 'Edit',
+          input: {
+            file_path: '/Users/me/Devs/foo/src/mod.ts',
+            new_string: 'export function helper() {}',
+          },
+        },
+      ],
+    ]);
+    const result = await ingestClaudeProjects(memory, { projectsDir });
+    expect(result.observationsAdded).toBe(1); // the prose turn
+    expect(result.anchorsSeeded).toBe(2); // file + symbol(helper)
+
+    const obs = memory.store.listObservations()[0];
+    const anchors = memory.store.getAnchorsForObservation(obs?.id ?? -1);
+    expect(anchors.map((a) => a.anchorKind).sort()).toEqual(['file', 'symbol']);
+    expect(anchors.every((a) => a.state === 'claimed')).toBe(true);
+    expect(memory.store.findAnchorsBySymbol('helper')).toHaveLength(1);
+    expect(memory.store.findAnchorsByFile('/Users/me/Devs/foo/src/mod.ts')).toHaveLength(2);
+    memory.close();
+  });
+
+  it('creates a compact tool_edit observation for an Edit-only turn', async () => {
+    const memory = writeSession([
+      [
+        {
+          type: 'tool_use',
+          name: 'Write',
+          input: { file_path: '/Users/me/Devs/foo/src/a.py', content: 'class Foo:\n    pass' },
+        },
+      ],
+    ]);
+    const result = await ingestClaudeProjects(memory, { projectsDir });
+    expect(result.observationsAdded).toBe(1);
+    expect(result.anchorsSeeded).toBe(2); // file + symbol(Foo)
+    const obs = memory.store.listObservations()[0];
+    expect(obs?.kind).toBe('tool_edit');
+    expect(obs?.content).toContain('src/a.py');
+    memory.close();
+  });
+
+  it('ignores Read and non-code Edits (no anchors, turn skipped if textless)', async () => {
+    const memory = writeSession([
+      [{ type: 'tool_use', name: 'Read', input: { file_path: '/Users/me/Devs/foo/src/mod.ts' } }],
+      [
+        {
+          type: 'tool_use',
+          name: 'Edit',
+          input: { file_path: '/Users/me/Devs/foo/README.md', new_string: '# docs' },
+        },
+      ],
+    ]);
+    const result = await ingestClaudeProjects(memory, { projectsDir });
+    expect(result.observationsAdded).toBe(0); // both textless + non-anchorable → skipped
+    expect(result.anchorsSeeded).toBe(0);
     memory.close();
   });
 });
