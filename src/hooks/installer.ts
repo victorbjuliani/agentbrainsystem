@@ -58,12 +58,18 @@ export interface HookSpec {
   eventArg: string;
   /** settings.json hook timeout, seconds. */
   timeoutSec: number;
+  /** Tool-name matcher (PreToolUse). Defaults to '' (fires on every event). */
+  matcher?: string;
 }
 
 export const HOOK_REGISTRY: readonly HookSpec[] = [
   { event: 'SessionEnd', eventArg: 'session-end', timeoutSec: 30 },
   { event: 'SessionStart', eventArg: 'session-start', timeoutSec: 10 },
   { event: 'UserPromptSubmit', eventArg: 'user-prompt-submit', timeoutSec: 10 },
+  // The contradiction guard (#29): only Edit/Write can duplicate code, so scope
+  // the matcher to them — Read/Bash/etc never spawn the guard. Tight timeout: a
+  // single graph point query; it self-bounds and fails open if slower.
+  { event: 'PreToolUse', eventArg: 'pre-tool-use', timeoutSec: 5, matcher: 'Edit|Write' },
 ];
 
 export interface InstallOptions {
@@ -191,6 +197,7 @@ export function installHooks(options: InstallOptions = {}): InstallResult {
 
   for (const spec of specs) {
     const command = `${baseCommand} ${spec.eventArg}`;
+    const matcher = spec.matcher ?? '';
     const groups = (hooks[spec.event] ?? []).map((g) => ({ ...g, hooks: [...g.hooks] }));
 
     // Idempotency: our hook is identified by its exact command string, anywhere
@@ -203,13 +210,13 @@ export function installHooks(options: InstallOptions = {}): InstallResult {
     }
 
     const entry: HookCommand = { type: 'command', command, timeout: spec.timeoutSec };
-    // Merge into the existing empty-matcher group when one exists (don't spawn a
-    // second '' group); otherwise append a fresh group. Never touch other groups.
-    const emptyGroup = groups.find((g) => g.matcher === '');
-    if (emptyGroup) {
-      emptyGroup.hooks.push(entry);
+    // Merge into the existing group with the same matcher when one exists (don't
+    // spawn a duplicate); otherwise append a fresh group. Never touch other groups.
+    const sameMatcher = groups.find((g) => g.matcher === matcher);
+    if (sameMatcher) {
+      sameMatcher.hooks.push(entry);
     } else {
-      groups.push({ matcher: '', hooks: [entry] });
+      groups.push({ matcher, hooks: [entry] });
     }
     hooks[spec.event] = groups;
     added.push(spec.event);

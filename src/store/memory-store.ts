@@ -24,9 +24,12 @@ import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
 import { MIGRATIONS, runDdl } from './schema.js';
 import type {
+  AnchorState,
   CountsResult,
+  CreateFactAnchorInput,
   CreateObservationInput,
   CreateSessionInput,
+  FactAnchor,
   KnnHit,
   ListObservationsOptions,
   Observation,
@@ -89,6 +92,37 @@ function rowToObservation(row: ObservationRow): Observation {
     content: row.content,
     metadata: parseJson(row.metadata),
     source: row.source ?? undefined,
+    createdAt: row.created_at,
+  };
+}
+
+/** Shape of a `fact_anchors` row as stored (snake_case). */
+interface FactAnchorRow {
+  id: number;
+  observation_id: number;
+  anchor_kind: string;
+  qualified_name: string | null;
+  file_path: string;
+  line: number | null;
+  commit_sha: string | null;
+  branch: string | null;
+  state: string;
+  verified_at: string | null;
+  created_at: string;
+}
+
+function rowToAnchor(row: FactAnchorRow): FactAnchor {
+  return {
+    id: row.id,
+    observationId: row.observation_id,
+    anchorKind: row.anchor_kind as FactAnchor['anchorKind'],
+    qualifiedName: row.qualified_name ?? undefined,
+    filePath: row.file_path,
+    line: row.line ?? undefined,
+    commitSha: row.commit_sha ?? undefined,
+    branch: row.branch ?? undefined,
+    state: row.state as AnchorState,
+    verifiedAt: row.verified_at ?? undefined,
     createdAt: row.created_at,
   };
 }
@@ -501,6 +535,146 @@ export class MemoryStore {
       )
       .all(queryText, k) as Array<{ id: number | bigint; distance: number }>;
     return rows.map((r) => ({ id: Number(r.id), distance: r.distance }));
+  }
+
+  // -------------------------------------------------------- fact anchors (E)
+
+  /**
+   * Create a fact anchor tying an observation to a code location. Defaults
+   * `state` to `claimed` — the seed step (#25) writes claims; the sweep (#26)
+   * promotes them to `verified`. Returns the new anchor id.
+   */
+  createAnchor(input: CreateFactAnchorInput): number {
+    const db = this.conn();
+    const info = db
+      .prepare(
+        `INSERT INTO fact_anchors
+           (observation_id, anchor_kind, qualified_name, file_path, line, commit_sha, branch, state, verified_at, created_at)
+         VALUES (@observationId, @anchorKind, @qualifiedName, @filePath, @line, @commitSha, @branch, @state, @verifiedAt, @createdAt)`,
+      )
+      .run({
+        observationId: input.observationId,
+        anchorKind: input.anchorKind,
+        qualifiedName: input.qualifiedName ?? null,
+        filePath: input.filePath,
+        line: input.line ?? null,
+        commitSha: input.commitSha ?? null,
+        branch: input.branch ?? null,
+        state: input.state ?? 'claimed',
+        verifiedAt: input.verifiedAt ?? null,
+        createdAt: input.createdAt ?? nowIso(),
+      });
+    return Number(info.lastInsertRowid);
+  }
+
+  /** All anchors for one observation (the recall layer reads these to label freshness). */
+  getAnchorsForObservation(observationId: number): FactAnchor[] {
+    const rows = this.conn()
+      .prepare('SELECT * FROM fact_anchors WHERE observation_id = ? ORDER BY id ASC')
+      .all(observationId) as FactAnchorRow[];
+    return rows.map(rowToAnchor);
+  }
+
+  /**
+   * Reverse lookup: every anchor pointing at a symbol. This is the access
+   * pattern self-healing (#28) is built around — "symbol X changed, which facts
+   * must be re-verified?" — served by `idx_anchors_qname`.
+   */
+  findAnchorsBySymbol(qualifiedName: string): FactAnchor[] {
+    const rows = this.conn()
+      .prepare('SELECT * FROM fact_anchors WHERE qualified_name = ? ORDER BY id ASC')
+      .all(qualifiedName) as FactAnchorRow[];
+    return rows.map(rowToAnchor);
+  }
+
+  /** Reverse lookup by file path (served by `idx_anchors_file`). */
+  findAnchorsByFile(filePath: string): FactAnchor[] {
+    const rows = this.conn()
+      .prepare('SELECT * FROM fact_anchors WHERE file_path = ? ORDER BY id ASC')
+      .all(filePath) as FactAnchorRow[];
+    return rows.map(rowToAnchor);
+  }
+
+  /** Anchors in a given verifiability state (the sweep walks `claimed`; audits walk `stale`). */
+  listAnchorsByState(state: AnchorState, limit?: number): FactAnchor[] {
+    const limitClause = limit !== undefined ? 'LIMIT @limit' : '';
+    const rows = this.conn()
+      .prepare(`SELECT * FROM fact_anchors WHERE state = @state ORDER BY id ASC ${limitClause}`)
+      .all(limit !== undefined ? { state, limit } : { state }) as FactAnchorRow[];
+    return rows.map(rowToAnchor);
+  }
+
+  /**
+   * Transition an anchor's verifiability state. Promotion to `verified` pins the
+   * resolved `commitSha`/`line` and stamps `verifiedAt`; marking `stale` (self-
+   * healing) keeps the row — invalidation is never deletion (auditable).
+   */
+  updateAnchorState(
+    id: number,
+    state: AnchorState,
+    opts: { commitSha?: string; line?: number; branch?: string; verifiedAt?: string } = {},
+  ): void {
+    this.conn()
+      .prepare(
+        `UPDATE fact_anchors
+         SET state = @state,
+             commit_sha = COALESCE(@commitSha, commit_sha),
+             line = COALESCE(@line, line),
+             branch = COALESCE(@branch, branch),
+             verified_at = COALESCE(@verifiedAt, verified_at)
+         WHERE id = @id`,
+      )
+      .run({
+        id,
+        state,
+        commitSha: opts.commitSha ?? null,
+        line: opts.line ?? null,
+        branch: opts.branch ?? null,
+        verifiedAt: opts.verifiedAt ?? (state === 'verified' ? nowIso() : null),
+      });
+  }
+
+  /**
+   * Move a verified anchor to a new location (self-healing rename path, #28):
+   * the symbol survived but relocated, so we keep `verified` and re-pin
+   * file/line/commit instead of marking it stale.
+   */
+  reanchorAnchor(
+    id: number,
+    location: { filePath: string; line?: number; commitSha?: string; branch?: string },
+  ): void {
+    this.conn()
+      .prepare(
+        `UPDATE fact_anchors
+         SET file_path = @filePath,
+             line = @line,
+             commit_sha = COALESCE(@commitSha, commit_sha),
+             branch = COALESCE(@branch, branch),
+             verified_at = @verifiedAt
+         WHERE id = @id`,
+      )
+      .run({
+        id,
+        filePath: location.filePath,
+        line: location.line ?? null,
+        commitSha: location.commitSha ?? null,
+        branch: location.branch ?? null,
+        verifiedAt: nowIso(),
+      });
+  }
+
+  /** Count anchors per verifiability state — feeds the O2 anchor-coverage metric. */
+  countAnchorsByState(): Record<AnchorState, number> {
+    const rows = this.conn()
+      .prepare('SELECT state, COUNT(*) AS c FROM fact_anchors GROUP BY state')
+      .all() as Array<{ state: string; c: number }>;
+    const out: Record<AnchorState, number> = { claimed: 0, verified: 0, stale: 0 };
+    for (const r of rows) {
+      if (r.state === 'claimed' || r.state === 'verified' || r.state === 'stale') {
+        out[r.state] = r.c;
+      }
+    }
+    return out;
   }
 
   // ------------------------------------------------------------------- kv meta

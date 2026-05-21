@@ -16,9 +16,12 @@
  * injected memory rather than blocking.
  */
 
+import { verifyOnRecall } from '../anchoring/index.js';
+import { currentBranch } from '../ground-truth/git.js';
+import { createGroundTruthProvider } from '../ground-truth/index.js';
 import type { Memory } from '../memory.js';
 import { openMemory } from '../memory.js';
-import type { RecallHit } from '../recall/index.js';
+import { annotateFreshness, freshnessTag, type RecallHit } from '../recall/index.js';
 import { buildContextOutput, type HookPayload } from './payload.js';
 
 /** Max hits pulled from FTS before dedupe/budget trimming. */
@@ -74,7 +77,8 @@ export function renderRecallBlock(hits: RecallHit[]): string {
     seen.add(key);
 
     const kind = hit.observation.kind;
-    const line = `- [${kind}] ${content.replace(/\s+/g, ' ')}`;
+    const branchTag = hit.crossBranch ? ' ⎇other-branch' : '';
+    const line = `- [${kind}${freshnessTag(hit.anchorState)}${branchTag}] ${content.replace(/\s+/g, ' ')}`;
     // Stop once adding this line would blow the budget (keep at least one line).
     if (items.length > 0 && used + line.length > CHAR_BUDGET) break;
     items.push(line.length > CHAR_BUDGET ? `${line.slice(0, CHAR_BUDGET - 1)}…` : line);
@@ -90,7 +94,23 @@ export function renderRecallBlock(hits: RecallHit[]): string {
 async function recallFromStore(prompt: string): Promise<RecallHit[]> {
   const memory: Memory = await openMemory(undefined, { ensure: false });
   try {
-    return memory.recall.recallFts(prompt, { limit: TOP_K });
+    const hits = memory.recall.recallFts(prompt, { limit: TOP_K });
+    // Lazy self-healing (#28): re-verify the verified anchors of the facts about
+    // to be surfaced, so a stale claim is caught at the exact moment of use.
+    // Fail-open and bounded to these few hits — no graph, no cost.
+    const provider = createGroundTruthProvider(process.cwd());
+    try {
+      verifyOnRecall(
+        memory.store,
+        provider,
+        hits.map((h) => h.observation.id),
+      );
+    } finally {
+      provider.close();
+    }
+    // Label each hit with its (now-healed) ground-truth freshness; demote stale;
+    // flag facts verified on another branch (FR-C1).
+    return annotateFreshness(memory.store, hits, currentBranch(process.cwd()));
   } finally {
     memory.close();
   }

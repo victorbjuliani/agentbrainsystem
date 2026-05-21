@@ -25,4 +25,6 @@ export interface IngestResult {
   observationsAdded: number;
   /** Lines read but skipped (malformed, empty, or no extractable text). */
   observationsSkipped: number;
+  /** Claimed fact anchors seeded from Edit/Write tool calls this run (#25). */
+  anchorsSeeded: number;
 }

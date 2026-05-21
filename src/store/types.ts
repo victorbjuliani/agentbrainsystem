@@ -88,3 +88,50 @@ export interface CountsResult {
   vectors: number;
   fts: number;
 }
+
+/**
+ * Verifiability of a fact anchor (the E layer):
+ *   - `claimed`: seeded from a tool-call signal, not yet checked against the graph.
+ *   - `verified`: resolved against ground-truth; carries `file:line@commit`.
+ *   - `stale`: the anchored symbol/file no longer resolves (self-healing marks it).
+ */
+export type AnchorState = 'claimed' | 'verified' | 'stale';
+
+/** What a fact anchor points at: a specific symbol, or a whole file. */
+export type AnchorKind = 'symbol' | 'file';
+
+/** A code-location anchor tying an observation (fact) to ground truth. */
+export interface FactAnchor {
+  id: number;
+  observationId: number;
+  anchorKind: AnchorKind;
+  /** Symbol qualified name (e.g. `module.Class.method`); undefined for file anchors. */
+  qualifiedName?: string;
+  filePath: string;
+  /** 1-based line, when known. */
+  line?: number;
+  /** Commit the verification was pinned to (`verified` anchors). */
+  commitSha?: string;
+  /** Branch the anchor was last verified true on (FR-C1); undefined when unknown. */
+  branch?: string;
+  state: AnchorState;
+  /** ISO timestamp of the last successful verification. */
+  verifiedAt?: string;
+  createdAt: string;
+}
+
+/** Fields accepted when creating a fact anchor. Defaults `state` to `claimed`. */
+export interface CreateFactAnchorInput {
+  observationId: number;
+  anchorKind: AnchorKind;
+  qualifiedName?: string;
+  filePath: string;
+  line?: number;
+  commitSha?: string;
+  branch?: string;
+  /** Defaults to `claimed` when omitted. */
+  state?: AnchorState;
+  verifiedAt?: string;
+  /** Defaults to now (ISO) when omitted. */
+  createdAt?: string;
+}

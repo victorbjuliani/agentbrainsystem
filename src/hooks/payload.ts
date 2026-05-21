@@ -15,7 +15,7 @@
  */
 
 /** The hook events this project registers. Keep in sync with the installer registry. */
-export type HookEvent = 'SessionEnd' | 'SessionStart' | 'UserPromptSubmit';
+export type HookEvent = 'PreToolUse' | 'SessionEnd' | 'SessionStart' | 'UserPromptSubmit';
 
 /** Parsed, validated subset of a Claude Code hook stdin payload. All optional — untrusted. */
 export interface HookPayload {
@@ -27,6 +27,10 @@ export interface HookPayload {
   prompt?: string;
   /** SessionStart only (e.g. 'startup' | 'resume' | 'clear'). */
   source?: string;
+  /** PreToolUse only — the tool about to run (e.g. 'Edit', 'Write'). */
+  toolName?: string;
+  /** PreToolUse only — the tool's input arguments (untrusted; only read, never executed). */
+  toolInput?: Record<string, unknown>;
 }
 
 function str(v: unknown): string | undefined {
@@ -59,6 +63,11 @@ export function parseHookPayload(raw: string): HookPayload {
   if (prompt) payload.prompt = prompt;
   const source = str(obj.source);
   if (source) payload.source = source;
+  const toolName = str(obj.tool_name);
+  if (toolName) payload.toolName = toolName;
+  if (obj.tool_input && typeof obj.tool_input === 'object') {
+    payload.toolInput = obj.tool_input as Record<string, unknown>;
+  }
   return payload;
 }
 
@@ -72,6 +81,29 @@ export function buildContextOutput(event: HookEvent, text: string): string | nul
   if (trimmed.length === 0) return null;
   return JSON.stringify({
     hookSpecificOutput: { hookEventName: event, additionalContext: trimmed },
+  });
+}
+
+/**
+ * Build the JSON line Claude Code reads for a PreToolUse decision (#29).
+ *   - `warn`  → allow the action but inject the reason as context (non-blocking).
+ *   - `block` → deny the action with the reason (opt-in; the guard defaults to warn).
+ * Returns null for an empty reason so callers emit nothing.
+ */
+export function buildPreToolUseOutput(mode: 'warn' | 'block', reason: string): string | null {
+  const trimmed = reason.trim();
+  if (trimmed.length === 0) return null;
+  if (mode === 'block') {
+    return JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: trimmed,
+      },
+    });
+  }
+  return JSON.stringify({
+    hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: trimmed },
   });
 }
 
