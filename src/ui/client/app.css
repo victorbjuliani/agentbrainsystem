@@ -629,3 +629,142 @@ body {
     animation: none;
   }
 }
+
+/* ===== Write path: delete affordances + confirmation dialog (ADR-0007) ===== */
+
+.inspect-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.inspect-delete,
+.search-delete,
+.delete-confirm {
+  --danger: #f87171;
+  color: var(--danger);
+}
+
+.inspect-delete:hover {
+  background: color-mix(in oklab, #f87171 18%, transparent);
+}
+
+.search-delete {
+  border-color: color-mix(in oklab, #f87171 38%, var(--surface-solid));
+}
+
+/* Modal backdrop: dims the void, centers the dialog above all overlays. */
+.delete-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: var(--space-4);
+  background: color-mix(in oklab, var(--neutral-950) 62%, transparent);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+.delete-dialog {
+  width: min(34rem, 92vw);
+  max-height: 82vh;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-6);
+  border-radius: var(--radius-lg);
+  background: var(--surface-solid);
+  box-shadow: var(--elevation);
+}
+
+.delete-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.delete-title {
+  font-family: var(--font-mono);
+  font-size: var(--text-lg);
+  color: var(--label-fg);
+}
+
+.delete-count {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: #f87171;
+}
+
+.delete-summary {
+  font-size: var(--text-sm);
+  color: var(--label-fg);
+  opacity: 0.86;
+}
+
+.delete-list-wrap {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow-y: auto;
+}
+
+.delete-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.delete-item {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  padding: var(--space-1) 0;
+}
+
+.delete-item-kind {
+  flex: 0 0 auto;
+  opacity: 0.7;
+}
+
+.delete-item-snippet {
+  flex: 1 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--label-fg);
+}
+
+.delete-more {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  opacity: 0.6;
+  padding-top: var(--space-1);
+}
+
+.delete-warn {
+  font-size: var(--text-xs);
+  color: #f87171;
+  font-weight: 600;
+}
+
+.delete-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.delete-confirm {
+  border-color: color-mix(in oklab, #f87171 50%, var(--surface-solid));
+  background: color-mix(in oklab, #f87171 16%, var(--surface-solid));
+}
+
+.delete-confirm:hover {
+  background: color-mix(in oklab, #f87171 28%, var(--surface-solid));
+}

@@ -5,6 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#0a0810" />
     <meta name="color-scheme" content="dark light" />
+    <!-- Per-process CSRF token for the delete write path (ADR-0007). The UI server
+         substitutes __ABS_CSRF__ at request time when serving `/`; the client reads
+         it from this meta tag and echoes it in X-ABS-CSRF on delete calls. The build
+         copies this file verbatim — the placeholder is only ever replaced server-side. -->
+    <meta name="abs-csrf" content="__ABS_CSRF__" />
     <title>agentbrainsystem — memory graph</title>
     <!-- Assets are served under /static/ by the UI server; reference them there so
          index.html (served at /) loads them correctly. -->
