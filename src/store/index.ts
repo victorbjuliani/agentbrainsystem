@@ -8,9 +8,13 @@ export { MemoryStore } from './memory-store.js';
 export type { Migration } from './schema.js';
 export { CURRENT_SCHEMA_VERSION } from './schema.js';
 export type {
+  AnchorKind,
+  AnchorState,
   CountsResult,
+  CreateFactAnchorInput,
   CreateObservationInput,
   CreateSessionInput,
+  FactAnchor,
   KnnHit,
   ListObservationsOptions,
   Observation,

@@ -18,7 +18,7 @@
 
 import type { Memory } from '../memory.js';
 import { openMemory } from '../memory.js';
-import type { RecallHit } from '../recall/index.js';
+import { annotateFreshness, freshnessTag, type RecallHit } from '../recall/index.js';
 import { buildContextOutput, type HookPayload } from './payload.js';
 
 /** Max hits pulled from FTS before dedupe/budget trimming. */
@@ -74,7 +74,7 @@ export function renderRecallBlock(hits: RecallHit[]): string {
     seen.add(key);
 
     const kind = hit.observation.kind;
-    const line = `- [${kind}] ${content.replace(/\s+/g, ' ')}`;
+    const line = `- [${kind}${freshnessTag(hit.anchorState)}] ${content.replace(/\s+/g, ' ')}`;
     // Stop once adding this line would blow the budget (keep at least one line).
     if (items.length > 0 && used + line.length > CHAR_BUDGET) break;
     items.push(line.length > CHAR_BUDGET ? `${line.slice(0, CHAR_BUDGET - 1)}…` : line);
@@ -90,7 +90,9 @@ export function renderRecallBlock(hits: RecallHit[]): string {
 async function recallFromStore(prompt: string): Promise<RecallHit[]> {
   const memory: Memory = await openMemory(undefined, { ensure: false });
   try {
-    return memory.recall.recallFts(prompt, { limit: TOP_K });
+    const hits = memory.recall.recallFts(prompt, { limit: TOP_K });
+    // Label each hit with its ground-truth freshness and demote stale facts.
+    return annotateFreshness(memory.store, hits);
   } finally {
     memory.close();
   }
