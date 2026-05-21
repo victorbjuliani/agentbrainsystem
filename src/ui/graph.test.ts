@@ -333,6 +333,21 @@ describe('buildGraph', () => {
     expect(g.meta.emptyStore).toBe(false);
   });
 
+  it('reserves observation slots in search so hits render under a small limit (#42 P2)', () => {
+    // 10 distinct sessions, each with one matching obs → without interleaving the
+    // hubs alone would fill a small budget and zero hits would render.
+    for (let i = 0; i < 10; i++) {
+      const s = store.createSession({ externalId: `s${i}` });
+      const id = store.createObservation({ sessionId: s, kind: 'user', content: `findme ${i}` });
+      store.indexFts(id, `findme ${i}`);
+    }
+    const g = buildGraph(store, { search: 'findme', limit: 8 });
+    expect(g.scope.mode).toBe('search');
+    expect(g.nodes.length).toBeLessThanOrEqual(8);
+    // Matched OBS render — not just session hubs.
+    expect(g.nodes.some((n) => n.id.startsWith('o:'))).toBe(true);
+  });
+
   it('search takes precedence over topN/session', () => {
     const s = store.createSession({ externalId: 'sess' });
     const id = store.createObservation({ sessionId: s, kind: 'user', content: 'findme token' });

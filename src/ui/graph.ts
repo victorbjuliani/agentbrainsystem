@@ -176,43 +176,42 @@ export function buildGraph(store: MemoryStore, query: GraphQuery): GraphData {
     obsCountBySession.set(o.sessionId, (obsCountBySession.get(o.sessionId) ?? 0) + 1);
   }
 
-  // Cap the rendered node count at the per-request budget (already clamped to
-  // NODE_CAP). Pins render FIRST (they lead `observations`), so enforcing the
-  // budget here keeps the `scope.limit` contract honest even after pinning —
-  // the lowest-priority scope tail is what gets dropped, never the pins.
+  // Emit nodes by walking observations in PRIORITY order (pins lead `observations`),
+  // adding each obs's session hub lazily right before its first observation. Hubs
+  // are never emitted ahead of their observations, so a small `nodeBudget` spread
+  // across many sessions can't fill up with hubs and starve the matched/pinned obs
+  // (#42 P2). Each step is charged its full cost (obs + hub when the hub is new), so
+  // we never half-commit an obs whose hub wouldn't fit, keeping containment edges
+  // valid and the `scope.limit` contract honest.
+  const sessionById = new Map(sessions.map((s) => [s.id, s]));
   const includedSessionIds = new Set<number>();
-  for (const s of sessions) {
-    if (nodes.length >= nodeBudget) {
-      truncated = true;
-      break;
-    }
-    nodes.push({
-      id: sessionNodeId(s.id),
-      type: 'session',
-      label: sessionLabel(s),
-      sizeDriver: obsCountBySession.get(s.id) ?? 0,
-      createdAt: s.createdAt,
-    });
-    includedSessionIds.add(s.id);
-  }
-
-  // Degree accumulator drives observation node size.
   const degree = new Map<string, number>();
   const includedObsIds = new Set<number>();
   const renderedObs: Observation[] = [];
   for (const o of observations) {
-    if (nodes.length >= nodeBudget) {
+    const session = sessionById.get(o.sessionId);
+    if (!session) {
+      truncated = true;
+      continue; // session outside our resolved set — skip rather than orphan the obs
+    }
+    const needsHub = !includedSessionIds.has(o.sessionId);
+    const cost = needsHub ? 2 : 1; // the obs, plus its session hub when not yet emitted
+    if (nodes.length + cost > nodeBudget) {
       truncated = true;
       break;
     }
-    // Skip observations whose session hub did not make the cut (keeps edges valid).
-    if (!includedSessionIds.has(o.sessionId)) {
-      truncated = true;
-      continue;
+    if (needsHub) {
+      nodes.push({
+        id: sessionNodeId(session.id),
+        type: 'session',
+        label: sessionLabel(session),
+        sizeDriver: obsCountBySession.get(session.id) ?? 0,
+        createdAt: session.createdAt,
+      });
+      includedSessionIds.add(session.id);
     }
-    const id = obsNodeId(o.id);
     nodes.push({
-      id,
+      id: obsNodeId(o.id),
       type: nodeTypeForKind(o.kind),
       label: truncate(o.content),
       sizeDriver: 0, // filled from degree once edges are known
@@ -221,6 +220,26 @@ export function buildGraph(store: MemoryStore, query: GraphQuery): GraphData {
     });
     includedObsIds.add(o.id);
     renderedObs.push(o);
+  }
+
+  // A session with NO observations in the set (e.g. a brand-new empty session in
+  // session mode) still gets its hub, but only with leftover budget — observations
+  // were served first, so this never starves them. Sessions that DID have obs but
+  // lost the budget race are intentionally not shown as bare hubs.
+  for (const s of sessions) {
+    if (includedSessionIds.has(s.id) || (obsCountBySession.get(s.id) ?? 0) > 0) continue;
+    if (nodes.length >= nodeBudget) {
+      truncated = true;
+      break;
+    }
+    nodes.push({
+      id: sessionNodeId(s.id),
+      type: 'session',
+      label: sessionLabel(s),
+      sizeDriver: 0,
+      createdAt: s.createdAt,
+    });
+    includedSessionIds.add(s.id);
   }
 
   // ---- Edges ----------------------------------------------------------------
