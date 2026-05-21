@@ -94,6 +94,10 @@ export function parseGraphQuery(searchParams: URLSearchParams): GraphQuery {
   if (limit !== undefined) q.limit = limit;
   const sim = searchParams.get('similarity');
   if (sim !== null) q.similarity = sim === '1' || sim.toLowerCase() === 'true';
+  // `search` (#35): a non-empty value switches buildGraph to store-wide FTS mode.
+  // An empty/whitespace value is dropped so it never shadows the topN/session scope.
+  const search = searchParams.get('search');
+  if (search !== null && search.trim() !== '') q.search = search;
   return q;
 }
 

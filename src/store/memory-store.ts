@@ -400,6 +400,15 @@ export class MemoryStore {
       clauses.push('kind = @kind');
       params.kind = options.kind;
     }
+    if (options.kinds !== undefined && options.kinds.length > 0) {
+      // better-sqlite3 named params don't expand arrays — bind one placeholder per
+      // value (@kind0, @kind1, …) so `kind IN (…)` is parameterized, never inlined.
+      const placeholders = options.kinds.map((_, i) => `@kind${i}`).join(', ');
+      clauses.push(`kind IN (${placeholders})`);
+      options.kinds.forEach((k, i) => {
+        params[`kind${i}`] = k;
+      });
+    }
     if (options.afterId !== undefined) {
       clauses.push('id > @afterId');
       params.afterId = options.afterId;

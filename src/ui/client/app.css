@@ -387,15 +387,6 @@ body {
   opacity: 0.28;
   filter: grayscale(0.5);
 }
-.pill-reserved {
-  cursor: not-allowed;
-  opacity: 0.5;
-}
-.pill-note {
-  font-size: 0.625rem;
-  color: var(--fg-muted);
-  letter-spacing: 0.02em;
-}
 
 /* --- Inspector (right drawer; surface neutral-800 + hairline + glow; DESIGN §11) --- */
 .inspector {

@@ -9,17 +9,18 @@ import type { NodeType } from '../graph-types.js';
 import type { TypeMeta } from './types.js';
 
 /**
- * Taxonomy in render/legend order. `tool` is conditional (shown when present);
- * `lesson`/`decision` are reserved — the legend marks them "pós-#12", never an
- * empty slot (DESIGN §4 note).
+ * Taxonomy in render/legend order. Every type is conditional: a pill is active
+ * when the current payload holds nodes of that type and dims (`pill-absent`) when
+ * it does not (see overlays `syncFromData`). `lesson`/`decision` are populated by
+ * `consolidate` (#12) and surface here once present (#35).
  */
 export const TAXONOMY: readonly TypeMeta[] = [
-  { type: 'session', label: 'session', cssVar: '--accent-session', reserved: false },
-  { type: 'user', label: 'user', cssVar: '--accent-user', reserved: false },
-  { type: 'assistant', label: 'assistant', cssVar: '--accent-assistant', reserved: false },
-  { type: 'tool', label: 'tool', cssVar: '--accent-tool', reserved: false },
-  { type: 'lesson', label: 'lesson', cssVar: '--accent-lesson', reserved: true },
-  { type: 'decision', label: 'decision', cssVar: '--accent-decision', reserved: true },
+  { type: 'session', label: 'session', cssVar: '--accent-session' },
+  { type: 'user', label: 'user', cssVar: '--accent-user' },
+  { type: 'assistant', label: 'assistant', cssVar: '--accent-assistant' },
+  { type: 'tool', label: 'tool', cssVar: '--accent-tool' },
+  { type: 'lesson', label: 'lesson', cssVar: '--accent-lesson' },
+  { type: 'decision', label: 'decision', cssVar: '--accent-decision' },
 ] as const;
 
 const VAR_BY_TYPE: Record<NodeType, string> = {

@@ -144,6 +144,32 @@ describe('MemoryStore', () => {
       expect(newest).toEqual([...ids].sort((a, b) => b - a).slice(0, 2));
     });
 
+    it('filters by a set of kinds (kind IN), composing with order/limit (#35)', () => {
+      store.createObservation({ sessionId, kind: 'user', content: 'a question' });
+      const lessonId = store.createObservation({ sessionId, kind: 'lesson', content: 'a lesson' });
+      store.createObservation({ sessionId, kind: 'assistant', content: 'a reply' });
+      const decisionId = store.createObservation({
+        sessionId,
+        kind: 'decision',
+        content: 'a decision',
+      });
+
+      const kinds = store
+        .listObservations({ kinds: ['lesson', 'decision'] })
+        .map((o) => o.kind)
+        .sort();
+      expect(kinds).toEqual(['decision', 'lesson']);
+
+      // order=desc → newest (decision) first; composes with the kinds filter.
+      const newestFirst = store
+        .listObservations({ kinds: ['lesson', 'decision'], order: 'desc' })
+        .map((o) => o.id);
+      expect(newestFirst).toEqual([decisionId, lessonId]);
+
+      // Empty array is treated as "no filter" — returns everything.
+      expect(store.listObservations({ kinds: [] })).toHaveLength(4);
+    });
+
     it('iterates observations without materializing the whole set', () => {
       for (let i = 0; i < 3; i++) {
         store.createObservation({ sessionId, kind: 'user', content: `m${i}` });

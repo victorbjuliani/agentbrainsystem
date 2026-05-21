@@ -3,7 +3,7 @@
 > Documento canônico de identidade visual. Lido por `frontend-design`, `frontend-auditor`, `vercel:shadcn`.
 > Atualizar via `design-discovery` em modo REFRESH quando references mudarem.
 
-**Última atualização:** 2026-05-20 (refresh: taxonomia de nó realinhada ao enum `kind` real do store; `concept`/`lesson` reservados pós-#12 — Gate 0b CRITICAL-1)
+**Última atualização:** 2026-05-21 (#35: `lesson`/`decision` deixam de ser reservados — pills habilitam quando presentes, nós fixados em view via `mergePinnedConsolidated`, e busca server-side por FTS (`mode:'search'`) os alcança store-wide)
 **Modo de captura:** initial + refresh parcial (§4/§11)
 **Status do recon:** completo (Obsidian, Observable, Neo4j Bloom — tokens computados extraídos via agent-browser)
 **Escopo primário:** issue #11 — UI localhost de grafo interativo (read-only) da memória do agente.
@@ -69,10 +69,10 @@ A taxonomia segue o que **existe nos dados hoje**: um nó `session` (hub/contain
 | `--accent-user` | `observation.kind = user` | cyan `#22D3EE` | **ativo** |
 | `--accent-assistant` | `observation.kind = assistant` | lavender `#A78BFA` | **ativo** |
 | `--accent-tool` | `observation.kind = tool` | teal `#5EEAD4` | condicional (quando presente) |
-| `--accent-lesson` | `observation.kind = lesson` | amber `#FBBF24` | **reservado** (aparece pós-#12) |
-| `--accent-decision` | `observation.kind = decision` | fuchsia `#f0abfc` | **reservado** (aparece pós-#12; hoje só na pill desabilitada da legenda) |
+| `--accent-lesson` | `observation.kind = lesson` | amber `#FBBF24` | condicional (quando presente; **fixado em view** — #35) |
+| `--accent-decision` | `observation.kind = decision` | fuchsia `#f0abfc` | condicional (quando presente; **fixado em view** — #35) |
 
-> **Conjunto ativo do MVP = violet (session) + cyan (user) + lavender (assistant)** — 3 hues quentes/frios que dão leitura por tipo sem legenda obrigatória. `tool` aparece só quando há observações desse tipo. `lesson`/`decision`/`concept` são **reservados**: a legenda os mostra marcados "aparece após consolidação (#12)", nunca como slot vazio silencioso. Edges são neutros de baixa opacidade — nunca competem com nós.
+> **Conjunto ativo do MVP = violet (session) + cyan (user) + lavender (assistant)** — 3 hues quentes/frios que dão leitura por tipo sem legenda obrigatória. `tool` aparece só quando há observações desse tipo. `lesson`/`decision` (o produto durável de `consolidate`) tornaram-se **ativos pós-#35**: a pill habilita quando o store tem nós desses tipos e os nós são **fixados em view** (`mergePinnedConsolidated`, `src/ui/graph.ts`) — antes caíam abaixo do corte de recência/grau e ficavam invisíveis. Edges são neutros de baixa opacidade — nunca competem com nós.
 
 ### Neutrals (9-step) — fundo profundo levemente tingido de violeta (não preto puro)
 
@@ -254,11 +254,12 @@ Spec específica do grafo — o que `frontend-design` constrói e `frontend-audi
 | **User** | `observation.kind=user` | cyan `#22D3EE` | pequeno→médio | círculo | ativo |
 | **Assistant** | `observation.kind=assistant` | lavender `#A78BFA` | pequeno→médio | círculo | ativo |
 | **Tool** | `observation.kind=tool` | teal `#5EEAD4` | pequeno | círculo | condicional |
-| **Lesson** | `observation.kind=lesson` | amber `#FBBF24` | médio→grande (insight = peso) | círculo, glow mais intenso | **reservado pós-#12** |
+| **Lesson** | `observation.kind=lesson` | amber `#FBBF24` | médio→grande (insight = peso) | círculo, glow mais intenso | ativo (fixado em view — #35) |
+| **Decision** | `observation.kind=decision` | fuchsia `#f0abfc` | médio→grande | círculo, glow mais intenso | ativo (fixado em view — #35) |
 
 - **Tamanho do nó** = função do grau (nº de conexões) e/ou recência. Sessions incham com o nº de observações que contêm. Escala suave, sem outliers gigantes.
 - **Label:** mono (`JetBrains Mono`, `text-xs`), aparece em hover/zoom-in; some em zoom-out para reduzir ruído.
-- **Nós reservados** (`lesson`, e futuramente `concept`/`decision`) só passam a renderizar quando a issue #12 populá-los; até lá aparecem apenas como item de legenda marcado "pós-#12".
+- **Nós consolidados** (`lesson`/`decision`, produto de `consolidate` #12) são **fixados em view** desde #35: prepended à amostra do escopo (`mergePinnedConsolidated`) para nunca caírem abaixo do corte de recência/grau. A busca (`mode:'search'`) os alcança store-wide via FTS, fora da janela de recência.
 
 ### Edges
 - Cor: neutro luminoso de baixa opacidade — dark `rgba(196,181,253,0.15)` (violet bem apagado), light `rgba(74,71,96,0.18)`.

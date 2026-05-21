@@ -28,13 +28,26 @@ interface ScopeState {
   mode: ScopeMode;
   sessionId?: number;
   similarity: boolean;
+  /**
+   * Active store-wide search (#35). When set, it drives an authoritative server
+   * fetch (FTS) that reaches obs OUTSIDE the topN/session window, so it takes
+   * precedence over `mode`/`sessionId` in the query string.
+   */
+  search?: string;
 }
 
 /** Build the `/api/graph` query string from the current scope. */
 function scopeToQuery(scope: ScopeState): string {
   const p = new URLSearchParams();
-  if (scope.mode === 'topN') p.set('topN', '200');
-  else if (scope.sessionId !== undefined) p.set('session', String(scope.sessionId));
+  if (scope.search) {
+    // Search is store-wide and authoritative — it supersedes the topN/session
+    // scope server-side, so we send only it (plus the similarity toggle).
+    p.set('search', scope.search);
+  } else if (scope.mode === 'topN') {
+    p.set('topN', '200');
+  } else if (scope.sessionId !== undefined) {
+    p.set('session', String(scope.sessionId));
+  }
   if (scope.similarity) p.set('similarity', '1');
   const qs = p.toString();
   return qs ? `/api/graph?${qs}` : '/api/graph';
@@ -163,8 +176,13 @@ async function main(): Promise<void> {
       renderer.setVisibleTypes(new Set(visibleTypes));
     },
     onSearch: (query) => {
+      // Server-side search (#35): the query drives an authoritative store-wide FTS
+      // fetch (reaches obs outside the recency/scope window). Clearing it reverts to
+      // the preserved scope. No client-side highlight: the payload is already the
+      // match set, so dimming non-matches would be a no-op.
       lastSearch = query.trim();
-      renderer.setSearch(query);
+      scope.search = lastSearch || undefined;
+      void load();
     },
     onSearchDelete: () => {
       if (!lastSearch) return;
@@ -174,9 +192,13 @@ async function main(): Promise<void> {
       );
     },
     onScopeChange: (next) => {
+      // Changing scope (session/topN/similarity) exits search: clear the active
+      // query so the chosen scope is what loads (the input is cleared in overlays).
       scope.mode = next.mode;
       scope.sessionId = next.sessionId;
       scope.similarity = next.similarity;
+      scope.search = undefined;
+      lastSearch = '';
       void load();
     },
     onThemeChange: (theme) => {
