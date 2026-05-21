@@ -43,6 +43,27 @@ function hasCodeExtension(filePath: string): boolean {
   return dot >= 0 && CODE_EXTENSIONS.has(filePath.slice(dot).toLowerCase());
 }
 
+/**
+ * Collapse an ephemeral worktree path to its canonical main-repo path (FR-C2,
+ * #32). Edits made inside `<repo>/.worktrees/<branch>/<rel>` or
+ * `<repo>/.claude/worktrees/<id>/<rel>` are about `<repo>/<rel>` — the worktree
+ * dir vanishes on merge/cleanup, so anchoring to it is exactly the pollution the
+ * killer-test found (~1065 dead worktree paths). Normalizing here keeps the
+ * anchor pointing at the file that survives. Non-worktree paths pass through.
+ */
+export function normalizeWorktreePath(filePath: string): string {
+  for (const marker of ['/.worktrees/', '/.claude/worktrees/']) {
+    const at = filePath.indexOf(marker);
+    if (at < 0) continue;
+    const repoRoot = filePath.slice(0, at);
+    const tail = filePath.slice(at + marker.length);
+    const slash = tail.indexOf('/'); // drop the <branch|id> segment
+    if (slash < 0) continue;
+    return `${repoRoot}/${tail.slice(slash + 1)}`;
+  }
+  return filePath;
+}
+
 /** A code-location seed extracted from one Edit/Write tool call. */
 export interface ToolAnchorSeed {
   /** The tool that produced it (`Edit` or `Write`). */
@@ -115,8 +136,10 @@ export function extractToolAnchors(content: unknown): ToolAnchorSeed[] {
     const tool = asString(block.name);
     if (tool !== 'Edit' && tool !== 'Write') continue;
     const input = isRecord(block.input) ? block.input : undefined;
-    const filePath = input ? asString(input.file_path) : undefined;
-    if (!filePath || !hasCodeExtension(filePath)) continue;
+    const rawPath = input ? asString(input.file_path) : undefined;
+    if (!rawPath || !hasCodeExtension(rawPath)) continue;
+    // Anchor to the canonical file, not the ephemeral worktree copy (FR-C2).
+    const filePath = normalizeWorktreePath(rawPath);
     const payload = input ? (asString(input.new_string) ?? asString(input.content) ?? '') : '';
     seeds.push({ tool, filePath, symbols: extractSymbols(payload) });
   }
