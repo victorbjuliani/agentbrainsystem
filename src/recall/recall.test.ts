@@ -3,7 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { AppConfig } from '../config.js';
+import type { EmbeddingProvider } from '../embedding/index.js';
 import { type Memory, openMemory } from '../memory.js';
+import { MemoryStore } from '../store/index.js';
+import { Recall } from './recall.js';
 
 let dir: string;
 
@@ -60,6 +63,44 @@ describe('Recall — semantic acceptance', () => {
     const hits = await mem.recall.recall('Paris France capital', { limit: 3 });
     expect(hits[0]?.observation.content).toContain('Paris');
     mem.close();
+  });
+});
+
+/** Provider that explodes if embed() is ever called — proves the FTS path is embed-free. */
+class ExplodingProvider implements EmbeddingProvider {
+  readonly id = 'exploding';
+  readonly model = 'none';
+  readonly dimensions = 8;
+  async embed(): Promise<number[][]> {
+    throw new Error('recallFts must not embed (ADR-0005 FTS-first)');
+  }
+}
+
+describe('Recall.recallFts — FTS-only fast path (#19 / ADR-0005)', () => {
+  it('recalls by keyword WITHOUT calling provider.embed', () => {
+    const store = new MemoryStore({ dbPath: join(dir, 'fts.db'), dimensions: 8 }).open();
+    const sessionId = store.createSession({ externalId: 's1' });
+    // Seed FTS directly — no embedding involved.
+    for (const obs of CORPUS) {
+      const id = store.createObservation({ sessionId, kind: obs.kind, content: obs.content });
+      store.indexFts(id, obs.content);
+    }
+    const recall = new Recall(store, new ExplodingProvider());
+
+    const hits = recall.recallFts('squash commits with git rebase', { limit: 3 });
+    expect(hits.length).toBeGreaterThan(0);
+    expect(hits.some((h) => h.observation.content.includes('git rebase'))).toBe(true);
+    // FTS-only hits carry an ftsRank and no vectorRank.
+    expect(hits[0]?.ftsRank).toBeDefined();
+    expect(hits[0]?.vectorRank).toBeUndefined();
+    store.close();
+  });
+
+  it('returns [] for a query with no searchable tokens', () => {
+    const store = new MemoryStore({ dbPath: join(dir, 'fts2.db'), dimensions: 8 }).open();
+    const recall = new Recall(store, new ExplodingProvider());
+    expect(recall.recallFts('!!! @@@ ###', { limit: 5 })).toEqual([]);
+    store.close();
   });
 });
 

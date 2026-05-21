@@ -26,6 +26,11 @@ export interface RecallHit {
   ftsRank?: number;
 }
 
+export interface RecallFtsOptions {
+  /** Max results to return. Default 8. */
+  limit?: number;
+}
+
 /**
  * Turn free text into a safe FTS5 MATCH expression: word tokens OR-ed together,
  * each quoted so punctuation/operators in the query can't break the parser or
@@ -83,6 +88,30 @@ export class Recall {
         vectorRank: f.ranks.vector,
         ftsRank: f.ranks.fts,
       });
+    }
+    return hits;
+  }
+
+  /**
+   * FTS-only recall — the fast path for the per-prompt hook (#19). Deliberately
+   * does NOT call `provider.embed`, so it never pays the local model's cold-load
+   * tax and can never hit the first-ever-download landmine (ADR-0005). It is the
+   * lexical leg of `recall` in isolation: `toFtsQuery` → `store.searchFts`.
+   *
+   * `ftsRank` is the raw FTS5 rank (more negative = better); callers that want a
+   * descending "best first" score can negate it. Returns at most `limit` hits.
+   */
+  recallFts(query: string, options: RecallFtsOptions = {}): RecallHit[] {
+    const limit = options.limit ?? 8;
+    const ftsExpr = toFtsQuery(query);
+    if (ftsExpr === null) return [];
+
+    const matches = this.store.searchFts(ftsExpr, limit);
+    const hits: RecallHit[] = [];
+    for (const m of matches) {
+      const observation = this.store.getObservation(m.id);
+      if (!observation) continue; // index drifted ahead of rows — skip defensively
+      hits.push({ observation, score: -m.distance, ftsRank: m.distance });
     }
     return hits;
   }
