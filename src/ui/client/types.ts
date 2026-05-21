@@ -49,6 +49,4 @@ export interface TypeMeta {
   label: string;
   /** CSS var name carrying the hex (e.g. `--accent-user`). */
   cssVar: string;
-  /** Reserved types (lesson/decision) render as "pós-#12", never empty slots. */
-  reserved: boolean;
 }

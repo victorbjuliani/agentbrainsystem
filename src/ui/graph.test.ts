@@ -184,4 +184,176 @@ describe('buildGraph', () => {
     }
     expect(g.scope.similarity).toBe(true);
   });
+
+  // ---- Pinned consolidated nodes (#35) --------------------------------------
+
+  it('pins lesson/decision into view even when the session scope cuts the newest obs', () => {
+    const s = store.createSession({ externalId: 'sess', project: 'proj' });
+    // Bury the session past NODE_CAP with plain turns (oldest ids stay in the
+    // id-ASC scope window; the newest get sliced out).
+    for (let i = 0; i < NODE_CAP + 50; i++) {
+      store.createObservation({ sessionId: s, kind: 'user', content: `m${i}` });
+    }
+    // The durable consolidate output is written LAST → highest ids → would fall
+    // below the recency cut without pinning (the #35 bug).
+    const lessonId = store.createObservation({ sessionId: s, kind: 'lesson', content: 'L' });
+    const decisionId = store.createObservation({ sessionId: s, kind: 'decision', content: 'D' });
+
+    const g = buildGraph(store, { session: s });
+    const obsIds = new Set(
+      g.nodes.filter((n) => n.id.startsWith('o:')).map((n) => Number(n.id.slice(2))),
+    );
+    expect(obsIds.has(lessonId)).toBe(true);
+    expect(obsIds.has(decisionId)).toBe(true);
+    expect(g.nodes.length).toBeLessThanOrEqual(NODE_CAP);
+  });
+
+  it('surfaces consolidated nodes from OTHER sessions (with their session hub) in session scope', () => {
+    const focus = store.createSession({ externalId: 'focus', project: 'focus' });
+    store.createObservation({ sessionId: focus, kind: 'user', content: 'q' });
+    const other = store.createSession({ externalId: 'other', project: 'other' });
+    const lessonId = store.createObservation({
+      sessionId: other,
+      kind: 'lesson',
+      content: 'cross',
+    });
+
+    const g = buildGraph(store, { session: focus });
+    const obsIds = new Set(
+      g.nodes.filter((n) => n.id.startsWith('o:')).map((n) => Number(n.id.slice(2))),
+    );
+    expect(obsIds.has(lessonId)).toBe(true);
+    // The other session's hub must be present so the pin is not an orphan.
+    expect(g.nodes.some((n) => n.id === `s:${other}`)).toBe(true);
+  });
+
+  it('does not duplicate a pinned obs that is already in scope', () => {
+    const s = store.createSession({ externalId: 'sess' });
+    const lessonId = store.createObservation({ sessionId: s, kind: 'lesson', content: 'L' });
+    const g = buildGraph(store, { session: s });
+    expect(g.nodes.filter((n) => n.id === `o:${lessonId}`)).toHaveLength(1);
+  });
+
+  it('enforces the requested limit even after pinning consolidated nodes (#42 P1)', () => {
+    const s = store.createSession({ externalId: 'sess', project: 'proj' });
+    for (let i = 0; i < 30; i++) {
+      store.createObservation({ sessionId: s, kind: 'user', content: `m${i}` });
+    }
+    // Consolidated nodes (highest ids) would be pinned ahead of the scope set.
+    store.createObservation({ sessionId: s, kind: 'lesson', content: 'L1' });
+    store.createObservation({ sessionId: s, kind: 'decision', content: 'D1' });
+
+    const g = buildGraph(store, { session: s, limit: 10 });
+    expect(g.scope.limit).toBe(10);
+    // The per-request budget is honored even though pins were prepended.
+    expect(g.nodes.length).toBeLessThanOrEqual(10);
+    // Pins win the budget over the scope tail (they render first).
+    const types = new Set(g.nodes.map((n) => n.type));
+    expect(types.has('lesson')).toBe(true);
+    expect(types.has('decision')).toBe(true);
+  });
+
+  it('caps pinned-hub footprint so pinned obs still render under a small limit (#42 P2)', () => {
+    const focus = store.createSession({ externalId: 'focus', project: 'focus' });
+    store.createObservation({ sessionId: focus, kind: 'user', content: 'q' });
+    // 12 OTHER sessions, each with a single lesson → each pin needs its own hub.
+    // Without a footprint cap, the hubs alone would fill a small budget and the
+    // lessons would never render (only session hubs would).
+    for (let i = 0; i < 12; i++) {
+      const s = store.createSession({ externalId: `o${i}` });
+      store.createObservation({ sessionId: s, kind: 'lesson', content: `L${i}` });
+    }
+    const g = buildGraph(store, { session: focus, limit: 8 });
+    expect(g.nodes.length).toBeLessThanOrEqual(8);
+    // At least one pinned lesson OBS renders — hubs don't consume the whole budget.
+    expect(g.nodes.some((n) => n.type === 'lesson')).toBe(true);
+  });
+
+  // ---- Search mode (#35) ----------------------------------------------------
+
+  it('search resolves FTS matches store-wide, ignoring scope/recency', () => {
+    const s1 = store.createSession({ externalId: 's1', project: 'p1' });
+    const s2 = store.createSession({ externalId: 's2', project: 'p2' });
+    const needleId = store.createObservation({
+      sessionId: s1,
+      kind: 'user',
+      content: 'unicorn needle',
+    });
+    store.indexFts(needleId, 'unicorn needle');
+    const otherId = store.createObservation({ sessionId: s2, kind: 'user', content: 'plain hay' });
+    store.indexFts(otherId, 'plain hay');
+
+    const g = buildGraph(store, { search: 'unicorn' });
+    expect(g.scope.mode).toBe('search');
+    const obsIds = new Set(
+      g.nodes.filter((n) => n.id.startsWith('o:')).map((n) => Number(n.id.slice(2))),
+    );
+    expect(obsIds.has(needleId)).toBe(true);
+    expect(obsIds.has(otherId)).toBe(false);
+    expect(g.nodes.some((n) => n.id === `s:${s1}`)).toBe(true);
+  });
+
+  it('search reaches obs OUTSIDE the recency window (the #35 bug)', () => {
+    const s = store.createSession({ externalId: 'sess' });
+    // Oldest obs holds the needle; bury it under NODE_CAP newer turns.
+    const needleId = store.createObservation({
+      sessionId: s,
+      kind: 'user',
+      content: 'buried zebra',
+    });
+    store.indexFts(needleId, 'buried zebra');
+    for (let i = 0; i < NODE_CAP + 50; i++) {
+      const id = store.createObservation({ sessionId: s, kind: 'user', content: `noise ${i}` });
+      store.indexFts(id, `noise ${i}`);
+    }
+    const g = buildGraph(store, { search: 'zebra' });
+    const obsIds = new Set(
+      g.nodes.filter((n) => n.id.startsWith('o:')).map((n) => Number(n.id.slice(2))),
+    );
+    expect(obsIds.has(needleId)).toBe(true);
+  });
+
+  it('non-searchable query (punctuation-only) yields an empty search graph, not a 500', () => {
+    const s = store.createSession({ externalId: 'sess' });
+    const id = store.createObservation({ sessionId: s, kind: 'user', content: 'hello' });
+    store.indexFts(id, 'hello');
+    const g = buildGraph(store, { search: '   ?! - ' });
+    expect(g.scope.mode).toBe('search');
+    expect(g.nodes).toEqual([]);
+    expect(g.meta.emptyStore).toBe(false);
+  });
+
+  it('zero-hit search on a populated store reports search mode + non-empty store', () => {
+    const s = store.createSession({ externalId: 'sess' });
+    const id = store.createObservation({ sessionId: s, kind: 'user', content: 'hello world' });
+    store.indexFts(id, 'hello world');
+    const g = buildGraph(store, { search: 'nonexistentxyz' });
+    expect(g.scope.mode).toBe('search');
+    expect(g.nodes).toEqual([]);
+    expect(g.meta.emptyStore).toBe(false);
+  });
+
+  it('reserves observation slots in search so hits render under a small limit (#42 P2)', () => {
+    // 10 distinct sessions, each with one matching obs → without interleaving the
+    // hubs alone would fill a small budget and zero hits would render.
+    for (let i = 0; i < 10; i++) {
+      const s = store.createSession({ externalId: `s${i}` });
+      const id = store.createObservation({ sessionId: s, kind: 'user', content: `findme ${i}` });
+      store.indexFts(id, `findme ${i}`);
+    }
+    const g = buildGraph(store, { search: 'findme', limit: 8 });
+    expect(g.scope.mode).toBe('search');
+    expect(g.nodes.length).toBeLessThanOrEqual(8);
+    // Matched OBS render — not just session hubs.
+    expect(g.nodes.some((n) => n.id.startsWith('o:'))).toBe(true);
+  });
+
+  it('search takes precedence over topN/session', () => {
+    const s = store.createSession({ externalId: 'sess' });
+    const id = store.createObservation({ sessionId: s, kind: 'user', content: 'findme token' });
+    store.indexFts(id, 'findme token');
+    const g = buildGraph(store, { search: 'findme', topN: 5, session: 99999 });
+    expect(g.scope.mode).toBe('search');
+    expect(g.nodes.some((n) => n.id === `o:${id}`)).toBe(true);
+  });
 });

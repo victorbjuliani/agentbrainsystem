@@ -13,7 +13,12 @@
  *     wall-clock (`sessions.created_at`) is the wrong ordering key.
  *   - SIMILARITY uses STORED vectors only (`getVector` + `knn`). No embedder, no
  *     query embedding — the UI never triggers a model load.
+ *   - SEARCH (#35) reuses the FTS keyword index (`toFtsQuery` → `searchFts`). FTS
+ *     is keyword-only and embedder-free, so search ALSO never triggers a model load.
+ *   - PINNING (#35): the durable `consolidate` output (`lesson`/`decision`) is
+ *     forced into view regardless of recency/scope so it is never below the cap.
  */
+import { toFtsQuery } from '../recall/index.js';
 import type { MemoryStore, Observation, Session } from '../store/index.js';
 import {
   GRAPH_CONTRACT_VERSION,
@@ -33,6 +38,12 @@ export const EDGE_CAP = 1500;
 export const SESSION_CAP = 200;
 /** Neighbours requested per observation for similarity (excludes self). */
 export const SIMILARITY_K = 4;
+/** Max FTS hits resolved in `search` mode (#35); aligned to the node cap. */
+export const SEARCH_CAP = NODE_CAP;
+/** Max consolidated observations pinned into view per request (#35). */
+export const PIN_CAP = 150;
+/** The durable `consolidate` kinds we always pin into view (#35). */
+export const PIN_KINDS: readonly string[] = ['lesson', 'decision'];
 /** Label content is truncated to keep the payload light. */
 const LABEL_MAX = 80;
 
@@ -85,7 +96,16 @@ export function buildGraph(store: MemoryStore, query: GraphQuery): GraphData {
   let observations: Observation[];
   let truncated = false;
 
-  if (query.topN !== undefined) {
+  const searchText = query.search?.trim();
+  if (searchText) {
+    // SEARCH mode (#35): FTS matches store-wide — reaches obs OUTSIDE the recency
+    // window. Takes precedence over topN/session. Embedder-free (keyword index).
+    mode = 'search';
+    const resolved = resolveSearch(store, searchText);
+    sessions = resolved.sessions;
+    observations = resolved.observations;
+    truncated = resolved.truncated;
+  } else if (query.topN !== undefined) {
     mode = 'topN';
     // Most-recent observations store-wide. We fetch the newest `obsBudget` rows
     // by id (order:'desc' → highest ids = newest), then REVERSE so the rendered
@@ -119,7 +139,7 @@ export function buildGraph(store: MemoryStore, query: GraphQuery): GraphData {
       focus = top.length > 0 ? top[0] : undefined;
     }
     if (!focus) {
-      return emptyGraph(query, totals, wantSimilarity, nodeBudget);
+      return emptyGraph(mode, query, totals, wantSimilarity, nodeBudget);
     }
     sessions = [focus];
     // Reserve one slot for the session hub itself.
@@ -133,8 +153,20 @@ export function buildGraph(store: MemoryStore, query: GraphQuery): GraphData {
     }
   }
 
+  // PIN consolidated types into view (#35). The durable `consolidate` output
+  // (lesson/decision) is the highest-value memory but, being written last (highest
+  // ids) and sparsely connected, it falls below the recency/degree cut in both
+  // topN and session scope. We prepend the newest pins so they render FIRST — the
+  // NODE_CAP guard below then drops the lowest-priority (scope) tail, not the pins.
+  // NOT applied in search mode: a search defines its own result set explicitly.
+  if (mode !== 'search') {
+    const merged = mergePinnedConsolidated(store, observations, sessions, nodeBudget);
+    observations = merged.observations;
+    sessions = merged.sessions;
+  }
+
   if (sessions.length === 0 && observations.length === 0) {
-    return emptyGraph(query, totals, wantSimilarity, nodeBudget);
+    return emptyGraph(mode, query, totals, wantSimilarity, nodeBudget);
   }
 
   // ---- Nodes ----------------------------------------------------------------
@@ -144,39 +176,42 @@ export function buildGraph(store: MemoryStore, query: GraphQuery): GraphData {
     obsCountBySession.set(o.sessionId, (obsCountBySession.get(o.sessionId) ?? 0) + 1);
   }
 
+  // Emit nodes by walking observations in PRIORITY order (pins lead `observations`),
+  // adding each obs's session hub lazily right before its first observation. Hubs
+  // are never emitted ahead of their observations, so a small `nodeBudget` spread
+  // across many sessions can't fill up with hubs and starve the matched/pinned obs
+  // (#42 P2). Each step is charged its full cost (obs + hub when the hub is new), so
+  // we never half-commit an obs whose hub wouldn't fit, keeping containment edges
+  // valid and the `scope.limit` contract honest.
+  const sessionById = new Map(sessions.map((s) => [s.id, s]));
   const includedSessionIds = new Set<number>();
-  for (const s of sessions) {
-    if (nodes.length >= NODE_CAP) {
-      truncated = true;
-      break;
-    }
-    nodes.push({
-      id: sessionNodeId(s.id),
-      type: 'session',
-      label: sessionLabel(s),
-      sizeDriver: obsCountBySession.get(s.id) ?? 0,
-      createdAt: s.createdAt,
-    });
-    includedSessionIds.add(s.id);
-  }
-
-  // Degree accumulator drives observation node size.
   const degree = new Map<string, number>();
   const includedObsIds = new Set<number>();
   const renderedObs: Observation[] = [];
   for (const o of observations) {
-    if (nodes.length >= NODE_CAP) {
+    const session = sessionById.get(o.sessionId);
+    if (!session) {
+      truncated = true;
+      continue; // session outside our resolved set — skip rather than orphan the obs
+    }
+    const needsHub = !includedSessionIds.has(o.sessionId);
+    const cost = needsHub ? 2 : 1; // the obs, plus its session hub when not yet emitted
+    if (nodes.length + cost > nodeBudget) {
       truncated = true;
       break;
     }
-    // Skip observations whose session hub did not make the cut (keeps edges valid).
-    if (!includedSessionIds.has(o.sessionId)) {
-      truncated = true;
-      continue;
+    if (needsHub) {
+      nodes.push({
+        id: sessionNodeId(session.id),
+        type: 'session',
+        label: sessionLabel(session),
+        sizeDriver: obsCountBySession.get(session.id) ?? 0,
+        createdAt: session.createdAt,
+      });
+      includedSessionIds.add(session.id);
     }
-    const id = obsNodeId(o.id);
     nodes.push({
-      id,
+      id: obsNodeId(o.id),
       type: nodeTypeForKind(o.kind),
       label: truncate(o.content),
       sizeDriver: 0, // filled from degree once edges are known
@@ -185,6 +220,26 @@ export function buildGraph(store: MemoryStore, query: GraphQuery): GraphData {
     });
     includedObsIds.add(o.id);
     renderedObs.push(o);
+  }
+
+  // A session with NO observations in the set (e.g. a brand-new empty session in
+  // session mode) still gets its hub, but only with leftover budget — observations
+  // were served first, so this never starves them. Sessions that DID have obs but
+  // lost the budget race are intentionally not shown as bare hubs.
+  for (const s of sessions) {
+    if (includedSessionIds.has(s.id) || (obsCountBySession.get(s.id) ?? 0) > 0) continue;
+    if (nodes.length >= nodeBudget) {
+      truncated = true;
+      break;
+    }
+    nodes.push({
+      id: sessionNodeId(s.id),
+      type: 'session',
+      label: sessionLabel(s),
+      sizeDriver: 0,
+      createdAt: s.createdAt,
+    });
+    includedSessionIds.add(s.id);
   }
 
   // ---- Edges ----------------------------------------------------------------
@@ -268,8 +323,14 @@ export function buildGraph(store: MemoryStore, query: GraphQuery): GraphData {
   };
 }
 
-/** A valid, empty GraphData payload — store is empty or the focus session is gone. */
+/**
+ * A valid, empty GraphData payload — store is empty, the focus session is gone, or
+ * a search matched nothing. `mode` is passed explicitly so a 0-hit search reports
+ * `mode:'search'` (the client uses that to show "no results" instead of the
+ * "memory is empty" state on a populated store; #35).
+ */
 function emptyGraph(
+  mode: GraphScope['mode'],
   query: GraphQuery,
   totals: { totalSessions: number; totalObservations: number },
   similarity: boolean,
@@ -278,7 +339,7 @@ function emptyGraph(
   return {
     version: GRAPH_CONTRACT_VERSION,
     scope: {
-      mode: query.topN !== undefined ? 'topN' : 'session',
+      mode,
       sessionId: query.session,
       limit: nodeBudget,
       nodeCap: NODE_CAP,
@@ -295,4 +356,105 @@ function emptyGraph(
       emptyStore: totals.totalSessions === 0 && totals.totalObservations === 0,
     },
   };
+}
+
+/** The observations + their session hubs to render in `search` mode (#35). */
+interface ResolvedSet {
+  sessions: Session[];
+  observations: Observation[];
+  truncated: boolean;
+}
+
+/**
+ * SEARCH mode (#35): resolve store-wide FTS matches into a renderable set. Keyword
+ * index only (no embedder, no model load). The raw query is normalized through
+ * `toFtsQuery` so punctuation/operators can't break the parser or inject FTS
+ * syntax — a non-searchable query (empty / punctuation-only) yields no results
+ * rather than an error. The `try/catch` is belt-and-suspenders: a malformed MATCH
+ * must degrade to "no results", never a 500.
+ */
+function resolveSearch(store: MemoryStore, rawQuery: string): ResolvedSet {
+  const expr = toFtsQuery(rawQuery);
+  if (expr === null) return { sessions: [], observations: [], truncated: false };
+
+  let hits: ReturnType<MemoryStore['searchFts']>;
+  try {
+    hits = store.searchFts(expr, SEARCH_CAP);
+  } catch {
+    return { sessions: [], observations: [], truncated: false };
+  }
+
+  const observations: Observation[] = [];
+  for (const hit of hits) {
+    const o = store.getObservation(hit.id);
+    if (o) observations.push(o); // null-guard: index may drift ahead of rows
+  }
+  // More matches than the cap allowed → flag truncation (the node loop also flags
+  // it if the rendered nodes hit NODE_CAP).
+  let truncated = hits.length >= SEARCH_CAP;
+
+  const sessions: Session[] = [];
+  const seen = new Set<number>();
+  for (const o of observations) {
+    if (seen.has(o.sessionId)) continue;
+    if (sessions.length >= SESSION_CAP) {
+      truncated = true;
+      break;
+    }
+    const s = store.getSession(o.sessionId);
+    if (s) {
+      sessions.push(s);
+      seen.add(o.sessionId);
+    }
+  }
+  return { sessions, observations, truncated };
+}
+
+/**
+ * Prepend the newest consolidated observations (lesson/decision) and their session
+ * hubs to the scope set (#35), deduped by id so a pin already in scope is not
+ * counted twice. Pins go FIRST so the downstream node-budget guard drops the
+ * lower-priority scope tail rather than the pins. A no-op when the store holds no
+ * such observations — every pre-#35 caller path is unchanged.
+ *
+ * The pin footprint (pinned obs + the hubs they pull in) is bounded to at most HALF
+ * the node budget. Node rendering emits all session hubs before any observation, so
+ * an unbounded set of single-pin sessions could fill the budget with hubs and starve
+ * the very pins it was meant to surface (#42 P2). By admitting pins one at a time and
+ * charging each its hub cost, every pin we COMMIT to is guaranteed a render slot, and
+ * at least half the budget stays free for the scope view.
+ */
+function mergePinnedConsolidated(
+  store: MemoryStore,
+  observations: Observation[],
+  sessions: Session[],
+  nodeBudget: number,
+): { observations: Observation[]; sessions: Session[] } {
+  const pinned = store.listObservations({ kinds: PIN_KINDS, order: 'desc', limit: PIN_CAP });
+  if (pinned.length === 0) return { observations, sessions };
+
+  const scopeIds = new Set(observations.map((o) => o.id));
+  const candidates = pinned.filter((o) => !scopeIds.has(o.id));
+  if (candidates.length === 0) return { observations, sessions };
+
+  const pinBudget = Math.max(1, Math.floor(nodeBudget / 2));
+  const haveSession = new Set(sessions.map((s) => s.id));
+  const mergedSessions = [...sessions];
+  const accepted: Observation[] = [];
+  let spent = 0;
+  for (const o of candidates) {
+    const needsHub = !haveSession.has(o.sessionId);
+    const cost = needsHub ? 2 : 1; // the pin itself, plus its hub when not yet present
+    if (spent + cost > pinBudget) break;
+    if (needsHub) {
+      const s = store.getSession(o.sessionId);
+      if (!s) continue; // session vanished — skip rather than orphan the pin
+      mergedSessions.push(s);
+      haveSession.add(o.sessionId);
+    }
+    accepted.push(o);
+    spent += cost;
+  }
+  if (accepted.length === 0) return { observations, sessions };
+  return { observations: [...accepted, ...observations], sessions: mergedSessions };
 }
