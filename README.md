@@ -13,6 +13,7 @@ Existing agent-memory tools capture data but often fail at the part that matters
 - **Distilled lessons** — optional LLM consolidation of raw session noise into durable insights/decisions.
 - **Optimization loop** — turn that distilled memory into evidence-backed, gated edits to your project's `CLAUDE.md` and Claude Code auto-memory (preview → approve → apply; never automatic).
 - **Selective delete** — prune wrong/stale/sensitive memories by id, session, project, or search, across CLI, MCP, and the UI (preview → confirm; hard-delete, export first).
+- **Verifiable, self-healing memory** — facts edited via Edit/Write are anchored to real code (`file:line@commit`) through the code-review-graph; recall labels each as ✓verified / ~claimed / ⚠stale, anchors self-heal when code moves (rename re-anchors, removal goes stale), and a PreToolUse guard warns in-loop before you duplicate code that already exists. Fail-open and offline-safe (`docs/adr/0009-verifiable-memory-anchoring.md`).
 - **Portable memory** — export and import the whole memory store as a portable artifact (no lock-in, survives machine/project moves).
 - **Visual graph UI** — a localhost interface to explore the agent's memory as an interactive graph.
 
@@ -166,6 +167,7 @@ See also:
 - `docs/adr/0006-gated-apply-write-safety.md` — gated-apply safety (backup/atomic/rollback, fail-closed guard)
 - `docs/adr/0007-ui-write-path-security.md` — UI write-path security (CSRF/Origin, handle confirmation)
 - `docs/adr/0008-hard-delete-safety.md` — hard-delete safety (preview→pin→execute, no-undo)
+- `docs/adr/0009-verifiable-memory-anchoring.md` — verifiable memory (code-grounded anchors, self-healing, PreToolUse guard)
 - `docs/DESIGN.md` — visual identity for the graph UI
 - `docs/export-format.md` — the export artifact format
 - [GitHub Issues](https://github.com/victorbjuliani/agentbrainsystem/issues) — requirements and roadmap (source of truth)
