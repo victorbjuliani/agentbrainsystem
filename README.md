@@ -15,12 +15,12 @@ Existing agent-memory tools capture data but often fail at the part that matters
 
 Explicitly **out of scope** (for now): multi-user/team sharing, image/vision embeddings, heavyweight consolidation tiers we don't need.
 
-## Planned shape (to be confirmed in discovery)
+## How it works
 
 - Ingests Claude Code / agent session transcripts (e.g. `~/.claude/projects/**/*.jsonl`).
 - Local embeddings by default (no rate limits, no cost, offline); pluggable to hosted providers.
-- Embedded storage with vector search.
-- Exposed to agents over MCP.
+- Embedded storage (SQLite + sqlite-vec + FTS5) with hybrid vector + keyword recall.
+- Exposed to agents over MCP; explored via the localhost graph UI; distilled via optional LLM consolidation.
 
 ## Getting started
 

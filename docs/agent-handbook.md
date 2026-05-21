@@ -6,15 +6,15 @@ Shared onboarding layer for AI coding agents in this repository. Keep project fa
 
 - **Product:** local-first persistent memory system for AI coding agents — captures session history, stores it, and serves reliable semantic recall back to agents. Adds portable export/import and a visual graph UI.
 - **Primary users:** solo developers running coding agents (Claude Code, Codex) who want durable cross-session memory; secondarily, the open-source community (public repo).
-- **Current maturity:** greenfield / prototype. No product code yet — being scoped via `docs/discovery/`.
-- **Primary languages and frameworks:** *to be finalized in discovery (Solution Shape).* Strong lean: **Node.js / TypeScript** (MCP SDK ecosystem, JS-native local embeddings via transformers.js, embedded vector store, web UI for graph visualization).
+- **Current maturity:** MVP+ shipped (#1–#12, #14) on `main`: reliable `embed → persist → recall` over MCP, JSONL ingestion, portable export/import, the `abs` CLI, an interactive localhost graph UI, and optional LLM consolidation. Public repo.
+- **Primary languages and frameworks:** **Node.js ≥22 + TypeScript (ESM)**; SQLite + sqlite-vec + FTS5 storage; transformers.js for local embeddings (pluggable to hosted); the official MCP SDK; esbuild + vanilla TS + force-graph for the UI. See `docs/adr/`.
 
 ## Read Order
 
 1. `README.md`
 2. `docs/engineering-workflow.md`
 3. [GitHub Issues](https://github.com/victorbjuliani/agentbrainsystem/issues) — requirements and roadmap (source of truth)
-4. architecture / ADR / design docs (once they exist)
+4. `docs/adr/` (storage, UI pipeline, LLM consolidation) + `docs/DESIGN.md`
 5. the nearest agent wrapper for the current tool (`CLAUDE.md` / `AGENTS.md`)
 
 ## Repository Map
@@ -49,7 +49,7 @@ storage/embedding decisions.
 - Run a TS entrypoint in dev: `npm run dev`
 - Distill a session into lessons (opt-in, needs `ABS_LLM_BASE_URL`+`ABS_LLM_MODEL`): `abs consolidate [--session N] [--dry-run] [--force]`
 
-## Architecture Notes (intended, pre-implementation)
+## Architecture Notes
 
 - **Runtime shape:** local daemon/CLI + MCP server + localhost web UI. Single-user, local-first.
 - **Key components (shipped #1–#12):** session ingestion (JSONL) → embedding layer (local-default, pluggable, with hosted retry/backoff) → embedded vector + keyword store → recall API over MCP → optional LLM consolidation (session → lessons) → export/import → localhost graph UI.
