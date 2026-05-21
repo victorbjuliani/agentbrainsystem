@@ -28,9 +28,14 @@ function read(): Record<string, unknown> {
 }
 
 describe('installHooks', () => {
-  it('creates settings.json and registers all three events when none exist', () => {
+  it('creates settings.json and registers all events when none exist', () => {
     const result = installHooks({ settingsPath });
-    expect(result.added.sort()).toEqual(['SessionEnd', 'SessionStart', 'UserPromptSubmit']);
+    expect(result.added.sort()).toEqual([
+      'PreToolUse',
+      'SessionEnd',
+      'SessionStart',
+      'UserPromptSubmit',
+    ]);
     expect(result.alreadyPresent).toEqual([]);
     expect(result.backupPath).toBeNull(); // no prior file to back up
 
@@ -41,6 +46,11 @@ describe('installHooks', () => {
     expect(s.hooks.UserPromptSubmit?.[0]?.hooks[0]).toMatchObject({
       command: 'abs hook user-prompt-submit',
     });
+    // The guard is scoped to Edit/Write via its matcher.
+    expect(s.hooks.PreToolUse?.[0]?.matcher).toBe('Edit|Write');
+    expect(s.hooks.PreToolUse?.[0]?.hooks[0]).toMatchObject({
+      command: 'abs hook pre-tool-use',
+    });
   });
 
   it('is idempotent — a second run adds nothing and creates no duplicates', () => {
@@ -48,6 +58,7 @@ describe('installHooks', () => {
     const second = installHooks({ settingsPath });
     expect(second.added).toEqual([]);
     expect(second.alreadyPresent.sort()).toEqual([
+      'PreToolUse',
       'SessionEnd',
       'SessionStart',
       'UserPromptSubmit',
@@ -131,7 +142,12 @@ describe('installHooks', () => {
     expect(readdirSync(dir).filter((f) => f.includes('abs-settings-tmp'))).toEqual([]);
     // A normal write produced a valid, parseable settings.json with our hooks.
     const s = read() as { hooks: Record<string, unknown> };
-    expect(Object.keys(s.hooks).sort()).toEqual(['SessionEnd', 'SessionStart', 'UserPromptSubmit']);
+    expect(Object.keys(s.hooks).sort()).toEqual([
+      'PreToolUse',
+      'SessionEnd',
+      'SessionStart',
+      'UserPromptSubmit',
+    ]);
     // Idempotent re-run adds nothing.
     const second = installHooks({ settingsPath });
     expect(second.added).toEqual([]);
