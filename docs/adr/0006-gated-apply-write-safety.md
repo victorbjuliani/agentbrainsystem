@@ -92,6 +92,33 @@ candidate** and guarantees that applying it is safe or refuses explicitly.
   **Untested by design:** none of the safety paths — they are all covered against
   `os.tmpdir()`; no test ever writes to a real `~/.claude` or a real `CLAUDE.md`.
 
+## Known follow-ups / accepted residual risk
+
+A white-box audit of the live memory layer (#15–#21) surfaced two findings we are
+**deliberately not fixing now**. Both are recorded here as accepted residual risk
+with a tracked follow-up; neither is a blocking issue given the existing backstops.
+
+- **MCP `optimize` `project` arg is agent-controlled** (`mcp/server.ts`). The
+  `optimize` tool takes an optional `project` root from the calling agent, which
+  could in principle steer a candidate's target at an arbitrary project path.
+  **Accepted residual:** the trust boundary is the human, not the agent — every
+  `apply` is approved per-candidate by a person, and the resolved absolute target is
+  visible both in the `optimize` candidate (`target.path`) and in the `ApplyResult`
+  (`absPath`), so a misdirected write is observable before and after. The two-kind
+  allowlist (`resolveTarget`) still confines any write to a CLAUDE.md or an
+  auto-memory `*.md` under the *declared* project's slug dir. **Follow-up:** consider
+  pinning the optimize/apply target to the server's launch cwd rather than trusting
+  the agent-supplied `project`.
+
+- **Project slug collision** (`targets.ts` `projectSlug`). The slug encoding maps
+  every `/` to `-`, so `/a/b` and `/a-b` collapse to the same auto-memory dir
+  (`-a-b`). Two distinct projects could therefore resolve to the same memory
+  location. **Not fixed now** because this encoding must stay byte-identical to the
+  ingest layer's slug encoding (the allowlist resolves against the same canonical
+  path ingest reads); a reversible/collision-free encoding would require changing
+  **both** layers together in lockstep. **Follow-up tracked** to migrate both
+  encodings simultaneously.
+
 ## Alternatives rejected
 
 - **Two separate applier classes (CLAUDE.md vs auto-memory).** Would duplicate the

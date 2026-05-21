@@ -94,6 +94,11 @@ describe('MCP server', () => {
     const gen = parse(
       await client.callTool({ name: 'optimize', arguments: { project: projectRoot } }),
     ) as { candidates: Array<{ id: string; target: { kind: string; path: string } }> };
+    // The internal stale-content guard (baseContent) must NOT leak over MCP — only the
+    // explicit review fields are serialized; the full candidate stays server-side.
+    for (const c of gen.candidates) {
+      expect(c).not.toHaveProperty('baseContent');
+    }
     const claudeMd = gen.candidates.find((c) => c.target.kind === 'claude-md');
     expect(claudeMd).toBeDefined();
     if (!claudeMd) return;

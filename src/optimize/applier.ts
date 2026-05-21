@@ -37,9 +37,13 @@ import type { ApplyResult, OptimizeCandidate } from './types.js';
  */
 export interface ApplierFs {
   stat: typeof nodeFsp.stat;
+  /** `lstat` (does NOT follow symlinks) — used to refuse a symlinked target. */
+  lstat: typeof nodeFsp.lstat;
   readFile: typeof nodeFsp.readFile;
   writeFile: typeof nodeFsp.writeFile;
   copyFile: typeof nodeFsp.copyFile;
+  /** `chmod` — used to lock the backup down to 0o600 (a copy of a sensitive file). */
+  chmod: typeof nodeFsp.chmod;
   rename: typeof nodeFsp.rename;
   mkdir: typeof nodeFsp.mkdir;
   rm: typeof nodeFsp.rm;
@@ -48,9 +52,11 @@ export interface ApplierFs {
 /** The real Node filesystem, used unless a test injects a seam. */
 const DEFAULT_FS: ApplierFs = {
   stat: nodeFsp.stat,
+  lstat: nodeFsp.lstat,
   readFile: nodeFsp.readFile,
   writeFile: nodeFsp.writeFile,
   copyFile: nodeFsp.copyFile,
+  chmod: nodeFsp.chmod,
   rename: nodeFsp.rename,
   mkdir: nodeFsp.mkdir,
   rm: nodeFsp.rm,
@@ -112,6 +118,22 @@ export class GatedApplier implements Applier {
     }
   }
 
+  /**
+   * Whether the path is itself a symlink (does NOT follow it). Target resolution is
+   * purely lexical (`path.resolve`), so a pre-planted symlink at the target would be
+   * silently followed by copyFile+rename and write through to its destination
+   * (e.g. ~/.ssh/authorized_keys). We refuse such targets. A non-existent path is
+   * not a symlink (ENOENT → false); any other lstat error propagates.
+   */
+  private async isSymlink(absPath: string): Promise<boolean> {
+    try {
+      return (await this.fs.lstat(absPath)).isSymbolicLink();
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false;
+      throw err;
+    }
+  }
+
   async apply(candidate: OptimizeCandidate, options: ApplyOptions): Promise<ApplyResult> {
     // 1. Allowlist — refuse anything outside the two permitted target kinds.
     const resolved = resolveTarget(candidate.target, options.projectRoot, options.projectsDir);
@@ -119,6 +141,13 @@ export class GatedApplier implements Applier {
       return { applied: false, absPath: candidate.target.absPath, refused: 'forbidden-target' };
     }
     const absPath = resolved.absPath;
+
+    // 1b. Symlink refusal — resolution above is purely lexical, so a symlink planted
+    // at the target would be followed on write. Refuse explicitly BEFORE any backup
+    // or write (never follow it, never write through to its destination).
+    if (await this.isSymlink(absPath)) {
+      return { applied: false, absPath, refused: 'symlink-target' };
+    }
 
     const fileExists = await this.exists(absPath);
     const current = fileExists ? await this.readOrEmpty(absPath) : '';
@@ -160,9 +189,12 @@ export class GatedApplier implements Applier {
     const backupPath = fileExisted ? `${absPath}.abs-bak-${stamp}` : undefined;
     const tempPath = join(dir, `.abs-tmp-${stamp}`);
 
-    // BACKUP first (only when there is an original to back up).
+    // BACKUP first (only when there is an original to back up). The backup is a copy
+    // of a possibly-sensitive file (CLAUDE.md / memory), so lock it to 0o600 rather
+    // than inheriting the source mode under a loose umask.
     if (backupPath) {
       await this.fs.copyFile(absPath, backupPath, FS.COPYFILE_EXCL);
+      await this.fs.chmod(backupPath, 0o600);
     }
 
     try {

@@ -14,7 +14,15 @@
  *     replacing the array — other tools' hooks (and the user's own) are preserved.
  *   - Opt-in: nothing here runs unless the user invokes `abs install-hooks`.
  */
-import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  copyFileSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { HookEvent } from './payload.js';
@@ -101,6 +109,50 @@ function readSettings(path: string): ClaudeSettings {
   }
 }
 
+/**
+ * Refuse to write through a symlinked settings.json. Resolution here is path-based,
+ * so a symlink planted at the target would otherwise be followed by the write and
+ * could clobber whatever it points at (e.g. a sensitive file). We never follow it —
+ * we throw an actionable error. A missing file is fine (we create it). Any non-ENOENT
+ * lstat error propagates.
+ */
+function assertNotSymlink(path: string): void {
+  try {
+    if (lstatSync(path).isSymbolicLink()) {
+      throw new Error(
+        `settings.json at ${path} is a symlink — refusing to write through it. ` +
+          'Remove or replace the symlink with a regular file, then re-run.',
+      );
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return; // no file yet — OK
+    throw err;
+  }
+}
+
+/**
+ * Atomically write `content` to `path`: write a temp file in the SAME directory, then
+ * `rename` it over the target. The rename is atomic on one filesystem, so a crash
+ * mid-write can never truncate the user's live settings — a reader sees the old file
+ * or the new one, never a torn write. The temp file is cleaned up on a write failure.
+ */
+function atomicWriteFile(path: string, content: string): void {
+  const dir = dirname(path);
+  mkdirSync(dir, { recursive: true });
+  const tempPath = join(dir, `.abs-settings-tmp-${Date.now()}-${process.pid}`);
+  try {
+    writeFileSync(tempPath, content, { encoding: 'utf8', mode: 0o600 });
+    renameSync(tempPath, path);
+  } catch (err) {
+    try {
+      rmSync(tempPath, { force: true });
+    } catch {
+      // best-effort cleanup — surface the original error below
+    }
+    throw err;
+  }
+}
+
 /** Timestamped backup beside the settings file. Returns null when there's nothing to back up. */
 function backupSettings(path: string): string | null {
   let exists = true;
@@ -126,6 +178,9 @@ export function installHooks(options: InstallOptions = {}): InstallResult {
   const baseCommand = options.baseCommand ?? 'abs hook';
   const events = options.events ?? HOOK_REGISTRY.map((s) => s.event);
   const specs = HOOK_REGISTRY.filter((s) => events.includes(s.event));
+
+  // Refuse a symlinked settings.json BEFORE reading or mutating — never follow it.
+  assertNotSymlink(settingsPath);
 
   const settings = readSettings(settingsPath);
   const added: HookEvent[] = [];
@@ -164,8 +219,8 @@ export function installHooks(options: InstallOptions = {}): InstallResult {
   if (added.length > 0) {
     backupPath = backupSettings(settingsPath);
     const next: ClaudeSettings = { ...settings, hooks };
-    mkdirSync(dirname(settingsPath), { recursive: true });
-    writeFileSync(settingsPath, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
+    // Atomic write (temp + rename) so a crash mid-write can't truncate live settings.
+    atomicWriteFile(settingsPath, `${JSON.stringify(next, null, 2)}\n`);
   }
 
   return { settingsPath, backupPath, added, alreadyPresent };

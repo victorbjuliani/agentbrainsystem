@@ -1,4 +1,5 @@
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -113,6 +114,39 @@ describe('applyApprovedCandidate — cursor advance on real write', () => {
       expect(existsSync(claudeMdPath(projectRoot))).toBe(true);
       // Cursor advanced to the current max observation id → SessionStart flag resets.
       expect(memory.store.getMeta(OPTIMIZE_CURSOR_KEY)).toBe(String(maxId));
+    } finally {
+      memory.close();
+    }
+  });
+
+  it('REFUSES (target-modified) when the file changed out-of-band since generation', async () => {
+    const memory = newMemory();
+    try {
+      // Generate a candidate against an EXISTING CLAUDE.md so baseContent is non-empty.
+      await mkdir(projectRoot, { recursive: true });
+      await writeFile(claudeMdPath(projectRoot), '# Project\n', 'utf8');
+      await seedConsolidated(memory);
+      const { candidates } = await generateOptimizations(memory, offlineConfig(), {
+        projectRoot,
+        projectsDir,
+      });
+      const claudeMd = candidates.find((c) => c.target.kind === 'claude-md');
+      expect(claudeMd).toBeDefined();
+      if (!claudeMd) return;
+      expect(claudeMd.baseContent).toBe('# Project\n');
+
+      // Someone edits the file AFTER the candidate was generated.
+      await writeFile(claudeMdPath(projectRoot), '# Project\n\nhand-edited line\n', 'utf8');
+
+      const result = await applyApprovedCandidate(memory, claudeMd, { projectRoot, projectsDir });
+
+      expect(result.applied).toBe(false);
+      expect(result.refused).toBe('target-modified');
+      // The out-of-band content is preserved (no clobber), cursor untouched.
+      expect(await readFile(claudeMdPath(projectRoot), 'utf8')).toBe(
+        '# Project\n\nhand-edited line\n',
+      );
+      expect(memory.store.getMeta(OPTIMIZE_CURSOR_KEY)).toBeNull();
     } finally {
       memory.close();
     }

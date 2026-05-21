@@ -1,4 +1,12 @@
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  lstatSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -101,5 +109,31 @@ describe('installHooks', () => {
   it('refuses to mutate a corrupt settings.json', () => {
     writeFileSync(settingsPath, '{ not valid json', 'utf8');
     expect(() => installHooks({ settingsPath })).toThrow(/not valid JSON/);
+  });
+
+  it('refuses to write through a symlinked settings.json (does not follow it)', () => {
+    const realTarget = join(dir, 'real-target.json');
+    writeFileSync(realTarget, JSON.stringify({ permissions: { allow: ['SECRET'] } }), 'utf8');
+    symlinkSync(realTarget, settingsPath);
+
+    expect(() => installHooks({ settingsPath })).toThrow(/symlink/i);
+    // The link's destination was NOT modified.
+    const dest = JSON.parse(readFileSync(realTarget, 'utf8')) as Record<string, unknown>;
+    expect(dest).toEqual({ permissions: { allow: ['SECRET'] } });
+    expect(dest.hooks).toBeUndefined();
+    // The path is still a symlink (not replaced with a regular file).
+    expect(lstatSync(settingsPath).isSymbolicLink()).toBe(true);
+  });
+
+  it('writes atomically (no leftover temp file) and stays idempotent', () => {
+    installHooks({ settingsPath });
+    // No `.abs-settings-tmp` temp artifact left behind by the atomic write.
+    expect(readdirSync(dir).filter((f) => f.includes('abs-settings-tmp'))).toEqual([]);
+    // A normal write produced a valid, parseable settings.json with our hooks.
+    const s = read() as { hooks: Record<string, unknown> };
+    expect(Object.keys(s.hooks).sort()).toEqual(['SessionEnd', 'SessionStart', 'UserPromptSubmit']);
+    // Idempotent re-run adds nothing.
+    const second = installHooks({ settingsPath });
+    expect(second.added).toEqual([]);
   });
 });

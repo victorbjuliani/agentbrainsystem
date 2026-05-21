@@ -58,6 +58,14 @@ export interface OptimizeCandidate {
   diff: string;
   /** The exact text block the change would append/insert (the diff's payload). */
   proposedText: string;
+  /**
+   * The exact target content the diff was generated against (read read-only at
+   * generation time). The applier is handed this as `expectedBaseContent` so a
+   * stale candidate cannot clobber a file edited since generation (#20 TOCTOU
+   * guard). INTERNAL: never serialized over MCP — the full candidate stays
+   * server-side in the optimize cache.
+   */
+  baseContent: string;
   /** Observation ids this candidate derives from (the consolidated lessons). */
   evidenceIds: number[];
   /** Ordering hint; `high` first. */
@@ -109,7 +117,8 @@ export interface GenerateCandidatesResult {
 export type ApplyRefusal =
   | 'forbidden-target' // descriptor resolved outside the two-kind allowlist
   | 'protected-memory-type' // auto-memory entry whose metadata.type is user|feedback
-  | 'target-modified'; // target content changed since the diff was generated
+  | 'target-modified' // target content changed since the diff was generated
+  | 'symlink-target'; // the resolved target is a symlink (lexical resolution would follow it)
 
 /** The outcome of applying a single approved candidate. */
 export interface ApplyResult {

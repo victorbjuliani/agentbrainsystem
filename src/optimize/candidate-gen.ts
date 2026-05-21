@@ -169,6 +169,9 @@ export async function generateCandidates(
       rationale: heuristicRationale(cluster),
       diff,
       proposedText,
+      // Capture the exact content the diff was generated against so the applier can
+      // refuse (`target-modified`) if the file changed since — the #20 TOCTOU guard.
+      baseContent: current,
       evidenceIds: cluster.observations.map((o) => o.id),
       priority: priorityFor(cluster.kind),
     });

@@ -94,7 +94,14 @@ export async function applyApprovedCandidate(
   candidate: OptimizeCandidate,
   options: ApplyOptions,
 ): Promise<ApplyResult> {
-  const result = await applyCandidate(candidate, options);
+  // Wire the stale-content (TOCTOU) guard: re-verify the file still matches what the
+  // diff was generated against. The candidate captured that content at generation
+  // (#18); pass it as `expectedBaseContent` unless the caller already pinned one.
+  const guarded: ApplyOptions =
+    options.expectedBaseContent === undefined
+      ? { ...options, expectedBaseContent: candidate.baseContent }
+      : options;
+  const result = await applyCandidate(candidate, guarded);
   if (result.applied) {
     memory.store.setMeta(OPTIMIZE_CURSOR_KEY, String(memory.store.maxObservationId()));
   }

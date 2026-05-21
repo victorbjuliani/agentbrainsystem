@@ -42,6 +42,7 @@ function candidateFor(absPath: string): OptimizeCandidate {
     rationale: 'r',
     diff: '',
     proposedText: '\n- injected change\n',
+    baseContent: '',
     evidenceIds: [1],
     priority: 'high',
   };
