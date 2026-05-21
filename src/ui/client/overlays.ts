@@ -21,9 +21,13 @@ import type { ScopeMode, Theme, ViewNode } from './types.js';
 export interface OverlayCallbacks {
   onToggleType(type: NodeType, enabled: boolean): void;
   onSearch(query: string): void;
+  /** "Delete the N matching" affordance on the search box (ADR-0007 write path). */
+  onSearchDelete(): void;
   onScopeChange(scope: { mode: ScopeMode; sessionId?: number; similarity: boolean }): void;
   onThemeChange(theme: Theme): void;
   onInspectorClose(): void;
+  /** Delete the inspected node (an observation, or a whole session hub). */
+  onInspectorDelete(node: ViewNode): void;
 }
 
 export interface SessionOption {
@@ -138,8 +142,21 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
     'aria-label': 'Buscar nós por conteúdo ou id',
   });
   let searchDebounce = 0;
+  // "Delete the N matching" — hidden until the search box has a query (ADR-0007).
+  const searchDeleteBtn = el(
+    'button',
+    {
+      type: 'button',
+      class: 'control toggle search-delete',
+      'aria-label': 'Excluir as memórias que correspondem à busca',
+      hidden: '',
+    },
+    ['excluir busca'],
+  );
+  searchDeleteBtn.addEventListener('click', () => cb.onSearchDelete());
   searchInput.addEventListener('input', () => {
     window.clearTimeout(searchDebounce);
+    searchDeleteBtn.hidden = searchInput.value.trim() === '';
     searchDebounce = window.setTimeout(() => cb.onSearch(searchInput.value), 250);
   });
 
@@ -161,6 +178,7 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
 
   const topRight = el('section', { class: 'overlay overlay-tr', 'aria-label': 'Busca e tema' }, [
     searchInput,
+    searchDeleteBtn,
     themeBtn,
   ]);
 
@@ -220,9 +238,24 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
     );
     closeBtn.addEventListener('click', () => cb.onInspectorClose());
 
+    // Delete affordance (ADR-0007): for a session hub it removes the whole session;
+    // for an observation it removes just that one. The full preview/confirm flow runs
+    // upstream — this only signals intent.
+    const deleteBtn = el(
+      'button',
+      {
+        type: 'button',
+        class: 'icon-btn inspect-delete',
+        'aria-label': node.type === 'session' ? 'Excluir toda a sessão' : 'Excluir esta observação',
+        title: node.type === 'session' ? 'excluir sessão' : 'excluir observação',
+      },
+      ['🗑'],
+    );
+    deleteBtn.addEventListener('click', () => cb.onInspectorDelete(node));
+
     const head = el('header', { class: 'inspect-head' }, [
       el('span', { class: 'inspect-type', 'data-type': node.type }, [node.type]),
-      closeBtn,
+      el('div', { class: 'inspect-head-actions' }, [deleteBtn, closeBtn]),
     ]);
 
     const rows: (Node | string)[] = [];
