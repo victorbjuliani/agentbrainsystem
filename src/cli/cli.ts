@@ -2,7 +2,7 @@
 /**
  * `abs` — agentbrainsystem CLI (issue #9).
  *
- * Commands: start (MCP stdio server), ingest, status, export, import, ui.
+ * Commands: start (MCP stdio server), ingest, status, export, import, ui, forget.
  * Thin layer over the library: it wires `openMemory` and the feature modules,
  * keeping all logic in src/. `start` must stay silent on stdout — that channel
  * is the MCP JSON-RPC transport; diagnostics go to stderr.
@@ -12,6 +12,7 @@ import { platform } from 'node:os';
 import { createInterface } from 'node:readline/promises';
 import { loadConfig } from '../config.js';
 import { consolidate } from '../consolidate/index.js';
+import { type DeleteSelector, executeIds, previewSelector } from '../delete/index.js';
 import { exportStore, importStore } from '../export/index.js';
 import { dispatchHook, installHooks } from '../hooks/index.js';
 import { defaultClaudeProjectsDir, ingestClaudeProjects } from '../ingest/index.js';
@@ -55,6 +56,13 @@ Commands:
                         --apply (review + write per-candidate, backup/atomic/rollback),
                         --candidate ID (apply only that one), --yes (apply all, no prompt).
                         Default is preview-only — nothing is written without --apply.
+  forget [opts]         Selectively hard-delete memories. IRREVERSIBLE — export first
+                        (abs export) before deleting. Exactly one selector:
+                        --ids a,b,c (observation ids), --session N, --project NAME,
+                        --null-project (sessions with no project, NOT the literal "null"),
+                        --search "q" [--limit N] (FTS keyword recall, no embedding).
+                        Default is preview-only — nothing is deleted without --apply.
+                        With --apply: per-id [y/N] confirmation (or --yes to skip prompts).
 
 Options:
   -h, --help            Show this help.
@@ -374,6 +382,158 @@ async function cmdOptimize(args: string[]): Promise<void> {
   }
 }
 
+/**
+ * Parse `--ids a,b,c` into a deduped list of positive observation ids. Mirrors the
+ * port-validation strictness of `cmdUi`: an empty token, a non-numeric token, or an
+ * id ≤ 0 is a hard, actionable error — we never silently drop a malformed id.
+ */
+export function parseIds(raw: string): number[] {
+  const seen = new Set<number>();
+  const ids: number[] = [];
+  for (const token of raw.split(',')) {
+    const t = token.trim();
+    if (t === '') throw new Error(`--ids has an empty entry in '${raw}'`);
+    const n = Number.parseInt(t, 10);
+    // Reject non-numeric ('12a' parses to 12 under parseInt) and non-positive.
+    if (!Number.isInteger(n) || String(n) !== t || n <= 0) {
+      throw new Error(`--ids entries must be positive integers (got '${t}')`);
+    }
+    if (seen.has(n)) continue; // dedupe
+    seen.add(n);
+    ids.push(n);
+  }
+  if (ids.length === 0) throw new Error('--ids requires at least one id, e.g. --ids 1,2,3');
+  return ids;
+}
+
+/**
+ * Resolve the `forget` argv into exactly one delete selector. The five selectors are
+ * mutually exclusive: zero is an error (nothing to delete) and more than one is an
+ * error (ambiguous). `--null-project` is the NULL-project selector (`byProject: null`)
+ * and is deliberately distinct from `--project null`, which targets the literal
+ * string `'null'`.
+ */
+export function parseForgetSelector(args: string[]): DeleteSelector {
+  const rawIds = optionValue(args, '--ids');
+  const rawSession = optionValue(args, '--session');
+  const rawProject = optionValue(args, '--project');
+  const nullProject = args.includes('--null-project');
+  const rawSearch = optionValue(args, '--search');
+
+  const chosen = [
+    rawIds !== undefined,
+    rawSession !== undefined,
+    rawProject !== undefined,
+    nullProject,
+    rawSearch !== undefined,
+  ].filter(Boolean).length;
+  if (chosen === 0) {
+    throw new Error(
+      'forget requires exactly one selector: --ids, --session, --project, --null-project, or --search',
+    );
+  }
+  if (chosen > 1) {
+    throw new Error('forget selectors are mutually exclusive — pass exactly one');
+  }
+
+  if (rawIds !== undefined) return { byIds: parseIds(rawIds) };
+  if (rawSession !== undefined) {
+    const n = Number.parseInt(rawSession, 10);
+    if (!Number.isInteger(n) || String(n) !== rawSession.trim() || n <= 0) {
+      throw new Error(`--session must be a positive integer (got '${rawSession}')`);
+    }
+    return { bySession: n };
+  }
+  if (rawProject !== undefined) return { byProject: rawProject };
+  if (nullProject) return { byProject: null };
+
+  // rawSearch is defined here.
+  const search = rawSearch as string;
+  if (search.trim() === '') throw new Error('--search requires a non-empty query');
+  const rawLimit = optionValue(args, '--limit');
+  if (rawLimit !== undefined) {
+    const n = Number.parseInt(rawLimit, 10);
+    if (!Number.isInteger(n) || n < 1) {
+      throw new Error(`--limit must be a positive integer (got '${rawLimit}')`);
+    }
+    return { bySearch: { query: search, limit: n } };
+  }
+  return { bySearch: { query: search } };
+}
+
+/**
+ * `abs forget` — selectively hard-delete memories (Phase B1). Resolves the selector
+ * to a concrete id set IN-PROCESS via `previewSelector` (no handle/cache needed — the
+ * whole preview→confirm→delete loop lives here), prints what would go, and only with
+ * `--apply` deletes — after a per-id [y/N] confirmation (or `--yes` to skip prompts).
+ * Hard-delete is IRREVERSIBLE: there is no `.abs-bak` for deletes, so the preview and
+ * USAGE point the user at `abs export` as the only recovery. `ensure:false` so a
+ * `--search` preview never triggers an embedding-model cold-load (it's FTS-only).
+ *
+ * Exported for tests: the CLI is otherwise driven through `main()`, but the forget
+ * preview/apply behaviour (ensure:false, preview-writes-nothing, apply deletes) is
+ * verified directly to keep the suite hermetic (tmp ABS_HOME, no real ~/.claude).
+ */
+export async function cmdForget(args: string[]): Promise<void> {
+  const selector = parseForgetSelector(args);
+  const doApply = args.includes('--apply');
+  const yes = args.includes('--yes');
+
+  // ensure:false — forget never embeds (bySearch is FTS-only); avoid a model load.
+  const memory = await openMemory(loadConfig(), { ensure: false });
+  try {
+    const resolved = previewSelector(memory, selector);
+
+    out(`forget preview — ${resolved.ids.length} observation(s) would be deleted:`);
+    for (const item of resolved.items) {
+      out(`  ${item.id} [${item.kind}] ${item.snippet}`);
+    }
+    if (resolved.notFound.length > 0) {
+      out(`  not found (ignored): ${resolved.notFound.join(', ')}`);
+    }
+    out('  hard-delete is IRREVERSIBLE — export first (abs export) to keep a recoverable copy.');
+
+    if (resolved.ids.length === 0) {
+      out('nothing to delete');
+      return;
+    }
+
+    if (!doApply) {
+      out('(preview — nothing deleted. Re-run with --apply to confirm and delete.)');
+      return;
+    }
+
+    // readline prompts go to stderr so stdout stays clean for the result summary.
+    const rl = yes ? null : createInterface({ input: process.stdin, output: process.stderr });
+    const approved: number[] = [];
+    try {
+      for (const item of resolved.items) {
+        if (rl) {
+          const ans = (await rl.question(`delete ${item.id} [${item.kind}]? [y/N] `))
+            .trim()
+            .toLowerCase();
+          if (ans !== 'y' && ans !== 'yes') {
+            out(`  ${item.id}: skipped`);
+            continue;
+          }
+        }
+        approved.push(item.id);
+      }
+    } finally {
+      rl?.close();
+    }
+
+    if (approved.length === 0) {
+      out(JSON.stringify({ deleted: [], notFound: [] }));
+      return;
+    }
+    const result = executeIds(memory, approved);
+    out(JSON.stringify(result));
+  } finally {
+    memory.close();
+  }
+}
+
 /** Read the value following a `--flag` token. */
 function optionValue(args: string[], flag: string): string | undefined {
   const i = args.indexOf(flag);
@@ -419,6 +579,8 @@ async function main(): Promise<void> {
       return cmdInstallHooks();
     case 'optimize':
       return cmdOptimize(rest);
+    case 'forget':
+      return cmdForget(rest);
     default:
       err(`unknown command '${command}'\n`);
       err(USAGE);
