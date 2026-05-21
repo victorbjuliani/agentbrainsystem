@@ -113,36 +113,40 @@ export class Indexer {
    */
   async rebuild(): Promise<RebuildResult> {
     let indexed = 0;
-    let batch: Array<{ id: number; content: string }> = [];
-    const seen: number[] = [];
 
-    const flush = async (): Promise<void> => {
-      if (batch.length === 0) return;
-      const vectors = await this.embedBatch(batch.map((b) => b.content));
+    // Keyset pagination, NOT a single open cursor (#34): each page is a closed
+    // `.all()` query, so embedding + writing the vectors/FTS back to the same
+    // connection never collides with an in-flight row iterator ("database
+    // connection is busy executing a query"). Footprint stays bounded — only one
+    // batch of {id, content} is materialized at a time (ADR 0001).
+    let afterId = 0;
+    for (;;) {
+      const page = this.store.listObservations({
+        afterId,
+        limit: this.batchSize,
+        order: 'asc',
+      });
+      if (page.length === 0) break;
+
+      const vectors = await this.embedBatch(page.map((o) => o.content));
       // assertDimensions checks width, not count; a short provider response would
       // leave observations unindexed and silently stamp success. Reject it.
-      if (vectors.length !== batch.length) {
+      if (vectors.length !== page.length) {
         throw new Error(
-          `embedding provider returned ${vectors.length} vectors for ${batch.length} inputs`,
+          `embedding provider returned ${vectors.length} vectors for ${page.length} inputs`,
         );
       }
-      for (let i = 0; i < batch.length; i++) {
-        const entry = batch[i];
+      for (let i = 0; i < page.length; i++) {
+        const entry = page[i];
         const vector = vectors[i];
         if (entry === undefined || vector === undefined) continue;
         this.store.upsertVector(entry.id, vector);
         this.store.indexFts(entry.id, entry.content);
-        seen.push(entry.id);
         indexed++;
       }
-      batch = [];
-    };
-
-    for (const obs of this.store.iterateObservations()) {
-      batch.push({ id: obs.id, content: obs.content });
-      if (batch.length >= this.batchSize) await flush();
+      // Advance the keyset cursor past the last row of this page.
+      afterId = page[page.length - 1]?.id ?? afterId;
     }
-    await flush();
 
     // Drop stale index rows for observations that no longer exist.
     this.store.pruneIndexOrphans();
