@@ -55,9 +55,51 @@ describe('parseLine — strips injected wrappers from user turns (#36)', () => {
     expect(entry?.text).toBe('just a normal question about the code');
   });
 
-  it('leaves skill-injection blocks untouched (deferred to a follow-up)', () => {
+  it('keeps a non-meta turn that merely starts with skill-like text', () => {
+    // Without the isMeta flag this is just prose — wrapper-stripping must not touch it.
     const skill = 'Base directory for this skill: /Users/x/.claude/skills/foo\n\n# Foo\n\nbody...';
     const entry = parseLine(userLine(skill));
     expect(entry?.text).toBe(skill);
+  });
+});
+
+/** Build a JSONL line with an explicit isMeta flag (string content). */
+function metaLine(content: string, isMeta: boolean, type = 'user'): string {
+  return JSON.stringify({
+    type,
+    isMeta,
+    sessionId: 's1',
+    message: { role: type, content },
+  });
+}
+
+/**
+ * #38: Claude Code marks harness-injected turns (skill bodies, hook
+ * notifications, other system context) with top-level `isMeta: true`. These are
+ * not the human's conversation — they inflate the store and pollute recall — so
+ * parseLine drops them. The user's real intent survives in the non-meta turns.
+ */
+describe('parseLine — drops isMeta (harness-injected) turns (#38)', () => {
+  it('drops a skill-injection turn flagged isMeta', () => {
+    const skill = `Base directory for this skill: /Users/x/.claude/skills/foo\n\n# Foo\n\n${'body '.repeat(2000)}`;
+    expect(parseLine(metaLine(skill, true))).toBeNull();
+  });
+
+  it('drops an isMeta hook-notification turn', () => {
+    expect(parseLine(metaLine('A session-scoped Stop hook is now active…', true))).toBeNull();
+  });
+
+  it('keeps a real prompt when isMeta is false', () => {
+    const entry = parseLine(metaLine('does the PO flow already work?', false));
+    expect(entry?.text).toBe('does the PO flow already work?');
+  });
+
+  it('keeps a real prompt when isMeta is absent', () => {
+    const entry = parseLine(userLine('continue'));
+    expect(entry?.text).toBe('continue');
+  });
+
+  it('drops an isMeta assistant turn too', () => {
+    expect(parseLine(metaLine('injected system context', true, 'assistant'))).toBeNull();
   });
 });
