@@ -2,14 +2,17 @@
 
 Local-first persistent memory for AI coding agents — capture, store, and **actually recall** past sessions, with portable export/import and a visual graph UI.
 
-> Status: **MVP+** — reliable `embed → persist → recall` over MCP, JSONL ingestion, portable export/import, a CLI, and an interactive localhost graph UI (`abs ui`). Works offline on macOS/Windows/Linux.
+> Status: **MVP+ with a live memory layer** — reliable `embed → persist → recall` over MCP, JSONL ingestion, portable export/import, a CLI, and an interactive localhost graph UI (`abs ui`). On top of that: **hands-free capture and context injection** via Claude Code hooks (`abs install-hooks`), an **optimization loop** that turns distilled memory into evidence-backed `CLAUDE.md` / auto-memory edits (`abs optimize`), and **selective hard-delete** across CLI, MCP, and the UI (`abs forget`). Works offline on macOS/Windows/Linux.
 
 ## Why
 
 Existing agent-memory tools capture data but often fail at the part that matters: **reliable semantic recall**. agentbrainsystem is a deliberately small, owned alternative that does a few things well instead of many things partially:
 
 - **Reliable recall** — semantic search over past coding sessions that actually returns relevant results.
+- **Live capture & injection** — Claude Code hooks auto-ingest each session ($0, no LLM) and inject relevant memory back at session start / per prompt (FTS-first, no cold-load), hands-free.
 - **Distilled lessons** — optional LLM consolidation of raw session noise into durable insights/decisions.
+- **Optimization loop** — turn that distilled memory into evidence-backed, gated edits to your project's `CLAUDE.md` and Claude Code auto-memory (preview → approve → apply; never automatic).
+- **Selective delete** — prune wrong/stale/sensitive memories by id, session, project, or search, across CLI, MCP, and the UI (preview → confirm; hard-delete, export first).
 - **Portable memory** — export and import the whole memory store as a portable artifact (no lock-in, survives machine/project moves).
 - **Visual graph UI** — a localhost interface to explore the agent's memory as an interactive graph.
 
@@ -47,9 +50,15 @@ abs export <path>         # write the whole store to a portable artifact
 abs import <path> [--mode replace|merge]   # load an artifact (default merge)
 abs ui [--port N]         # serve the interactive memory graph at http://127.0.0.1:7717
 abs consolidate [--session N] [--dry-run] [--force]   # distill a session into durable lessons (opt-in, needs an LLM)
+abs install-hooks         # register the Claude Code memory hooks (auto-ingest + context injection) — opt-in, idempotent, backup-first
+abs optimize [selector] [--apply] [--yes]   # turn distilled memory into evidence-backed CLAUDE.md / auto-memory diffs (preview → approve → apply)
 abs forget [selector] [--apply] [--yes]   # selectively hard-delete memories — IRREVERSIBLE, export first
 abs --help | --version
 ```
+
+`abs hook <event>` (event ∈ `session-end | session-start | user-prompt-submit`) is the
+internal entry point the registered hooks invoke — it is non-fatal/timeout-bounded and
+never blocks a session. You register it with `abs install-hooks`, not by hand.
 
 `abs forget` takes exactly one selector: `--ids a,b,c` (observation ids),
 `--session N`, `--project NAME`, `--null-project` (sessions with no project, NOT the
@@ -152,6 +161,11 @@ See also:
 - `docs/adr/0001-storage-and-embeddings.md` — storage/embedding decisions
 - `docs/adr/0002-ui-build-pipeline-and-frontend-stack.md` — UI build pipeline & frontend stack
 - `docs/adr/0003-optional-llm-consolidation.md` — optional LLM consolidation & chat provider
+- `docs/adr/0004-hook-integration-model.md` — Claude Code hook model (non-fatal/timeout, settings.json ownership)
+- `docs/adr/0005-per-prompt-injection-performance.md` — FTS-first per-prompt injection (latency baseline)
+- `docs/adr/0006-gated-apply-write-safety.md` — gated-apply safety (backup/atomic/rollback, fail-closed guard)
+- `docs/adr/0007-ui-write-path-security.md` — UI write-path security (CSRF/Origin, handle confirmation)
+- `docs/adr/0008-hard-delete-safety.md` — hard-delete safety (preview→pin→execute, no-undo)
 - `docs/DESIGN.md` — visual identity for the graph UI
 - `docs/export-format.md` — the export artifact format
 - [GitHub Issues](https://github.com/victorbjuliani/agentbrainsystem/issues) — requirements and roadmap (source of truth)
