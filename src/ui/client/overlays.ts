@@ -116,7 +116,11 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
     emitScope();
   });
   topNBtn.addEventListener('click', () => {
-    mode = mode === 'topN' ? 'session' : 'topN';
+    // Toggle off the VISIBLE button state, not the internal `mode` — a search
+    // unpresses the button via syncFromData while leaving `mode` stale, so reading
+    // `mode` here would mis-toggle (topN→session) when exiting search (#42 P2).
+    const pressed = topNBtn.getAttribute('aria-pressed') === 'true';
+    mode = pressed ? 'session' : 'topN';
     topNBtn.setAttribute('aria-pressed', String(mode === 'topN'));
     emitScope();
   });
