@@ -13,6 +13,7 @@ const MEMORY_CONFIG: AppConfig = {
   dataDir: '.',
   dbPath: ':memory:',
   embedding: { provider: 'local', model: 'test', dimensions: 8 },
+  recallScope: 'global',
 };
 
 // Built static dir (dist/ui/static); the smoke test serves real index.html from it.

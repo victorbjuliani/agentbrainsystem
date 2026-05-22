@@ -38,6 +38,7 @@ function offlineConfig(): AppConfig {
     dataDir: dir,
     dbPath: join(dir, 'memory.db'),
     embedding: { provider: 'local', model: 'fake', dimensions: 8 },
+    recallScope: 'global',
   };
 }
 

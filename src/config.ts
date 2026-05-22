@@ -34,7 +34,19 @@ export interface AppConfig {
    * `ABS_LLM_BASE_URL` is set, so the default stays $0/offline.
    */
   llm?: LlmConfig;
+  /**
+   * Recall scope (#47). `'project'` (default) isolates recall/injection to the
+   * current session's project so memory from other projects never leaks in;
+   * `'global'` is the opt-out for intentional store-wide recall. From
+   * `ABS_RECALL_SCOPE`.
+   */
+  recallScope: RecallScope;
 }
+
+/** Recall isolation mode (#47). */
+export type RecallScope = 'project' | 'global';
+
+const VALID_RECALL_SCOPES: readonly RecallScope[] = ['project', 'global'];
 
 const DEFAULT_LLM_TIMEOUT_MS = 60000;
 
@@ -87,11 +99,20 @@ export function loadConfig(): AppConfig {
     );
   }
 
+  const rawScope = process.env.ABS_RECALL_SCOPE;
+  if (rawScope && !VALID_RECALL_SCOPES.includes(rawScope as RecallScope)) {
+    throw new Error(
+      `invalid ABS_RECALL_SCOPE '${rawScope}' — expected one of ${VALID_RECALL_SCOPES.join(', ')}`,
+    );
+  }
+  const recallScope = (rawScope as RecallScope) || 'project';
+
   return {
     dataDir,
     dbPath,
     embedding: { provider, model, dimensions },
     llm: loadLlmConfig(),
+    recallScope,
   };
 }
 

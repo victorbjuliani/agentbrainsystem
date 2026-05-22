@@ -15,6 +15,7 @@ function config(): AppConfig {
     dataDir: dir,
     dbPath: join(dir, 'memory.db'),
     embedding: { provider: 'local', model: 'Xenova/all-MiniLM-L6-v2', dimensions: 384 },
+    recallScope: 'global',
   };
 }
 
@@ -54,6 +55,37 @@ describe('Recall — semantic acceptance', () => {
     });
     const contents = hits.map((h) => h.observation.content);
     expect(contents.some((c) => c.includes('git rebase'))).toBe(true);
+    mem.close();
+  });
+
+  it('hybrid recall with a project filters BOTH legs — no cross-project leak (#47)', async () => {
+    const mem = await openMemory(config());
+    const a = mem.store.createSession({ externalId: 'a', project: 'ProjA' });
+    const b = mem.store.createSession({ externalId: 'b', project: 'ProjB' });
+    await mem.indexer.write({
+      sessionId: a,
+      kind: 'note',
+      content: 'ProjA: the refund window is 30 days.',
+    });
+    await mem.indexer.write({
+      sessionId: b,
+      kind: 'note',
+      content: 'ProjB: kubernetes ingress uses nginx with TLS.',
+    });
+
+    // A query that matches ProjB content, scoped to ProjA → must not surface ProjB.
+    const scopedA = await mem.recall.recall('kubernetes ingress nginx tls', {
+      limit: 5,
+      project: 'ProjA',
+    });
+    expect(scopedA.some((h) => h.observation.content.includes('kubernetes'))).toBe(false);
+
+    // Same query scoped to ProjB → surfaces it.
+    const scopedB = await mem.recall.recall('kubernetes ingress nginx tls', {
+      limit: 5,
+      project: 'ProjB',
+    });
+    expect(scopedB.some((h) => h.observation.content.includes('kubernetes'))).toBe(true);
     mem.close();
   });
 

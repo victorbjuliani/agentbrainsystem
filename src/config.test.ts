@@ -12,6 +12,7 @@ const ENV_KEYS = [
   'ABS_LLM_API_KEY',
   'ABS_LLM_TIMEOUT_MS',
   'ABS_LLM_PRICE_PER_1K',
+  'ABS_RECALL_SCOPE',
 ];
 
 describe('loadConfig', () => {
@@ -34,6 +35,20 @@ describe('loadConfig', () => {
     expect(cfg.embedding.provider).toBe('local');
     expect(cfg.embedding.dimensions).toBe(384);
     expect(cfg.dbPath).toMatch(/memory\.db$/);
+  });
+
+  it('defaults recallScope to project (#47 — isolation by default)', () => {
+    expect(loadConfig().recallScope).toBe('project');
+  });
+
+  it('honours ABS_RECALL_SCOPE=global', () => {
+    process.env.ABS_RECALL_SCOPE = 'global';
+    expect(loadConfig().recallScope).toBe('global');
+  });
+
+  it('throws on an unknown ABS_RECALL_SCOPE', () => {
+    process.env.ABS_RECALL_SCOPE = 'nope';
+    expect(() => loadConfig()).toThrow(/ABS_RECALL_SCOPE/);
   });
 
   it('honours ABS_HOME for db path', () => {

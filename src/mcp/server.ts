@@ -61,14 +61,30 @@ export function createMcpServer(memory: Memory): McpServer {
     {
       title: 'Recall memories',
       description:
-        'Hybrid semantic + keyword search over stored agent memory. Returns the most relevant past observations for a query.',
+        "Hybrid semantic + keyword search over stored agent memory. Returns the most relevant past observations for a query. Scoped to the current session's project by default (ABS_RECALL_SCOPE); pass `project` to target a specific one, or set scope=global for store-wide recall.",
       inputSchema: {
         query: z.string().describe('What to search memory for.'),
         limit: z.number().int().positive().max(50).optional().describe('Max results (default 10).'),
+        project: z
+          .string()
+          .optional()
+          .describe(
+            'Restrict to this project label. Default: the current project (or store-wide if scope=global).',
+          ),
       },
     },
-    async ({ query, limit }) => {
-      const hits = await memory.recall.recall(query, { limit });
+    async ({ query, limit, project }) => {
+      // Explicit `project` wins; otherwise scope to the current session's stored
+      // project under project-scope, or store-wide under global-scope (#47). An
+      // empty-string arg is treated as "no explicit project" (not a zero-match filter).
+      let scopeProject = project && project.length > 0 ? project : undefined;
+      if (scopeProject === undefined && loadConfig().recallScope === 'project') {
+        const sid = process.env.CLAUDE_CODE_SESSION_ID;
+        scopeProject = sid
+          ? (memory.store.getSessionByExternalId(sid)?.project ?? undefined)
+          : undefined;
+      }
+      const hits = await memory.recall.recall(query, { limit, project: scopeProject });
       return jsonContent(
         hits.map((h) => ({
           id: h.observation.id,
