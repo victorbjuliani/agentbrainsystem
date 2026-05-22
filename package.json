@@ -22,7 +22,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json && npm run build:ui",
+    "build": "tsc -p tsconfig.build.json && npm run build:ui",
     "build:ui": "node scripts/build-ui.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.ui.json --noEmit && tsc -p tsconfig.e2e.json --noEmit",
     "lint": "biome check .",
