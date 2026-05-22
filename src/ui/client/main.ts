@@ -17,7 +17,7 @@ import {
   previewDelete,
   StaleTokenError,
 } from './delete-client.js';
-import { mountOverlays, type SessionOption } from './overlays.js';
+import { mountOverlays } from './overlays.js';
 import { createRenderer, radiusFor } from './render.js';
 import type { ScopeMode, Theme, ViewEdge, ViewGraph, ViewNode } from './types.js';
 import './app.css';
@@ -28,6 +28,8 @@ interface ScopeState {
   mode: ScopeMode;
   sessionId?: number;
   similarity: boolean;
+  /** Store-wide project filter (topN mode only, #62-B). Undefined = all projects. */
+  project?: string;
   /**
    * Active store-wide search (#35). When set, it drives an authoritative server
    * fetch (FTS) that reaches obs OUTSIDE the topN/session window, so it takes
@@ -45,6 +47,8 @@ function scopeToQuery(scope: ScopeState): string {
     p.set('search', scope.search);
   } else if (scope.mode === 'topN') {
     p.set('topN', '200');
+    // Opt-in project filter scopes the topN window to one project (#62-B).
+    if (scope.project) p.set('project', scope.project);
   } else if (scope.sessionId !== undefined) {
     p.set('session', String(scope.sessionId));
   }
@@ -63,13 +67,6 @@ function toViewGraph(data: GraphData): ViewGraph {
   }));
   const links: ViewEdge[] = data.edges.map((e) => ({ ...e }));
   return { nodes, links };
-}
-
-/** Derive the session dropdown options from the rendered session hubs. */
-function sessionOptions(data: GraphData): SessionOption[] {
-  return data.nodes
-    .filter((n) => n.type === 'session')
-    .map((n) => ({ id: Number(n.id.slice(2)), label: n.label }));
 }
 
 function applyTheme(theme: Theme): void {
@@ -166,7 +163,21 @@ async function main(): Promise<void> {
   }
 
   const renderer = createRenderer(mount, {
-    onSelect: (node) => overlays.showInspector(node),
+    onSelect: (node) => {
+      overlays.showInspector(node);
+      // Clicking a session hub focuses that session (session mode) — this replaces
+      // the old session dropdown. Observation clicks only inspect, never re-scope.
+      if (node?.type === 'session') {
+        const id = Number(node.id.slice(2));
+        if (scope.mode === 'session' && scope.sessionId === id) return; // already focused
+        scope.mode = 'session';
+        scope.sessionId = id;
+        scope.project = undefined;
+        scope.search = undefined;
+        lastSearch = '';
+        void load();
+      }
+    },
   });
 
   const overlays = mountOverlays(overlayRoot, {
@@ -197,6 +208,7 @@ async function main(): Promise<void> {
       scope.mode = next.mode;
       scope.sessionId = next.sessionId;
       scope.similarity = next.similarity;
+      scope.project = next.project;
       scope.search = undefined;
       lastSearch = '';
       void load();
@@ -261,7 +273,7 @@ async function main(): Promise<void> {
     try {
       const data = await fetchGraph(scope);
       if (seq !== loadSeq) return; // superseded by a newer load — drop stale payload
-      overlays.syncFromData(data, sessionOptions(data));
+      overlays.syncFromData(data);
       renderer.setData(toViewGraph(data));
       renderer.setVisibleTypes(new Set(visibleTypes));
     } catch (err) {

@@ -69,6 +69,11 @@ export interface GraphScope {
   edgeCap: number;
   /** Whether similarity edges were computed. */
   similarity: boolean;
+  /**
+   * The project filter actually applied (topN mode only). Echoes `GraphQuery.project`
+   * so the client can mark the current selection in the project picker.
+   */
+  project?: string;
 }
 
 /** Render-time metadata for the client (banners, truncation notices, empty state). */
@@ -80,6 +85,12 @@ export interface GraphMeta {
   renderedNodes: number;
   /** True when the store holds no sessions/observations at all. */
   emptyStore: boolean;
+  /**
+   * Every distinct non-null project in the store, sorted — store-wide, independent
+   * of the rendered window. Drives the UI project picker so it can offer projects
+   * that fall outside the current topN/search scope.
+   */
+  projects: string[];
 }
 
 /** The full payload returned by `GET /api/graph`. */
@@ -97,6 +108,11 @@ export interface GraphQuery {
   session?: number;
   /** Switch to `topN` mode: most-recent observations store-wide. */
   topN?: number;
+  /**
+   * Restrict the topN window to one project (its sessions only). Opt-in: absent =
+   * store-wide. Ignored in `session`/`search` mode. Drives the UI project picker.
+   */
+  project?: string;
   /** Requested node budget; clamped to NODE_CAP by the backend. */
   limit?: number;
   /** Compute similarity edges from stored vectors. */

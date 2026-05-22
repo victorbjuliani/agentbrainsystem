@@ -144,6 +144,23 @@ describe('MemoryStore', () => {
       expect(newest).toEqual([...ids].sort((a, b) => b - a).slice(0, 2));
     });
 
+    it('filters by project (sessions of that project), composing with order/limit', () => {
+      const other = store.createSession({ externalId: 'other', project: 'q' });
+      const p1 = store.createObservation({ sessionId, kind: 'user', content: 'p one' });
+      const p2 = store.createObservation({ sessionId, kind: 'user', content: 'p two' });
+      store.createObservation({ sessionId: other, kind: 'user', content: 'q one' });
+
+      // project 'p' → only this session's observations, none of project 'q'.
+      const got = store.listObservations({ project: 'p' }).map((o) => o.id);
+      expect(got.sort((a, b) => a - b)).toEqual([p1, p2]);
+
+      // composes with order + limit (newest of project 'p').
+      expect(store.listObservations({ project: 'p', order: 'desc', limit: 1 })[0]?.id).toBe(p2);
+
+      // a project with no sessions yields nothing.
+      expect(store.listObservations({ project: 'nope' })).toEqual([]);
+    });
+
     it('filters by a set of kinds (kind IN), composing with order/limit (#35)', () => {
       store.createObservation({ sessionId, kind: 'user', content: 'a question' });
       const lessonId = store.createObservation({ sessionId, kind: 'lesson', content: 'a lesson' });

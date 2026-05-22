@@ -85,6 +85,9 @@ export function buildGraph(store: MemoryStore, query: GraphQuery): GraphData {
   const counts = store.counts();
   const totals = { totalSessions: counts.sessions, totalObservations: counts.observations };
   const wantSimilarity = query.similarity === true;
+  // Store-wide project list for the picker — independent of the rendered window, so
+  // the client can offer projects outside the current topN/search scope (#62-B).
+  const projects = store.listProjects();
 
   // Node budget: clamp the requested limit into (0, NODE_CAP].
   const requested = query.limit !== undefined && query.limit > 0 ? query.limit : NODE_CAP;
@@ -113,7 +116,12 @@ export function buildGraph(store: MemoryStore, query: GraphQuery): GraphData {
     // obsBudget MOST RECENT observations — never the oldest. obsBudget is bound
     // to nodeBudget, leaving room for the session hubs that derive from them.
     const obsBudget = Math.min(query.topN, nodeBudget);
-    const newestFirst = store.listObservations({ limit: obsBudget, order: 'desc' });
+    // Opt-in project filter: scope the recency window to one project's sessions.
+    const newestFirst = store.listObservations({
+      limit: obsBudget,
+      order: 'desc',
+      project: query.project,
+    });
     observations = newestFirst.reverse(); // chronological ascending within the window
     if (totals.totalObservations > observations.length) truncated = true;
     // Derive the sessions these observations belong to (capped).
@@ -139,7 +147,7 @@ export function buildGraph(store: MemoryStore, query: GraphQuery): GraphData {
       focus = top.length > 0 ? top[0] : undefined;
     }
     if (!focus) {
-      return emptyGraph(mode, query, totals, wantSimilarity, nodeBudget);
+      return emptyGraph(mode, query, totals, wantSimilarity, nodeBudget, projects);
     }
     sessions = [focus];
     // Reserve one slot for the session hub itself.
@@ -166,7 +174,7 @@ export function buildGraph(store: MemoryStore, query: GraphQuery): GraphData {
   }
 
   if (sessions.length === 0 && observations.length === 0) {
-    return emptyGraph(mode, query, totals, wantSimilarity, nodeBudget);
+    return emptyGraph(mode, query, totals, wantSimilarity, nodeBudget, projects);
   }
 
   // ---- Nodes ----------------------------------------------------------------
@@ -306,6 +314,8 @@ export function buildGraph(store: MemoryStore, query: GraphQuery): GraphData {
     nodeCap: NODE_CAP,
     edgeCap: EDGE_CAP,
     similarity: wantSimilarity,
+    // Echo the applied project filter (topN only) so the picker reflects selection.
+    project: mode === 'topN' ? query.project : undefined,
   };
 
   return {
@@ -319,6 +329,7 @@ export function buildGraph(store: MemoryStore, query: GraphQuery): GraphData {
       totalObservations: totals.totalObservations,
       renderedNodes: nodes.length,
       emptyStore: totals.totalSessions === 0 && totals.totalObservations === 0,
+      projects,
     },
   };
 }
@@ -335,6 +346,7 @@ function emptyGraph(
   totals: { totalSessions: number; totalObservations: number },
   similarity: boolean,
   nodeBudget: number,
+  projects: string[],
 ): GraphData {
   return {
     version: GRAPH_CONTRACT_VERSION,
@@ -345,6 +357,7 @@ function emptyGraph(
       nodeCap: NODE_CAP,
       edgeCap: EDGE_CAP,
       similarity,
+      project: mode === 'topN' ? query.project : undefined,
     },
     nodes: [],
     edges: [],
@@ -354,6 +367,7 @@ function emptyGraph(
       totalObservations: totals.totalObservations,
       renderedNodes: 0,
       emptyStore: totals.totalSessions === 0 && totals.totalObservations === 0,
+      projects,
     },
   };
 }

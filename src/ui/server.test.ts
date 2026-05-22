@@ -134,6 +134,19 @@ describe('parseGraphQuery', () => {
     expect(parse('search=%20%20').search).toBeUndefined();
     expect(parse('topN=200&search=')).toEqual({ topN: 200 });
   });
+
+  it('reads a non-empty project param and composes with topN', () => {
+    expect(parse('project=alpha')).toEqual({ project: 'alpha' });
+    expect(parse('topN=200&project=-Users-vbjuliani-Devs-ChessDNA')).toEqual({
+      topN: 200,
+      project: '-Users-vbjuliani-Devs-ChessDNA',
+    });
+  });
+
+  it('drops an empty / whitespace-only project', () => {
+    expect(parse('project=').project).toBeUndefined();
+    expect(parse('project=%20').project).toBeUndefined();
+  });
 });
 
 // --- Selector parsing (ADR-0007 query-string contract) ----------------------

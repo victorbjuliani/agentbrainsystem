@@ -5,7 +5,8 @@
  * Pieces:
  *   - Type-filter pills (colored by taxonomy; dimmed when absent from the payload).
  *   - Search input (mono) driving a store-wide server search (#35).
- *   - Scope controls: session dropdown / topN toggle + similarity-edges toggle.
+ *   - Scope controls: store-wide project picker / topN toggle + similarity toggle.
+ *     (A graph-node click focuses a single session — there is no session dropdown.)
  *   - Inspector (on select): compact mono metadata panel, glow-md surface.
  *   - Theme toggle (dark/light).
  *   - Truncation banner ("showing N of M") when a cap clipped the graph.
@@ -23,21 +24,22 @@ export interface OverlayCallbacks {
   onSearch(query: string): void;
   /** "Delete the N matching" affordance on the search box (ADR-0007 write path). */
   onSearchDelete(): void;
-  onScopeChange(scope: { mode: ScopeMode; sessionId?: number; similarity: boolean }): void;
+  onScopeChange(scope: {
+    mode: ScopeMode;
+    sessionId?: number;
+    similarity: boolean;
+    /** Store-wide project filter (topN mode only). Empty/undefined = all projects. */
+    project?: string;
+  }): void;
   onThemeChange(theme: Theme): void;
   onInspectorClose(): void;
   /** Delete the inspected node (an observation, or a whole session hub). */
   onInspectorDelete(node: ViewNode): void;
 }
 
-export interface SessionOption {
-  id: number;
-  label: string;
-}
-
 export interface Overlays {
   /** Reflect a freshly-loaded payload (pill availability, truncation banner). */
-  syncFromData(data: GraphData, sessions: SessionOption[]): void;
+  syncFromData(data: GraphData): void;
   /** Render the inspector for the selected node (or hide it on null). */
   showInspector(node: ViewNode | null): void;
   setTheme(theme: Theme): void;
@@ -68,10 +70,13 @@ function fmtTimestamp(iso: string): string {
 
 export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays {
   // --- Top-left: brand + scope ---------------------------------------------
-  const sessionSelect = el('select', {
-    id: 'scope-session',
+  // Store-wide project picker (#62-B): its options come from `meta.projects` (the
+  // whole store), not from the rendered window, so projects outside the current
+  // topN scope are still reachable. Selecting one browses that project (topN mode).
+  const projectSelect = el('select', {
+    id: 'scope-project',
     class: 'control select',
-    'aria-label': 'Escopo: sessão a exibir',
+    'aria-label': 'Escopo: projeto a exibir',
   });
   const topNBtn = el(
     'button',
@@ -91,6 +96,11 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
 
   let mode: ScopeMode = 'session';
   let similarity = false;
+  let project: string | undefined;
+  // The session a graph-node click focused (session mode). It lives here, kept in
+  // step with the server's resolved scope by syncFromData, so toggling similarity
+  // or exiting/entering scope never silently drops a focused session.
+  let focusedSessionId: number | undefined;
 
   function emitScope(): void {
     // A scope change exits search (#35): clear the box so it never shows a stale
@@ -102,17 +112,22 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
       searchInput.value = '';
       searchDeleteBtn.hidden = true;
     }
-    const sel = sessionSelect.value;
     cb.onScopeChange({
       mode,
-      sessionId: mode === 'session' && sel ? Number(sel) : undefined,
+      sessionId: mode === 'session' ? focusedSessionId : undefined,
       similarity,
+      project,
     });
   }
 
-  sessionSelect.addEventListener('change', () => {
-    mode = 'session';
-    topNBtn.setAttribute('aria-pressed', 'false');
+  projectSelect.addEventListener('change', () => {
+    // Picking a project browses it (topN within the project); the empty option
+    // ("todos os projetos") clears the filter back to store-wide topN. Leaving any
+    // focused session behind is intentional — the picker is a browse action.
+    project = projectSelect.value || undefined;
+    mode = 'topN';
+    focusedSessionId = undefined;
+    topNBtn.setAttribute('aria-pressed', 'true');
     emitScope();
   });
   topNBtn.addEventListener('click', () => {
@@ -121,6 +136,8 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
     // `mode` here would mis-toggle (topN→session) when exiting search (#42 P2).
     const pressed = topNBtn.getAttribute('aria-pressed') === 'true';
     mode = pressed ? 'session' : 'topN';
+    // Untoggling topN drops to the default (most-recent) session view, not a stale focus.
+    if (mode === 'session') focusedSessionId = undefined;
     topNBtn.setAttribute('aria-pressed', String(mode === 'topN'));
     emitScope();
   });
@@ -138,7 +155,7 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
       el('span', { class: 'brand-name' }, ['agentbrainsystem']),
       el('span', { class: 'brand-sub' }, ['memory graph']),
     ]),
-    el('div', { class: 'scope-row' }, [sessionSelect, topNBtn, simBtn]),
+    el('div', { class: 'scope-row' }, [projectSelect, topNBtn, simBtn]),
     truncBanner,
   ]);
 
@@ -312,14 +329,27 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
   root.append(topLeft, topRight, legend, inspector, emptyState, noResults);
 
   return {
-    syncFromData(data: GraphData, sessions: SessionOption[]): void {
-      // Session dropdown.
-      sessionSelect.replaceChildren();
-      for (const s of sessions) {
-        const opt = el('option', { value: String(s.id) }, [s.label]);
-        if (data.scope.sessionId === s.id) opt.selected = true;
-        sessionSelect.append(opt);
+    syncFromData(data: GraphData): void {
+      // Re-sync the internal scope vars to the server's resolved truth so a control
+      // toggled next (similarity / topN) carries the right scope — and a session
+      // focused by a graph-node click survives those toggles. `search` mode has no
+      // representable `mode` here, so we leave the last session/topN intent in place.
+      if (data.scope.mode !== 'search') mode = data.scope.mode;
+      focusedSessionId = data.scope.sessionId;
+      project = data.scope.project;
+
+      // Project picker — store-wide options from meta.projects (not the rendered
+      // window). Lead with "todos os projetos" (clears the filter).
+      projectSelect.replaceChildren();
+      const allOpt = el('option', { value: '' }, ['todos os projetos']);
+      if (!data.scope.project) allOpt.selected = true;
+      projectSelect.append(allOpt);
+      for (const p of data.meta.projects) {
+        const opt = el('option', { value: p }, [p]);
+        if (data.scope.project === p) opt.selected = true;
+        projectSelect.append(opt);
       }
+
       // Reflect resolved scope onto the toggles.
       topNBtn.setAttribute('aria-pressed', String(data.scope.mode === 'topN'));
       simBtn.setAttribute('aria-pressed', String(data.scope.similarity));
@@ -356,7 +386,7 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
         noResultsTitle.textContent = searching ? 'nenhum resultado' : 'escopo vazio';
         noResultsSub.textContent = searching
           ? 'nenhuma memória corresponde à busca'
-          : 'nenhum nó neste escopo — tente outra sessão ou top 200';
+          : 'nenhum nó neste escopo — tente outro projeto ou top 200';
       }
     },
     showInspector(node: ViewNode | null): void {
