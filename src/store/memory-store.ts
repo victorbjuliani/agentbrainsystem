@@ -480,20 +480,45 @@ export class MemoryStore {
     this.conn().prepare('DELETE FROM vec_observations').run();
   }
 
-  /** k-nearest-neighbour search over the vector index, ordered by distance. */
-  knn(query: number[], k: number): KnnHit[] {
+  /**
+   * k-nearest-neighbour search over the vector index, ordered by distance. When
+   * `project` is given, restrict to observations whose session is filed under that
+   * project (#47 — project-scoped recall): a `rowid IN (…)` subquery joins
+   * `observations → sessions`, applied alongside the vec0 KNN MATCH (sqlite-vec
+   * supports the extra rowid constraint). Omit `project` for store-wide recall —
+   * byte-for-byte the original query.
+   */
+  knn(query: number[], k: number, project?: string): KnnHit[] {
     if (query.length !== this.dimensions) {
       throw new Error(`query dimension mismatch: expected ${this.dimensions}, got ${query.length}`);
     }
-    const rows = this.conn()
-      .prepare(
-        `SELECT rowid AS id, distance
-         FROM vec_observations
-         WHERE embedding MATCH ?
-         ORDER BY distance
-         LIMIT ?`,
-      )
-      .all(JSON.stringify(query), k) as Array<{ id: number | bigint; distance: number }>;
+    const conn = this.conn();
+    const rows = (
+      project === undefined
+        ? conn
+            .prepare(
+              `SELECT rowid AS id, distance
+               FROM vec_observations
+               WHERE embedding MATCH ?
+               ORDER BY distance
+               LIMIT ?`,
+            )
+            .all(JSON.stringify(query), k)
+        : conn
+            .prepare(
+              `SELECT v.rowid AS id, v.distance AS distance
+               FROM vec_observations v
+               WHERE v.embedding MATCH ?
+                 AND v.rowid IN (
+                   SELECT o.id FROM observations o
+                   JOIN sessions s ON s.id = o.session_id
+                   WHERE s.project = ?
+                 )
+               ORDER BY v.distance
+               LIMIT ?`,
+            )
+            .all(JSON.stringify(query), project, k)
+    ) as Array<{ id: number | bigint; distance: number }>;
     return rows.map((r) => ({ id: Number(r.id), distance: r.distance }));
   }
 
@@ -549,17 +574,38 @@ export class MemoryStore {
     tx();
   }
 
-  /** Full-text search returning matching observation ids ordered by FTS rank. */
-  searchFts(queryText: string, k: number): KnnHit[] {
-    const rows = this.conn()
-      .prepare(
-        `SELECT rowid AS id, rank AS distance
-         FROM fts_observations
-         WHERE fts_observations MATCH ?
-         ORDER BY rank
-         LIMIT ?`,
-      )
-      .all(queryText, k) as Array<{ id: number | bigint; distance: number }>;
+  /**
+   * Full-text search returning matching observation ids ordered by FTS rank. When
+   * `project` is given, restrict to observations whose session is filed under that
+   * project (#47): an inner JOIN `fts_observations → observations → sessions` on
+   * `sessions.project = ?` (which also excludes NULL-project rows). Omit `project`
+   * for store-wide search — byte-for-byte the original query.
+   */
+  searchFts(queryText: string, k: number, project?: string): KnnHit[] {
+    const conn = this.conn();
+    const rows = (
+      project === undefined
+        ? conn
+            .prepare(
+              `SELECT rowid AS id, rank AS distance
+               FROM fts_observations
+               WHERE fts_observations MATCH ?
+               ORDER BY rank
+               LIMIT ?`,
+            )
+            .all(queryText, k)
+        : conn
+            .prepare(
+              `SELECT f.rowid AS id, f.rank AS distance
+               FROM fts_observations f
+               JOIN observations o ON o.id = f.rowid
+               JOIN sessions s ON s.id = o.session_id
+               WHERE fts_observations MATCH ? AND s.project = ?
+               ORDER BY f.rank
+               LIMIT ?`,
+            )
+            .all(queryText, project, k)
+    ) as Array<{ id: number | bigint; distance: number }>;
     return rows.map((r) => ({ id: Number(r.id), distance: r.distance }));
   }
 

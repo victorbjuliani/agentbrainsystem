@@ -158,6 +158,7 @@ local stays the default.
 | `ABS_EMBED_PROVIDER` | `local` | `local` \| `gemini` \| `voyage` |
 | `ABS_EMBED_MODEL` | `Xenova/all-MiniLM-L6-v2` | model id for the provider |
 | `ABS_EMBED_DIM` | per provider (local 384, gemini 768, voyage 1024) | vector width; only set to override |
+| `ABS_RECALL_SCOPE` | `project` | recall/injection isolation: `project` (only the current session's project) \| `global` (store-wide) |
 | `ABS_LLM_BASE_URL` | _(unset → consolidation off)_ | OpenAI-compatible chat endpoint for `abs consolidate`, e.g. `http://localhost:11434/v1` |
 | `ABS_LLM_MODEL` | _(required when base set)_ | chat model id, e.g. `llama3.1` |
 | `ABS_LLM_API_KEY` | _(optional)_ | bearer token for hosted endpoints; local backends need none |

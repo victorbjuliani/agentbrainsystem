@@ -17,6 +17,12 @@ export interface RecallOptions {
   candidates?: number;
   /** RRF damping constant. */
   rrfK?: number;
+  /**
+   * Restrict recall to observations filed under this project (#47). Undefined →
+   * store-wide recall (the previous behavior). Both index legs are filtered so
+   * cross-project memory cannot leak into a scoped session.
+   */
+  project?: string;
 }
 
 export interface RecallHit {
@@ -41,6 +47,8 @@ export interface RecallHit {
 export interface RecallFtsOptions {
   /** Max results to return. Default 8. */
   limit?: number;
+  /** Restrict to observations filed under this project (#47). Undefined → store-wide. */
+  project?: string;
 }
 
 /**
@@ -75,11 +83,16 @@ export class Recall {
     const candidates = options.candidates ?? Math.max(limit * 5, 20);
     const rrfK = options.rrfK ?? DEFAULT_RRF_K;
 
+    const { project } = options;
     const [queryVector] = await this.provider.embed([query]);
-    const vectorIds = queryVector ? this.store.knn(queryVector, candidates).map((h) => h.id) : [];
+    const vectorIds = queryVector
+      ? this.store.knn(queryVector, candidates, project).map((h) => h.id)
+      : [];
 
     const ftsExpr = toFtsQuery(query);
-    const ftsIds = ftsExpr ? this.store.searchFts(ftsExpr, candidates).map((h) => h.id) : [];
+    const ftsIds = ftsExpr
+      ? this.store.searchFts(ftsExpr, candidates, project).map((h) => h.id)
+      : [];
 
     const fused = reciprocalRankFusion(
       [
@@ -118,7 +131,7 @@ export class Recall {
     const ftsExpr = toFtsQuery(query);
     if (ftsExpr === null) return [];
 
-    const matches = this.store.searchFts(ftsExpr, limit);
+    const matches = this.store.searchFts(ftsExpr, limit, options.project);
     const hits: RecallHit[] = [];
     for (const m of matches) {
       const observation = this.store.getObservation(m.id);
