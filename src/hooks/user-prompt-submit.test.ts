@@ -59,6 +59,15 @@ describe('renderRecallBlock — bounding', () => {
     expect(renderRecallBlock([])).toBe('');
   });
 
+  it('tags global hits distinctly so the agent reads them as cross-project', () => {
+    const projectHit = hit(1, 'note', 'Local detail about the foo service module.');
+    const globalHit = { ...hit(2, 'decision', 'Always use dependency injection here.'), global: true };
+    const block = renderRecallBlock([projectHit, globalHit]);
+    expect(block).toContain('🌐global');
+    expect(block).toContain('Always use dependency injection');
+    expect(block).toMatch(/\[note\] Local detail/);
+  });
+
   it('truncates to the char budget', () => {
     const many = Array.from({ length: 50 }, (_, i) =>
       hit(i + 1, 'note', `distinct observation number ${i} with enough length to count here`),

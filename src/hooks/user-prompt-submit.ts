@@ -115,8 +115,9 @@ export function renderRecallBlock(hits: RecallHit[], header: string = fenceHeade
     seen.add(key);
 
     const kind = hit.observation.kind;
+    const globalTag = hit.global ? ' 🌐global' : '';
     const branchTag = hit.crossBranch ? ' ⎇other-branch' : '';
-    const line = `- [${kind}${freshnessTag(hit.anchorState)}${branchTag}] ${content.replace(/\s+/g, ' ')}`;
+    const line = `- [${kind}${freshnessTag(hit.anchorState)}${globalTag}${branchTag}] ${content.replace(/\s+/g, ' ')}`;
     // Stop once adding this line would blow the budget (keep at least one line).
     if (items.length > 0 && used + line.length > CHAR_BUDGET) break;
     items.push(line.length > CHAR_BUDGET ? `${line.slice(0, CHAR_BUDGET - 1)}…` : line);
@@ -145,7 +146,7 @@ async function recallFromStore(prompt: string, payload: HookPayload): Promise<Sc
       transcriptPath: payload.transcriptPath,
       cwd: payload.cwd,
     });
-    const hits = memory.recall.recallFts(prompt, { limit: TOP_K, project });
+    const hits = memory.recall.recallFts(prompt, { limit: TOP_K, project, includeGlobal: true });
     // Lazy self-healing (#28): re-verify the verified anchors of the facts about
     // to be surfaced, so a stale claim is caught at the exact moment of use.
     // Fail-open and bounded to these few hits — no graph, no cost.

@@ -112,7 +112,7 @@ function surfaceDecisions(
   const query = [...terms].join(' ');
   if (query.length === 0) return undefined;
 
-  const hits = memory.recall.recallFts(query, { limit: RECALL_POOL, project });
+  const hits = memory.recall.recallFts(query, { limit: RECALL_POOL, project, includeGlobal: true });
   const decisions = hits
     .filter((h) => h.observation.kind === 'decision' || h.observation.kind === 'lesson')
     .slice(0, MAX_DECISIONS);
