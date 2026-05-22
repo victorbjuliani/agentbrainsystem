@@ -259,47 +259,129 @@ async function ingestFile(
   result.anchorsSeeded += seeded;
 }
 
-/**
- * Ingest every Claude Code transcript under the projects root, incrementally.
- * Re-running is safe: files whose cursor already covers their current size are
- * skipped; grown files resume from the cursor.
- */
-export async function ingestClaudeProjects(
-  memory: Memory,
-  options: IngestOptions = {},
-): Promise<IngestResult> {
-  const root = options.projectsDir ?? defaultClaudeProjectsDir();
-  const result: IngestResult = {
+/** A fresh zeroed tally. */
+function emptyResult(): IngestResult {
+  return {
     filesProcessed: 0,
     filesSkipped: 0,
     observationsAdded: 0,
     observationsSkipped: 0,
     anchorsSeeded: 0,
   };
+}
+
+/**
+ * Ingest a single transcript file (cursor-aware), tallying into `result`. A vanished
+ * file is a no-op; a file whose cursor already covers its size is counted skipped.
+ */
+async function ingestOneTranscript(
+  memory: Memory,
+  absPath: string,
+  result: IngestResult,
+): Promise<void> {
+  let size: number;
+  try {
+    size = (await stat(absPath)).size;
+  } catch {
+    return; // vanished between walk and stat — ignore
+  }
+  const cursor = readCursor(memory, absPath);
+  if (cursor >= size) {
+    result.filesSkipped++; // nothing new since last run
+    return;
+  }
+  // Fallback project for lines with no cwd: the encoded dir name (the file's
+  // immediate parent). The hot path derives the project from each line's cwd.
+  const project = basename(dirname(absPath));
+  await ingestFile(memory, absPath, project, cursor, result);
+  result.filesProcessed++;
+}
+
+/**
+ * Ingest every Claude Code transcript under the projects root, incrementally.
+ * Re-running is safe: files whose cursor already covers their current size are
+ * skipped; grown files resume from the cursor.
+ *
+ * EXPLICIT/opt-in (#62): this walks the WHOLE tree, so it is only ever run by the
+ * user via `abs ingest`, never automatically. `options.projects` restricts the walk
+ * to those project slugs (the file's parent-dir name) so the user can pull just the
+ * projects they want — the rest of the on-disk history is left untouched.
+ */
+export async function ingestClaudeProjects(
+  memory: Memory,
+  options: IngestOptions = {},
+): Promise<IngestResult> {
+  const root = options.projectsDir ?? defaultClaudeProjectsDir();
+  const result = emptyResult();
+  const filter = options.projects ? new Set(options.projects) : null;
 
   // Housekeeping: drop expired `set` bindings once per run (`skip` is permanent).
   cleanupBindings(memory.store);
 
   for await (const absPath of walkJsonlFiles(root)) {
+    if (filter && !filter.has(basename(dirname(absPath)))) continue;
+    await ingestOneTranscript(memory, absPath, result);
+  }
+
+  return result;
+}
+
+/**
+ * Ingest ONLY the given session's transcript file (#62). This is what the SessionEnd
+ * hook calls: it scopes auto-ingest to the just-finished session, so a fresh/reset
+ * store is never silently back-filled with the machine's whole transcript history
+ * (that is now an explicit `abs ingest` action). Cursor-aware like the full walk.
+ */
+export async function ingestSingleSession(
+  memory: Memory,
+  transcriptPath: string,
+): Promise<IngestResult> {
+  const result = emptyResult();
+  // Same once-per-run housekeeping as the full walk.
+  cleanupBindings(memory.store);
+  await ingestOneTranscript(memory, transcriptPath, result);
+  return result;
+}
+
+/** Per-project availability, for the `abs ingest` preview. No writes. */
+export interface ProjectSurvey {
+  /** Project slug (the transcript file's parent-dir name). */
+  project: string;
+  /** Total transcript files found for this project. */
+  transcripts: number;
+  /** Files with content past the stored cursor (i.e. something new to ingest). */
+  newTranscripts: number;
+}
+
+/**
+ * Survey the on-disk transcripts grouped by project WITHOUT writing anything (#62).
+ * Powers the `abs ingest` preview: the user sees which projects exist and how much
+ * is new before choosing what to ingest. Reads cursors to compute `newTranscripts`.
+ */
+export async function surveyClaudeProjects(
+  memory: Memory,
+  options: IngestOptions = {},
+): Promise<ProjectSurvey[]> {
+  const root = options.projectsDir ?? defaultClaudeProjectsDir();
+  const filter = options.projects ? new Set(options.projects) : null;
+  const byProject = new Map<string, { transcripts: number; newTranscripts: number }>();
+
+  for await (const absPath of walkJsonlFiles(root)) {
+    const project = basename(dirname(absPath));
+    if (filter && !filter.has(project)) continue;
     let size: number;
     try {
       size = (await stat(absPath)).size;
     } catch {
-      continue; // vanished between walk and stat — ignore
-    }
-
-    const cursor = readCursor(memory, absPath);
-    if (cursor >= size) {
-      result.filesSkipped++; // nothing new since last run
       continue;
     }
-
-    // Fallback project for lines with no cwd: the encoded dir name (the file's
-    // immediate parent). The hot path derives the project from each line's cwd.
-    const project = basename(dirname(absPath));
-    await ingestFile(memory, absPath, project, cursor, result);
-    result.filesProcessed++;
+    const entry = byProject.get(project) ?? { transcripts: 0, newTranscripts: 0 };
+    entry.transcripts++;
+    if (readCursor(memory, absPath) < size) entry.newTranscripts++;
+    byProject.set(project, entry);
   }
 
-  return result;
+  return [...byProject.entries()]
+    .map(([project, v]) => ({ project, ...v }))
+    .sort((a, b) => a.project.localeCompare(b.project));
 }

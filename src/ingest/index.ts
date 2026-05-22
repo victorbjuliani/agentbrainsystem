@@ -7,7 +7,13 @@
 
 export type { ParsedEntry } from './claude-jsonl.js';
 export { parseLine } from './claude-jsonl.js';
-export { defaultClaudeProjectsDir, ingestClaudeProjects } from './ingest.js';
+export type { ProjectSurvey } from './ingest.js';
+export {
+  defaultClaudeProjectsDir,
+  ingestClaudeProjects,
+  ingestSingleSession,
+  surveyClaudeProjects,
+} from './ingest.js';
 export type { BindingDecision, SessionBinding } from './session-binding.js';
 export {
   clearBinding,

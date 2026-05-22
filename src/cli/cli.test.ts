@@ -8,7 +8,7 @@
  * `src/delete/delete.test.ts`); here we prove the CLI resolves argv into the right
  * selector and refuses ambiguous/empty input.
  */
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -18,6 +18,7 @@ import { getOrCreateGlobalSession } from '../global.js';
 import { type Memory, openMemory } from '../memory.js';
 import {
   cmdForget,
+  cmdIngest,
   cmdProject,
   cmdPromote,
   cmdRemember,
@@ -211,6 +212,67 @@ describe('cmdForget — preview default + apply path (hermetic, tmp ABS_HOME)', 
     await cmdForget(['--session', '99999', '--apply', '--yes']);
     const text = outLines.join('');
     expect(text).toContain('nothing to delete');
+  });
+});
+
+describe('cmdIngest — opt-in historical ingest (#62, hermetic, no model load)', () => {
+  let dir: string;
+  let projectsDir: string;
+  let outLines: string[];
+  let errLines: string[];
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'abs-cli-ingest-'));
+    process.env.ABS_HOME = dir;
+    process.env.ABS_EMBED_DIM = '8';
+    projectsDir = join(dir, 'projects');
+    const projA = join(projectsDir, '-Users-me-A');
+    mkdirSync(projA, { recursive: true });
+    writeFileSync(
+      join(projA, 'sa.jsonl'),
+      `${JSON.stringify({ type: 'user', sessionId: 'sa', cwd: '/Users/me/A', uuid: 'ua', timestamp: '2026-05-20T10:00:00.000Z', message: { role: 'user', content: 'hi' } })}\n`,
+    );
+    outLines = [];
+    errLines = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation((c: string | Uint8Array) => {
+      outLines.push(String(c));
+      return true;
+    });
+    vi.spyOn(process.stderr, 'write').mockImplementation((c: string | Uint8Array) => {
+      errLines.push(String(c));
+      return true;
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete process.env.ABS_HOME;
+    delete process.env.ABS_EMBED_DIM;
+    process.exitCode = undefined;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('previews by default — lists projects, writes nothing', async () => {
+    await cmdIngest(['--dir', projectsDir]);
+    const text = outLines.join('');
+    expect(text).toContain('ingest preview');
+    expect(text).toContain('-Users-me-A');
+    expect(text).toContain('1 new / 1 total');
+    expect(text).toContain('--apply');
+    // Nothing was ingested.
+    const mem = await openMemory(loadConfig(), { ensure: false });
+    expect(mem.store.getSessionByExternalId('sa')).toBeNull();
+    mem.close();
+  });
+
+  it('refuses --apply without a selector (no full ingest by accident)', async () => {
+    await cmdIngest(['--apply', '--dir', projectsDir]);
+    expect(errLines.join('')).toContain('refusing to ingest without a selector');
+    expect(process.exitCode).toBe(1);
+    // Returned before opening the store ⇒ nothing ingested.
+    const mem = await openMemory(loadConfig(), { ensure: false });
+    expect(mem.store.getSessionByExternalId('sa')).toBeNull();
+    mem.close();
   });
 });
 

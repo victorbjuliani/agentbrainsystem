@@ -6,13 +6,19 @@
  * targets **Claude Code** JSONL transcripts under `~/.claude/projects/**`.
  */
 
-/** Options accepted by `ingestClaudeProjects`. */
+/** Options accepted by `ingestClaudeProjects` / `surveyClaudeProjects`. */
 export interface IngestOptions {
   /**
    * Override for the Claude projects root (defaults to `~/.claude/projects`).
    * Exposed mainly so tests can point at a temp tree without touching $HOME.
    */
   projectsDir?: string;
+  /**
+   * Restrict the walk to these project slugs (a transcript file's parent-dir name).
+   * Undefined = every project. Lets `abs ingest --project <slug>` pull only the
+   * chosen projects from the on-disk history (#62).
+   */
+  projects?: string[];
 }
 
 /** Per-run ingestion tally. */

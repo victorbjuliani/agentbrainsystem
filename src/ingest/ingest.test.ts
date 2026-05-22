@@ -7,7 +7,7 @@ import { Indexer } from '../indexer/index.js';
 import type { Memory } from '../memory.js';
 import { Recall } from '../recall/index.js';
 import { MemoryStore } from '../store/index.js';
-import { ingestClaudeProjects } from './ingest.js';
+import { ingestClaudeProjects, ingestSingleSession, surveyClaudeProjects } from './ingest.js';
 import { writeBinding } from './session-binding.js';
 
 /** Deterministic, offline provider so ingestion tests run without a model download. */
@@ -507,6 +507,75 @@ describe('ingestClaudeProjects — decision-aware (#50)', () => {
     const result = await ingestClaudeProjects(memory, { projectsDir });
     expect(result.observationsAdded).toBe(2);
     expect(memory.store.getSessionByExternalId('sess-4')?.project).toBe('Chosen');
+    memory.close();
+  });
+});
+
+describe('opt-in / scoped ingest (#62)', () => {
+  /** Lay down two projects, each with one transcript, and return their paths. */
+  function twoProjectTree(): { aFile: string; bFile: string } {
+    const aDir = join(projectsDir, '-Users-me-A');
+    const bDir = join(projectsDir, '-Users-me-B');
+    mkdirSync(aDir, { recursive: true });
+    mkdirSync(bDir, { recursive: true });
+    const aFile = join(aDir, 'sa.jsonl');
+    const bFile = join(bDir, 'sb.jsonl');
+    writeFileSync(aFile, `${userLine('sa', '/Users/me/A', 'alpha question', 'ua')}\n`);
+    writeFileSync(bFile, `${userLine('sb', '/Users/me/B', 'beta question', 'ub')}\n`);
+    return { aFile, bFile };
+  }
+
+  it('ingestSingleSession ingests ONLY the given transcript, not its siblings', async () => {
+    const { aFile } = twoProjectTree();
+    const memory = newMemory();
+    const result = await ingestSingleSession(memory, aFile);
+
+    expect(result.filesProcessed).toBe(1);
+    expect(result.observationsAdded).toBe(1);
+    expect(memory.store.getSessionByExternalId('sa')).not.toBeNull();
+    expect(memory.store.getSessionByExternalId('sb')).toBeNull(); // sibling untouched
+    memory.close();
+  });
+
+  it('ingestSingleSession on a missing file is a safe no-op', async () => {
+    const memory = newMemory();
+    const result = await ingestSingleSession(memory, join(projectsDir, 'gone', 'nope.jsonl'));
+    expect(result.observationsAdded).toBe(0);
+    expect(result.filesProcessed).toBe(0);
+    memory.close();
+  });
+
+  it('ingestClaudeProjects restricts the walk to the chosen project slugs', async () => {
+    twoProjectTree();
+    const memory = newMemory();
+    const result = await ingestClaudeProjects(memory, {
+      projectsDir,
+      projects: ['-Users-me-A'],
+    });
+
+    expect(result.observationsAdded).toBe(1);
+    expect(memory.store.getSessionByExternalId('sa')).not.toBeNull();
+    expect(memory.store.getSessionByExternalId('sb')).toBeNull(); // project B excluded
+    memory.close();
+  });
+
+  it('surveyClaudeProjects groups by project with new/total counts and writes nothing', async () => {
+    twoProjectTree();
+    const memory = newMemory();
+
+    const before = await surveyClaudeProjects(memory, { projectsDir });
+    expect(before).toEqual([
+      { project: '-Users-me-A', transcripts: 1, newTranscripts: 1 },
+      { project: '-Users-me-B', transcripts: 1, newTranscripts: 1 },
+    ]);
+    // Survey is read-only — nothing was ingested.
+    expect(memory.store.getSessionByExternalId('sa')).toBeNull();
+
+    // After ingesting A, its transcript is no longer "new"; B still is.
+    await ingestClaudeProjects(memory, { projectsDir, projects: ['-Users-me-A'] });
+    const after = await surveyClaudeProjects(memory, { projectsDir });
+    expect(after.find((p) => p.project === '-Users-me-A')?.newTranscripts).toBe(0);
+    expect(after.find((p) => p.project === '-Users-me-B')?.newTranscripts).toBe(1);
     memory.close();
   });
 });
