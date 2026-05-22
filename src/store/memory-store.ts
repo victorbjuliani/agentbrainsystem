@@ -490,37 +490,41 @@ export class MemoryStore {
    * supports the extra rowid constraint). Omit `project` for store-wide recall —
    * byte-for-byte the original query.
    */
-  knn(query: number[], k: number, project?: string): KnnHit[] {
+  knn(query: number[], k: number, project?: string, includeGlobal = false): KnnHit[] {
     if (query.length !== this.dimensions) {
       throw new Error(`query dimension mismatch: expected ${this.dimensions}, got ${query.length}`);
     }
     const conn = this.conn();
-    const rows = (
-      project === undefined
-        ? conn
-            .prepare(
-              `SELECT rowid AS id, distance
-               FROM vec_observations
-               WHERE embedding MATCH ?
-               ORDER BY distance
-               LIMIT ?`,
-            )
-            .all(JSON.stringify(query), k)
-        : conn
-            .prepare(
-              `SELECT v.rowid AS id, v.distance AS distance
-               FROM vec_observations v
-               WHERE v.embedding MATCH ?
-                 AND v.rowid IN (
-                   SELECT o.id FROM observations o
-                   JOIN sessions s ON s.id = o.session_id
-                   WHERE s.project = ?
-                 )
-               ORDER BY v.distance
-               LIMIT ?`,
-            )
-            .all(JSON.stringify(query), project, k)
-    ) as Array<{ id: number | bigint; distance: number }>;
+    const vec = JSON.stringify(query);
+    let rows: Array<{ id: number | bigint; distance: number }>;
+    if (project === undefined) {
+      rows = conn
+        .prepare(
+          `SELECT rowid AS id, distance FROM vec_observations
+           WHERE embedding MATCH ? ORDER BY distance LIMIT ?`,
+        )
+        .all(vec, k) as never;
+    } else {
+      // Widen ONLY the rowid subquery to include the global session; never JOIN the
+      // vec0 SELECT (it would break sqlite-vec's KNN planner) and keep the {id,distance}
+      // shape — global tagging is driven by searchFts on the FTS-first per-prompt path.
+      const projectFilter = includeGlobal
+        ? "s.project = ? OR s.project = '__global__'"
+        : 's.project = ?';
+      rows = conn
+        .prepare(
+          `SELECT v.rowid AS id, v.distance AS distance
+           FROM vec_observations v
+           WHERE v.embedding MATCH ?
+             AND v.rowid IN (
+               SELECT o.id FROM observations o
+               JOIN sessions s ON s.id = o.session_id
+               WHERE ${projectFilter}
+             )
+           ORDER BY v.distance LIMIT ?`,
+        )
+        .all(vec, project, k) as never;
+    }
     return rows.map((r) => ({ id: Number(r.id), distance: r.distance }));
   }
 
@@ -583,32 +587,26 @@ export class MemoryStore {
    * `sessions.project = ?` (which also excludes NULL-project rows). Omit `project`
    * for store-wide search — byte-for-byte the original query.
    */
-  searchFts(queryText: string, k: number, project?: string): KnnHit[] {
+  searchFts(queryText: string, k: number, project?: string, includeGlobal = false): KnnHit[] {
     const conn = this.conn();
-    const rows = (
-      project === undefined
-        ? conn
-            .prepare(
-              `SELECT rowid AS id, rank AS distance
-               FROM fts_observations
-               WHERE fts_observations MATCH ?
-               ORDER BY rank
-               LIMIT ?`,
-            )
-            .all(queryText, k)
-        : conn
-            .prepare(
-              `SELECT f.rowid AS id, f.rank AS distance
-               FROM fts_observations f
-               JOIN observations o ON o.id = f.rowid
-               JOIN sessions s ON s.id = o.session_id
-               WHERE fts_observations MATCH ? AND s.project = ?
-               ORDER BY f.rank
-               LIMIT ?`,
-            )
-            .all(queryText, project, k)
-    ) as Array<{ id: number | bigint; distance: number }>;
-    return rows.map((r) => ({ id: Number(r.id), distance: r.distance }));
+    const base = `SELECT f.rowid AS id, f.rank AS distance, s.project AS project
+       FROM fts_observations f
+       JOIN observations o ON o.id = f.rowid
+       JOIN sessions s ON s.id = o.session_id
+       WHERE fts_observations MATCH ?`;
+    let rows: Array<{ id: number | bigint; distance: number; project: string | null }>;
+    if (project === undefined) {
+      rows = conn.prepare(`${base} ORDER BY f.rank LIMIT ?`).all(queryText, k) as never;
+    } else if (includeGlobal) {
+      rows = conn
+        .prepare(`${base} AND (s.project = ? OR s.project = '__global__') ORDER BY f.rank LIMIT ?`)
+        .all(queryText, project, k) as never;
+    } else {
+      rows = conn
+        .prepare(`${base} AND s.project = ? ORDER BY f.rank LIMIT ?`)
+        .all(queryText, project, k) as never;
+    }
+    return rows.map((r) => ({ id: Number(r.id), distance: r.distance, project: r.project }));
   }
 
   // -------------------------------------------------------- fact anchors (E)
