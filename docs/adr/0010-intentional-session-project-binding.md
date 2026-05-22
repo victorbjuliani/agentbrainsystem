@@ -86,3 +86,27 @@ whenever ingest next runs (at-least-once, riding the existing byte-cursor).
   lifecycle plus a new reconciliation state machine; heavier than a kv row.
 - **Gate/defer ingest until a decision exists** — breaks the incremental sweep and risks
   starvation when the decision never comes.
+
+## Update — 2026-05-22 (project = folder; soft notice replaces the picker)
+
+Three refinements after exercising this on real transcripts, layered on the decision above:
+
+- **Project derives from each line's `cwd`, not the storage dir slug.** The Context's
+  `basename(dirname(absPath))` mis-bucketed subagent transcripts (`.../<uuid>/subagents/`)
+  as the literal `subagents`, and split one cwd stored under two dir encodings (old
+  space/underscore vs new all-hyphen) into two projects. Ingest now uses
+  `projectSlug(entry.cwd)` (fallback: the dir name only when a line has no cwd), and
+  `resolveRecallProject` keys off the cwd before the transcript dir — so ingest and recall
+  always agree on the label.
+- **No custom project name.** With the project always equal to the folder, the divergence
+  custom labels caused (recall scoped to one label while memory lives under another) is
+  removed by construction. The `set`-with-name action is gone from the MCP tool
+  (`set_session_project` is now `skip`/`include`) and the CLI (`abs project` is now
+  `--cwd`/`--skip`). The `kv_meta` `set` shape is retained internally (written by
+  `--cwd`/`include` with the cwd slug); only the user-facing name choice is removed.
+- **Picker → soft notice; no hard gate.** D-level "ask which project" became a
+  transparency NOTICE: it tells the user, once, that the session is being saved under its
+  folder and how to skip. A hard PreToolUse gate (deny tools until a decision exists) was
+  prototyped and reverted — memory is only written at `SessionEnd` (so skip can be decided
+  any time before then) and recall is independent of it, so the gate was friction without a
+  guarantee. The notice is reinforced on the session's first prompt (UserPromptSubmit).
