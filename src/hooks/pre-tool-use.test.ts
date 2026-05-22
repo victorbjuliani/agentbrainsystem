@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { writeBinding } from '../ingest/index.js';
 import { type Memory, openMemory } from '../memory.js';
 import { handlePreToolUse } from './pre-tool-use.js';
 
@@ -224,5 +225,87 @@ describe('PreToolUse decision surfacing (#48 Phase A)', () => {
     } finally {
       delete process.env.ABS_EMBED_PROVIDER;
     }
+  });
+});
+
+describe('PreToolUse project gate (#52 hard)', () => {
+  let dir: string;
+  let mem: Memory;
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'abs-gate-'));
+    process.env.ABS_HOME = join(dir, 'abs');
+    process.env.ABS_EMBED_DIM = '8';
+    process.env.ABS_RECALL_SCOPE = 'global';
+    delete process.env.ABS_GUARD_MODE;
+    delete process.env.ABS_PROJECT_GATE;
+    mem = await openMemory(undefined, { ensure: false });
+  });
+
+  afterEach(() => {
+    mem.close();
+    delete process.env.ABS_HOME;
+    delete process.env.ABS_EMBED_DIM;
+    delete process.env.ABS_RECALL_SCOPE;
+    delete process.env.ABS_PROJECT_GATE;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('blocks ANY tool (even read-only Bash) until the session has a project decision', async () => {
+    const out = await handlePreToolUse(
+      { sessionId: 's1', cwd: '/work/p', toolName: 'Bash', toolInput: { command: 'ls' } },
+      { memory: mem },
+    );
+    const parsed = JSON.parse(out as string);
+    expect(parsed.hookSpecificOutput.permissionDecision).toBe('deny');
+    expect(parsed.hookSpecificOutput.permissionDecisionReason).toContain('set_session_project');
+    expect(parsed.hookSpecificOutput.permissionDecisionReason).toContain('s1');
+  });
+
+  it('does NOT block the set_session_project tool itself (the only way to clear the gate)', async () => {
+    const out = await handlePreToolUse(
+      {
+        sessionId: 's1',
+        toolName: 'mcp__agentbrainsystem__set_session_project',
+        toolInput: { action: 'set', project: 'Foo' },
+      },
+      { memory: mem },
+    );
+    expect(out).toBeUndefined();
+  });
+
+  it('allows tools once a set binding exists for the session', async () => {
+    writeBinding(mem.store, 's1', { action: 'set', project: 'Foo' });
+    const out = await handlePreToolUse(
+      { sessionId: 's1', cwd: '/work/p', toolName: 'Bash', toolInput: { command: 'ls' } },
+      { memory: mem },
+    );
+    expect(out).toBeUndefined();
+  });
+
+  it('allows tools once the session is skipped', async () => {
+    writeBinding(mem.store, 's2', { action: 'skip' });
+    const out = await handlePreToolUse(
+      { sessionId: 's2', cwd: '/work/p', toolName: 'Bash', toolInput: { command: 'ls' } },
+      { memory: mem },
+    );
+    expect(out).toBeUndefined();
+  });
+
+  it('does NOT block when there is no session id (nothing to record a decision against)', async () => {
+    const out = await handlePreToolUse(
+      { cwd: '/work/p', toolName: 'Bash', toolInput: { command: 'ls' } },
+      { memory: mem },
+    );
+    expect(out).toBeUndefined();
+  });
+
+  it('is disabled by ABS_PROJECT_GATE=off (escape hatch)', async () => {
+    process.env.ABS_PROJECT_GATE = 'off';
+    const out = await handlePreToolUse(
+      { sessionId: 's1', cwd: '/work/p', toolName: 'Bash', toolInput: { command: 'ls' } },
+      { memory: mem },
+    );
+    expect(out).toBeUndefined();
   });
 });

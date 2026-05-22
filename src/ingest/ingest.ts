@@ -23,6 +23,7 @@ import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { Memory } from '../memory.js';
+import { projectSlug } from '../optimize/targets.js';
 import { parseLine, type ToolAnchorSeed } from './claude-jsonl.js';
 import { cleanupBindings, readBinding, type SessionBinding } from './session-binding.js';
 import type { IngestOptions, IngestResult } from './types.js';
@@ -214,12 +215,19 @@ async function ingestFile(
       continue;
     }
 
+    // The project is the session's real cwd (`entry.cwd`), NOT the Claude Code
+    // storage dir name (`project`). The storage dir mis-buckets subagent
+    // transcripts (which live under `<project>/<uuid>/subagents/`) as the literal
+    // "subagents", and fragments one cwd stored under two dir encodings (old
+    // space/underscore vs new all-hyphen) into two projects. The cwd is canonical.
+    // Fall back to the storage dir name only for older lines that carry no cwd.
+    const effectiveProject = entry.cwd ? projectSlug(entry.cwd) : project;
     const sessionId = resolveSession(
       memory,
       sessionCache,
       bindingCache,
       entry.sessionId,
-      project,
+      effectiveProject,
       entry.cwd,
     );
     // A `skip` binding excludes this session: advance the cursor (done above) but
@@ -286,7 +294,8 @@ export async function ingestClaudeProjects(
       continue;
     }
 
-    // The encoded project dir name is the immediate parent of the file.
+    // Fallback project for lines with no cwd: the encoded dir name (the file's
+    // immediate parent). The hot path derives the project from each line's cwd.
     const project = basename(dirname(absPath));
     await ingestFile(memory, absPath, project, cursor, result);
     result.filesProcessed++;
