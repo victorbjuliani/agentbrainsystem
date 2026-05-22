@@ -70,6 +70,10 @@
   --radius-lg: 16px;
   --radius-full: 9999px;
 
+  /* Height of the top-right overlay band (one 36px control row + its padding),
+     so the inspector can anchor BELOW it instead of colliding (DESIGN §11). */
+  --topbar-h: calc(36px + var(--space-4) * 2);
+
   /* --- Danger (destructive delete; ADR-0008) --- */
   /* Dark default: luminous red reads on the deep void. Light theme overrides this
      to a deeper red so the irreversibility warning clears WCAG AA (≥4.5:1) on the
@@ -308,6 +312,42 @@ body {
   box-shadow: 0 0 16px -4px var(--violet-500);
 }
 
+/* --- Scope segmented control ("sessão · tudo"; replaces "top 200") --- */
+.segmented {
+  display: inline-flex;
+  height: 36px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--surface-solid);
+  overflow: hidden;
+}
+.seg-btn {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--fg-muted);
+  background: transparent;
+  border: none;
+  padding: 0 var(--space-3);
+  cursor: pointer;
+  transition:
+    color var(--dur-micro) var(--ease-primary),
+    background-color var(--dur-micro) var(--ease-primary);
+}
+.seg-btn + .seg-btn {
+  border-left: 1px solid var(--hairline);
+}
+.seg-btn:hover {
+  color: var(--fg);
+}
+.seg-btn[aria-pressed='true'] {
+  color: var(--violet-300);
+  background: color-mix(in oklab, var(--violet-500) 16%, var(--surface-solid));
+}
+.seg-btn:focus-visible {
+  outline: 2px solid var(--violet-500);
+  outline-offset: -2px;
+}
+
 .icon-btn {
   width: 36px;
   height: 36px;
@@ -343,7 +383,9 @@ body {
   margin: 0;
   font-family: var(--font-mono);
   font-size: var(--text-xs);
-  color: var(--accent-lesson);
+  /* Neutral, not amber: amber is the lesson/warning accent — a purely informational
+     count must not borrow taxonomy color, and amber on the light surface fails AA. */
+  color: var(--fg-muted);
   letter-spacing: 0.01em;
 }
 
@@ -383,18 +425,16 @@ body {
   box-shadow: none;
   opacity: 0.6;
 }
-.pill-absent {
-  opacity: 0.28;
-  filter: grayscale(0.5);
-}
 
 /* --- Inspector (right drawer; surface neutral-800 + hairline + glow; DESIGN §11) --- */
 .inspector {
-  top: var(--space-4);
+  /* Anchor BELOW the top-right search/theme band, not over it — otherwise the
+     inspector covers the theme toggle and clips the search box (DESIGN §11). */
+  top: calc(var(--space-4) + var(--topbar-h) + var(--space-2));
   right: var(--space-4);
   width: 22rem;
   max-width: calc(100vw - var(--space-8));
-  max-height: calc(100dvh - var(--space-8));
+  max-height: calc(100dvh - var(--space-4) - var(--topbar-h) - var(--space-2) - var(--space-4));
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
