@@ -134,6 +134,27 @@ describe('Recall.recallFts — FTS-only fast path (#19 / ADR-0005)', () => {
     expect(recall.recallFts('!!! @@@ ###', { limit: 5 })).toEqual([]);
     store.close();
   });
+
+  it('marks global-session hits with global=true when includeGlobal is set', () => {
+    const store = new MemoryStore({ dbPath: join(dir, 'fts-global.db'), dimensions: 8 }).open();
+    const recall = new Recall(store, new ExplodingProvider());
+    const proj = store.createSession({ externalId: 'p', project: '-Users-me-Devs-foo' });
+    const glob = store.createSession({ externalId: '__global__', project: '__global__' });
+    const op = store.createObservation({ sessionId: proj, kind: 'note', content: 'zebra project note' });
+    const og = store.createObservation({ sessionId: glob, kind: 'decision', content: 'zebra global decision' });
+    store.indexFts(op, 'zebra project note');
+    store.indexFts(og, 'zebra global decision');
+
+    const hits = recall.recallFts('zebra', {
+      limit: 10,
+      project: '-Users-me-Devs-foo',
+      includeGlobal: true,
+    });
+    const byId = new Map(hits.map((h) => [h.observation.id, h]));
+    expect(byId.get(op)?.global).toBeFalsy();
+    expect(byId.get(og)?.global).toBe(true);
+    store.close();
+  });
 });
 
 describe('Recall — restart survival acceptance', () => {
