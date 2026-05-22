@@ -41,8 +41,8 @@ describe('resolveRecallProject (#47)', () => {
     expect(resolveRecallProject(store, { scope: 'project', sessionId: 's2' })).toBe('StoredLabel');
   });
 
-  it('uses the transcript-dir slug — byte-identical to what ingest stores (C2)', () => {
-    // No binding, no stored row → derive from the transcript dir, exactly as ingest does.
+  it('falls back to the transcript-dir slug when there is no cwd (C2)', () => {
+    // No binding, no stored row, no cwd → derive from the transcript dir.
     expect(
       resolveRecallProject(store, {
         scope: 'project',
@@ -50,6 +50,21 @@ describe('resolveRecallProject (#47)', () => {
         transcriptPath: '/Users/me/.claude/projects/-Users-me-Devs-foo/new-session.jsonl',
       }),
     ).toBe('-Users-me-Devs-foo');
+  });
+
+  it('prefers the cwd slug over the transcript dir, matching what ingest stores', () => {
+    // Same real cwd, but the transcript lives under the NEW all-hyphen dir encoding
+    // while ingest canonicalizes via projectSlug(cwd). Recall MUST resolve the cwd
+    // slug so a not-yet-ingested session scopes to the same label its memories use.
+    expect(
+      resolveRecallProject(store, {
+        scope: 'project',
+        sessionId: 'new-session',
+        transcriptPath:
+          '/Users/me/.claude/projects/-Users-me-Meu-Mac-PG-Consultoria/new-session.jsonl',
+        cwd: '/Users/me/Meu Mac/PG_Consultoria',
+      }),
+    ).toBe('-Users-me-Meu Mac-PG_Consultoria');
   });
 
   it('falls back to the cwd slug when no transcript path (MCP/last resort)', () => {

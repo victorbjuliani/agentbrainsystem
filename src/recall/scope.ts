@@ -10,12 +10,14 @@
  *   2. a `set` decision binding for the session → its project (#50-52:
  *      `setSessionProject` UPDATEs `sessions.project` to exactly this label).
  *   3. the session's own stored row → its `project` (the exact stored label).
- *   4. the transcript-dir name → `basename(dirname(transcriptPath))`, which is
- *      byte-identical to what ingest writes (`basename(dirname(absPath))`), so a
- *      not-yet-ingested current session still scopes to the same slug its future
- *      rows and its sibling sessions in the same projects-dir already use.
- *   5. the cwd slug → `projectSlug(cwd)`, best-effort last resort (e.g. the MCP
- *      server has no transcript path); may mismatch a worktree slug.
+ *   4. the cwd slug → `projectSlug(cwd)`, canonical and byte-identical to what
+ *      ingest writes (ingest derives the project from each line's `cwd`), so a
+ *      not-yet-ingested current session scopes to the same slug its future rows
+ *      and its sibling sessions in the same project already use — even when the
+ *      transcript dir uses a different encoding (old space/underscore vs new
+ *      all-hyphen) of the same cwd.
+ *   5. the transcript-dir name → `basename(dirname(transcriptPath))`, fallback
+ *      for the rare case with no cwd (only an older line that carried none).
  *   6. nothing resolvable → undefined (degrade to store-wide for this call).
  */
 import { basename, dirname } from 'node:path';
@@ -52,7 +54,7 @@ export function resolveRecallProject(
     if (existing?.project) return existing.project;
   }
 
-  if (transcriptPath) return basename(dirname(transcriptPath));
   if (cwd) return projectSlug(cwd);
+  if (transcriptPath) return basename(dirname(transcriptPath));
   return undefined;
 }

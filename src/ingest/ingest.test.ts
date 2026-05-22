@@ -228,6 +228,68 @@ describe('ingestClaudeProjects — incremental', () => {
   });
 });
 
+describe('ingestClaudeProjects — project from cwd, not storage dir', () => {
+  it('derives the project from entry.cwd, so a subagent transcript lands in the parent project (not "subagents")', async () => {
+    // A subagent transcript lives at <project>/<uuid>/subagents/agent.jsonl, so
+    // basename(dirname) is the literal "subagents". Its cwd, however, is the
+    // parent project's real working dir — that is the correct project.
+    const subDir = join(projectsDir, '-Users-me-Devs-foo', 'uuid-123', 'subagents');
+    mkdirSync(subDir, { recursive: true });
+    writeFileSync(
+      join(subDir, 'agent.jsonl'),
+      userLine('sub-sess', '/Users/me/Devs/foo', 'subagent did some work', 'u1'),
+    );
+
+    const memory = newMemory();
+    await ingestClaudeProjects(memory, { projectsDir });
+
+    const s = memory.store.getSessionByExternalId('sub-sess');
+    expect(s?.project).toBe('-Users-me-Devs-foo'); // cwd-derived, NOT 'subagents'
+    memory.close();
+  });
+
+  it('canonicalizes the same cwd stored under two differently-encoded dirs into one project', async () => {
+    // Old Claude Code encoding preserved spaces/underscores; the new one hyphenates
+    // everything. Both dirs map to the SAME real cwd → must resolve to one project.
+    const cwd = '/Users/me/Meu Mac/PG_Consultoria';
+    const oldDir = join(projectsDir, '-Users-me-Meu Mac-PG_Consultoria');
+    const newDir = join(projectsDir, '-Users-me-Meu-Mac-PG-Consultoria');
+    mkdirSync(oldDir, { recursive: true });
+    mkdirSync(newDir, { recursive: true });
+    writeFileSync(join(oldDir, 's-old.jsonl'), userLine('sess-old', cwd, 'old transcript', 'u1'));
+    writeFileSync(join(newDir, 's-new.jsonl'), userLine('sess-new', cwd, 'new transcript', 'u1'));
+
+    const memory = newMemory();
+    await ingestClaudeProjects(memory, { projectsDir });
+
+    const projects = memory.store.listProjects();
+    expect(projects).toEqual(['-Users-me-Meu Mac-PG_Consultoria']); // one canonical project
+    memory.close();
+  });
+
+  it('falls back to the storage dir name when entry.cwd is absent', async () => {
+    const projDir = join(projectsDir, '-Users-me-Devs-nocwd');
+    mkdirSync(projDir, { recursive: true });
+    // A line with no cwd field (older transcript) — keep the legacy behavior.
+    writeFileSync(
+      join(projDir, 's.jsonl'),
+      JSON.stringify({
+        type: 'user',
+        sessionId: 'sess-nocwd',
+        uuid: 'u1',
+        timestamp: '2026-05-20T10:00:00.000Z',
+        message: { role: 'user', content: 'no cwd here' },
+      }),
+    );
+
+    const memory = newMemory();
+    await ingestClaudeProjects(memory, { projectsDir });
+
+    expect(memory.store.getSessionByExternalId('sess-nocwd')?.project).toBe('-Users-me-Devs-nocwd');
+    memory.close();
+  });
+});
+
 describe('ingestClaudeProjects — missing tree', () => {
   it('returns an empty tally when the projects dir does not exist', async () => {
     const memory = newMemory();
