@@ -98,6 +98,10 @@ export function parseGraphQuery(searchParams: URLSearchParams): GraphQuery {
   // An empty/whitespace value is dropped so it never shadows the topN/session scope.
   const search = searchParams.get('search');
   if (search !== null && search.trim() !== '') q.search = search;
+  // `project` (#62-B): a non-empty value scopes the topN window to one project.
+  // Empty/whitespace is dropped so it never narrows the scope to nothing by accident.
+  const project = searchParams.get('project');
+  if (project !== null && project.trim() !== '') q.project = project;
   return q;
 }
 

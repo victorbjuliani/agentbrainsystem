@@ -357,3 +357,67 @@ describe('buildGraph', () => {
     expect(g.nodes.some((n) => n.id === `o:${id}`)).toBe(true);
   });
 });
+
+describe('buildGraph — store-wide project picker (#62 follow-up B)', () => {
+  let store: MemoryStore;
+  beforeEach(() => {
+    store = new MemoryStore({ dbPath: ':memory:', dimensions: DIM }).open();
+  });
+  afterEach(() => {
+    store.close();
+  });
+
+  it('meta.projects lists every distinct non-null project, sorted, store-wide', () => {
+    const beta = store.createSession({ externalId: 'b', project: 'beta' });
+    const alpha = store.createSession({ externalId: 'a', project: 'alpha' });
+    store.createSession({ externalId: 'n' }); // NULL project — excluded
+    store.createObservation({ sessionId: beta, kind: 'user', content: 'x' });
+    store.createObservation({ sessionId: alpha, kind: 'user', content: 'y' });
+
+    // Even in single-session scope, the picker list is the FULL store-wide set.
+    const g = buildGraph(store, { session: beta });
+    expect(g.meta.projects).toEqual(['alpha', 'beta']);
+  });
+
+  it('meta.projects is an empty array on an empty store', () => {
+    expect(buildGraph(store, {}).meta.projects).toEqual([]);
+  });
+
+  it('topN + project restricts the rendered window to that project only', () => {
+    const home = store.createSession({ externalId: 'home', project: 'home' });
+    const chess = store.createSession({ externalId: 'chess', project: 'chess' });
+    const h = store.createObservation({ sessionId: home, kind: 'user', content: 'home obs' });
+    const c = store.createObservation({ sessionId: chess, kind: 'user', content: 'chess obs' });
+
+    const g = buildGraph(store, { topN: 200, project: 'chess' });
+    expect(g.scope.mode).toBe('topN');
+    expect(g.scope.project).toBe('chess');
+    // Only the chess observation + its session hub render; home is filtered out.
+    expect(g.nodes.some((n) => n.id === `o:${c}`)).toBe(true);
+    expect(g.nodes.some((n) => n.id === `o:${h}`)).toBe(false);
+    expect(g.nodes.some((n) => n.id === `s:${chess}`)).toBe(true);
+    expect(g.nodes.some((n) => n.id === `s:${home}`)).toBe(false);
+  });
+
+  it('topN without a project stays store-wide (project filter is opt-in)', () => {
+    const home = store.createSession({ externalId: 'home', project: 'home' });
+    const chess = store.createSession({ externalId: 'chess', project: 'chess' });
+    const h = store.createObservation({ sessionId: home, kind: 'user', content: 'home obs' });
+    const c = store.createObservation({ sessionId: chess, kind: 'user', content: 'chess obs' });
+
+    const g = buildGraph(store, { topN: 200 });
+    expect(g.scope.project).toBeUndefined();
+    expect(g.nodes.some((n) => n.id === `o:${h}`)).toBe(true);
+    expect(g.nodes.some((n) => n.id === `o:${c}`)).toBe(true);
+  });
+
+  it('topN + a project with no observations resolves to zero nodes (not empty store)', () => {
+    const home = store.createSession({ externalId: 'home', project: 'home' });
+    store.createObservation({ sessionId: home, kind: 'user', content: 'home obs' });
+
+    const g = buildGraph(store, { topN: 200, project: 'ghost' });
+    expect(g.nodes).toEqual([]);
+    expect(g.meta.emptyStore).toBe(false); // store is populated — just not for this project
+    expect(g.meta.projects).toEqual(['home']);
+  });
+});

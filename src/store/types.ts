@@ -61,6 +61,12 @@ export interface CreateObservationInput {
 /** Filters for listing/iterating observations. */
 export interface ListObservationsOptions {
   sessionId?: number;
+  /**
+   * Restrict to observations whose owning session has this `project` label (SQL
+   * `session_id IN (SELECT id FROM sessions WHERE project = …)`). Used by the UI
+   * graph's store-wide project picker to scope the topN window to one project.
+   */
+  project?: string;
   kind?: string;
   /**
    * Restrict to observations whose `kind` is one of these values (SQL `kind IN`).

@@ -422,6 +422,12 @@ export class MemoryStore {
       clauses.push('session_id = @sessionId');
       params.sessionId = options.sessionId;
     }
+    if (options.project !== undefined) {
+      // Scope to the sessions of one project via a subquery (no JOIN — keeps the
+      // `SELECT *` shape unchanged for rowToObservation). Parameterized.
+      clauses.push('session_id IN (SELECT id FROM sessions WHERE project = @project)');
+      params.project = options.project;
+    }
     if (options.kind !== undefined) {
       clauses.push('kind = @kind');
       params.kind = options.kind;
