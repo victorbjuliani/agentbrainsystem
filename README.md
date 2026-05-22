@@ -1,195 +1,179 @@
-# agentbrainsystem
+<div align="center">
 
-Local-first persistent memory for AI coding agents — capture, store, and **actually recall** past sessions, with portable export/import and a visual graph UI.
+<img src="docs/assets/banner.png" alt="agentbrainsystem — persistent memory for AI coding agents" width="760" />
 
-> Status: **MVP+ with a live memory layer** — reliable `embed → persist → recall` over MCP, JSONL ingestion, portable export/import, a CLI, and an interactive localhost graph UI (`abs ui`). On top of that: **hands-free capture and context injection** via Claude Code hooks (`abs install-hooks`), an **optimization loop** that turns distilled memory into evidence-backed `CLAUDE.md` / auto-memory edits (`abs optimize`), and **selective hard-delete** across CLI, MCP, and the UI (`abs forget`). Works offline on macOS/Windows/Linux.
+<h3>Persistent memory for AI coding agents — local-first, $0, and it&nbsp;actually&nbsp;recalls.</h3>
+
+<p>
+Your agent forgets everything between sessions. <b>agentbrainsystem</b> captures every
+Claude&nbsp;Code session and recalls what matters next time — <b>100% on your machine</b>.
+No cloud, no account, no API keys.
+</p>
+
+<p>
+<a href="https://github.com/victorbjuliani/agentbrainsystem/blob/main/LICENSE"><img src="https://img.shields.io/github/license/victorbjuliani/agentbrainsystem?style=flat-square&color=8B5CF6" alt="MIT License" /></a>
+<a href="https://github.com/victorbjuliani/agentbrainsystem/stargazers"><img src="https://img.shields.io/github/stars/victorbjuliani/agentbrainsystem?style=flat-square&color=8B5CF6&logo=github" alt="Stars" /></a>
+<img src="https://img.shields.io/badge/node-%E2%89%A5%2022-8B5CF6?style=flat-square&logo=node.js&logoColor=white" alt="Node ≥ 22" />
+<img src="https://img.shields.io/badge/tests-506%20passing-34D399?style=flat-square" alt="506 tests" />
+<a href="https://victorbjuliani.github.io/agentbrainsystem/"><img src="https://img.shields.io/badge/website-live-A78BFA?style=flat-square" alt="Website" /></a>
+</p>
+
+<p>
+<img src="https://img.shields.io/badge/local--first-%240%20%C2%B7%20offline-8B5CF6?style=for-the-badge" alt="local-first · $0 · offline" />
+<img src="https://img.shields.io/badge/8-MCP%20tools-22D3EE?style=for-the-badge" alt="8 MCP tools" />
+<img src="https://img.shields.io/badge/5-dependencies-A78BFA?style=for-the-badge" alt="5 dependencies" />
+<img src="https://img.shields.io/badge/embedded-SQLite-5EEAD4?style=for-the-badge" alt="embedded SQLite" />
+</p>
+
+<sub>
+<a href="#why">Why</a> ·
+<a href="#install">Install</a> ·
+<a href="#how-it-works">How it works</a> ·
+<a href="#what-makes-it-different">What's different</a> ·
+<a href="#benchmarks">Benchmarks</a> ·
+<a href="#connect-to-claude-code">Connect</a> ·
+<a href="#memory-graph-ui">Graph UI</a> ·
+<a href="#faq">FAQ</a>
+</sub>
+
+</div>
+
+---
 
 ## Why
 
-Existing agent-memory tools capture data but often fail at the part that matters: **reliable semantic recall**. agentbrainsystem is a deliberately small, owned alternative that does a few things well instead of many things partially:
+Every new session, your agent starts from zero. The decision you locked in yesterday? Gone.
+The bug you already solved? It'll solve it again — differently, worse. So you copy-paste context
+and re-explain the same constraints, every day. **That's a job no human should have.**
 
-- **Reliable recall** — semantic search over past coding sessions that actually returns relevant results.
-- **Live capture & injection** — Claude Code hooks auto-ingest each session ($0, no LLM) and inject relevant memory back at session start / per prompt (FTS-first, no cold-load), hands-free.
-- **Project-scoped by default** — recall and injection are isolated to the current session's project, so memory from project B never leaks into project A (`ABS_RECALL_SCOPE=global` opts back into store-wide recall).
-- **Distilled lessons** — optional LLM consolidation of raw session noise into durable insights/decisions.
-- **Optimization loop** — turn that distilled memory into evidence-backed, gated edits to your project's `CLAUDE.md` and Claude Code auto-memory (preview → approve → apply; never automatic).
-- **Selective delete** — prune wrong/stale/sensitive memories by id, session, project, or search, across CLI, MCP, and the UI (preview → confirm; hard-delete, export first).
-- **Verifiable, self-healing memory** — facts edited via Edit/Write are anchored to real code (`file:line@commit`) through the code-review-graph; recall labels each as ✓verified / ~claimed / ⚠stale, anchors self-heal when code moves (rename re-anchors, removal goes stale), and a PreToolUse guard warns in-loop before you duplicate code that already exists — and surfaces recorded decisions/lessons touching the file you're editing (#48, warn-only). Fail-open and offline-safe (`docs/adr/0009-verifiable-memory-anchoring.md`).
-- **Portable memory** — export and import the whole memory store as a portable artifact (no lock-in, survives machine/project moves).
-- **Visual graph UI** — a localhost interface to explore the agent's memory as an interactive graph.
+Existing agent-memory tools capture data but often fail at the part that matters:
+**recall that returns the right thing**. agentbrainsystem is a deliberately small, owned
+alternative that does a few things well — and runs entirely on your machine.
 
-Explicitly **out of scope** (for now): multi-user/team sharing, image/vision embeddings, heavyweight consolidation tiers we don't need.
-
-## How it works
-
-- Ingests Claude Code / agent session transcripts (e.g. `~/.claude/projects/**/*.jsonl`).
-- Local embeddings by default (no rate limits, no cost, offline); pluggable to hosted providers.
-- Embedded storage (SQLite + sqlite-vec + FTS5) with hybrid vector + keyword recall.
-- Exposed to agents over MCP; explored via the localhost graph UI; distilled via optional LLM consolidation.
-
-## Getting started
+## Install
 
 Requires **Node ≥ 22**.
 
 ```bash
-npm install        # install deps (sqlite-vec, transformers.js, MCP SDK)
-npm run build      # compile to dist/  (provides the `abs` CLI)
-npm run check      # lint → typecheck → test
-npm run test:e2e   # opt-in full-system E2E (built binary + MCP + hooks + UI); needs `npx playwright install chromium` once
+git clone https://github.com/victorbjuliani/agentbrainsystem.git
+cd agentbrainsystem
+npm install        # sqlite-vec, transformers.js, MCP SDK
+npm run build      # compiles to dist/ and provides the `abs` CLI
+abs install-hooks  # wire up hands-free capture + recall in Claude Code
 ```
 
-The first embedding call downloads the local model (~one-time, ~35 s); after that it
-runs **offline** (~280 ms). Everything is local by default — `$0`, no network, your
-memory never leaves the machine. The store lives at `~/.agentbrainsystem/memory.db`
-(override with `ABS_DB_PATH` / `ABS_HOME`) and is never committed.
+The first embedding call downloads the local model (~one-time, ~35 s); after that it runs
+**offline**. Everything is local by default — `$0`, no network. The store lives at
+`~/.agentbrainsystem/memory.db` and is never committed.
 
-### CLI
+## How it works
 
-```bash
-abs start                 # run the MCP server over stdio (what Claude Code spawns)
-abs ingest [--dir PATH]   # ingest Claude Code transcripts (default ~/.claude/projects)
-abs status                # real health: db path, schema, counts, index staleness
-abs export <path>         # write the whole store to a portable artifact
-abs import <path> [--mode replace|merge]   # load an artifact (default merge)
-abs ui [--port N]         # serve the interactive memory graph at http://127.0.0.1:7717
-abs consolidate [--session N] [--dry-run] [--force]   # distill a session into durable lessons (opt-in, needs an LLM)
-abs install-hooks         # register the Claude Code memory hooks (auto-ingest + context injection) — opt-in, idempotent, backup-first
-abs optimize [selector] [--apply] [--yes]   # turn distilled memory into evidence-backed CLAUDE.md / auto-memory diffs (preview → approve → apply)
-abs forget [selector] [--apply] [--yes]   # selectively hard-delete memories — IRREVERSIBLE, export first
-abs project [--set NAME | --cwd | --skip] [--session ID] [--yes] [--json]   # set/confirm/skip the current session's project
-abs --help | --version
-```
+Three steps, zero effort once installed:
 
-`abs project` records an intentional project for the **current** Claude Code session
-instead of the silent cwd-slug default — the deterministic escape hatch that does not
-depend on the agent asking. With no action it prints the resolved session, the auto slug,
-existing projects, and suggestions. `--set "NAME"` links an existing project or creates a
-new one (sanitized); `--cwd` accepts the cwd-derived slug; `--skip` excludes the session
-from memory. The session id comes from `CLAUDE_CODE_SESSION_ID` (or `--session ID` to
-override). The decision is applied at the next ingest. `--skip` hard-deletes any
-already-stored observations for the session, so that path requires `--yes`. Note the
-suggestion is the slug for *this exact* cwd — a symlinked or worktree path produces its
-own slug.
+| | | |
+|---|---|---|
+| **1 · Capture** | Hooks auto-ingest every Claude Code session when it ends. | `$0 · no LLM` |
+| **2 · Store** | Local embeddings in an embedded SQLite + `sqlite-vec` + FTS5 store, on your machine. | `offline` |
+| **3 · Recall** | Hybrid semantic + keyword search surfaces relevant memory — at session start **and on every prompt**, as you work. | `per-prompt · MCP` |
 
-`abs hook <event>` (event ∈ `session-end | session-start | user-prompt-submit`) is the
-internal entry point the registered hooks invoke — it is non-fatal/timeout-bounded and
-never blocks a session. You register it with `abs install-hooks`, not by hand.
+## What makes it different
 
-`abs forget` takes exactly one selector: `--ids a,b,c` (observation ids),
-`--session N`, `--project NAME`, `--null-project` (sessions with no project, NOT the
-literal `"null"`), or `--search "q" [--limit N]` (FTS keyword recall, no embedding).
-It is **preview-only by default** — nothing is deleted without `--apply`, which prompts
-per id `[y/N]` (or pass `--yes` to skip prompts). Hard-delete is irreversible and has no
-backup: run `abs export <path>` first. See `docs/adr/0008-hard-delete-safety.md`.
+Not just another memory store. The parts most tools skip:
 
-(During development, run any command without building via `npm run dev -- <command>`.)
+- 🔒 **Local-first, $0, offline — for real.** No cloud, no account, no API keys, no telemetry.
+  Local embeddings by default; plug in a hosted embedder or any OpenAI-compatible LLM **only if you want**.
+- 🩹 **Verifiable, self-healing memory.** Facts edited via Edit/Write are anchored to real code
+  (`file:line@commit`). Recall labels each ✓verified / ~claimed / ⚠stale; anchors **re-anchor when code
+  moves** and go stale when it's removed. A PreToolUse guard warns in-loop before you duplicate code that
+  already exists — and surfaces decisions touching the file you're editing.
+- 🗂️ **Project-scoped by default.** Recall is isolated to the current project, so memory from project B
+  never leaks into project A.
+- 🪶 **Deliberately small.** 5 runtime dependencies, embedded SQLite, no server to run. ~11k lines you can
+  actually read.
+- 🕸️ **Visual memory graph.** A localhost UI to explore the agent's memory as a living graph (`abs ui`).
+- 🎒 **Portable.** Export/import the whole store as one file. No lock-in.
 
-### LLM consolidation
+## Benchmarks
 
-`abs consolidate` distills a session's raw turns into 3–5 durable **lessons/decisions**,
-stored as first-class observations that recall surfaces alongside (and above the noise of)
-raw chatter. It is **opt-in and off by default** — it only runs when an LLM endpoint is
-configured (`ABS_LLM_BASE_URL` + `ABS_LLM_MODEL`), so the default install stays $0/offline.
+Measured on Apple Silicon (M-series), Node 26, over a synthetic 5,000-observation store.
+**Reproduce with `npm run bench`** — no network, no external services.
 
-```bash
-# point at any OpenAI-compatible endpoint — local (Ollama/llama.cpp/LM Studio/vLLM) or hosted
-export ABS_LLM_BASE_URL=http://localhost:11434/v1   # e.g. Ollama
-export ABS_LLM_MODEL=llama3.1
-abs consolidate --dry-run     # preview the distilled lessons (1 LLM call, writes nothing)
-abs consolidate               # distill the most recent un-consolidated session
-abs consolidate --session 5   # a specific session  ·  --force re-distills (replaces)
-```
+| Metric | Result |
+|---|---|
+| Per-prompt FTS recall (hot path) | **p50 ~4.1 ms · p95 ~4.4 ms** |
+| Semantic embed — warm (steady-state) | **~2–5 ms** (first call ~280 ms, model load) |
+| Ingest throughput | **~6,000 observations/sec** |
+| On-disk footprint | **~466 bytes/observation** (5k obs ≈ 2.3 MB) |
+| Runtime dependencies | **5** · embedded SQLite · 0 servers |
 
-It is idempotent (a consolidated session is skipped unless `--force`), writes nothing on
-error, and contains untrusted transcript content to a strict lesson/decision schema. See
-`docs/adr/0003-optional-llm-consolidation.md`.
+> We benchmark on our own axis — latency, footprint, and minimalism — and publish only what's
+> measured and reproducible. We don't chase a retrieval-accuracy headline number on someone else's
+> dataset; if we ever publish one, it'll be on a public benchmark with the script in this repo.
 
-### Memory graph UI
-
-`abs ui` starts a localhost server (default port `7717`, override with `--port`) and
-opens a browser to a force-directed graph of the live store: session hubs and their
-observations, colored by kind, with optional similarity edges (`?similarity=1`). It
-binds to `127.0.0.1` only and ships self-contained (no CDN — works offline). The default
-view is scoped to the most recently active session; switch sessions or use top-N from
-the on-canvas controls. Visual intent is documented in `docs/DESIGN.md`.
-
-The UI also offers **selective delete** (preview → confirm → execute, mirroring the CLI
-two-phase contract): click a node to delete one observation or a whole session from the
-inspector, or run a search and use "excluir busca" to delete the previewed (capped) set.
-Deletes are guarded by the localhost CSRF/Origin controls — every delete call carries a
-per-process token and the server rejects cross-origin requests; see
-`docs/adr/0007-ui-write-path-security.md`. Hard-delete is irreversible
-(`docs/adr/0008-hard-delete-safety.md`) — export first.
-
-### Connect to Claude Code
+## Connect to Claude Code
 
 Register the MCP server so Claude Code can `recall` and `remember`:
 
 ```bash
-# global (after `npm run build`, from the repo)
 claude mcp add agentbrainsystem -- node /absolute/path/to/agentbrainsystem/dist/cli/cli.js start
 ```
 
-Or per-project, add to `.mcp.json`:
+MCP tools exposed to the agent: `recall`, `remember`, `memory_status`, `optimize`/`apply`
+(gated `CLAUDE.md` edits), `forget_preview`/`forget` (two-phase selective hard-delete), and
+`set_session_project`.
 
-```json
-{
-  "mcpServers": {
-    "agentbrainsystem": {
-      "command": "node",
-      "args": ["/absolute/path/to/agentbrainsystem/dist/cli/cli.js", "start"]
-    }
-  }
-}
+## Memory graph UI
+
+```bash
+abs ui        # serves an interactive graph at http://127.0.0.1:7717
 ```
 
-Then ingest your history (`abs ingest`) and Claude Code can call the MCP tools:
-`recall`, `remember`, `memory_status`, `optimize`/`apply` (gated memory edits), and
-`forget_preview`/`forget` (selective hard-delete — `forget_preview` resolves what a
-delete would remove and mints a single-use handle, read-only; `forget` consumes that
-handle to delete exactly the previewed set, and is IRREVERSIBLE), and `set_session_project`
-(record the current session's project — `action=set|skip`; #52). Configure a hosted
-embedder if you prefer (`ABS_EMBED_PROVIDER=gemini|voyage` with the matching API key) —
-local stays the default.
+Session hubs and their observations, colored by kind, with optional similarity edges. Binds to
+localhost only and ships self-contained (works offline). Inspect, search, and prune memories
+right from the canvas.
 
-### Embedding providers & environment
+## CLI
+
+```bash
+abs start                 # run the MCP server (what Claude Code spawns)
+abs ingest [--dir PATH]   # ingest Claude Code transcripts
+abs status                # db path, schema, counts, index staleness
+abs project [...]         # set/confirm/skip the current session's project
+abs export <path>         # write the whole store to a portable artifact
+abs import <path>         # load an artifact (merge | replace)
+abs ui [--port N]         # serve the interactive memory graph
+abs consolidate [...]     # distill a session into durable lessons (opt-in, needs an LLM)
+abs optimize [...]        # turn distilled memory into gated CLAUDE.md / auto-memory edits
+abs forget [...]          # selectively hard-delete memories — IRREVERSIBLE, export first
+abs install-hooks         # register the Claude Code memory hooks (idempotent, backup-first)
+```
+
+## Configuration
 
 | Env | Default | Purpose |
 | --- | --- | --- |
 | `ABS_DB_PATH` / `ABS_HOME` | `~/.agentbrainsystem/memory.db` | where the store lives |
 | `ABS_EMBED_PROVIDER` | `local` | `local` \| `gemini` \| `voyage` |
-| `ABS_EMBED_MODEL` | `Xenova/all-MiniLM-L6-v2` | model id for the provider |
-| `ABS_EMBED_DIM` | per provider (local 384, gemini 768, voyage 1024) | vector width; only set to override |
-| `ABS_RECALL_SCOPE` | `project` | recall/injection isolation: `project` (only the current session's project) \| `global` (store-wide) |
-| `ABS_GUARD_MODE` | `warn` | PreToolUse guard: `warn` (surface only) \| `block` (blocks code duplication; decision surfacing stays warn-only) |
-| `ABS_LLM_BASE_URL` | _(unset → consolidation off)_ | OpenAI-compatible chat endpoint for `abs consolidate`, e.g. `http://localhost:11434/v1` |
-| `ABS_LLM_MODEL` | _(required when base set)_ | chat model id, e.g. `llama3.1` |
-| `ABS_LLM_API_KEY` | _(optional)_ | bearer token for hosted endpoints; local backends need none |
-| `ABS_LLM_TIMEOUT_MS` | `60000` | per-request timeout for the LLM call |
-| `ABS_LLM_PRICE_PER_1K` | _(optional)_ | $ per 1k tokens; only set to get a cost line in consolidate output |
+| `ABS_RECALL_SCOPE` | `project` | recall isolation: `project` \| `global` |
+| `ABS_GUARD_MODE` | `warn` | PreToolUse guard: `warn` \| `block` |
+| `ABS_LLM_BASE_URL` / `ABS_LLM_MODEL` | _(unset → consolidation off)_ | OpenAI-compatible endpoint for `abs consolidate` |
 
-Hosted providers retry transient failures — HTTP `429`/`503` and network errors — with
-capped exponential backoff + jitter, honoring `Retry-After`. A momentary rate-limit or
-blip during bulk ingest is absorbed instead of aborting the whole run (the local provider
-needs none of this — no network).
+Out of scope (for now): multi-user/team sharing, image/vision embeddings, heavyweight consolidation tiers.
 
-See also:
+## FAQ
 
-- `docs/agent-handbook.md` — onboarding for AI agents and contributors
-- `docs/adr/0001-storage-and-embeddings.md` — storage/embedding decisions
-- `docs/adr/0002-ui-build-pipeline-and-frontend-stack.md` — UI build pipeline & frontend stack
-- `docs/adr/0003-optional-llm-consolidation.md` — optional LLM consolidation & chat provider
-- `docs/adr/0004-hook-integration-model.md` — Claude Code hook model (non-fatal/timeout, settings.json ownership)
-- `docs/adr/0005-per-prompt-injection-performance.md` — FTS-first per-prompt injection (latency baseline)
-- `docs/adr/0006-gated-apply-write-safety.md` — gated-apply safety (backup/atomic/rollback, fail-closed guard)
-- `docs/adr/0007-ui-write-path-security.md` — UI write-path security (CSRF/Origin, handle confirmation)
-- `docs/adr/0008-hard-delete-safety.md` — hard-delete safety (preview→pin→execute, no-undo)
-- `docs/adr/0009-verifiable-memory-anchoring.md` — verifiable memory (code-grounded anchors, self-healing, PreToolUse guard)
-- `docs/adr/0010-intentional-session-project-binding.md` — intentional session→project binding (decision-aware ingest feeding project-scoped recall)
-- `docs/DESIGN.md` — visual identity for the graph UI
-- `docs/export-format.md` — the export artifact format
-- [GitHub Issues](https://github.com/victorbjuliani/agentbrainsystem/issues) — requirements and roadmap (source of truth)
+**Does it send my code anywhere?** No. Everything runs locally and offline — no network calls, no telemetry, no account.
+**Does it cost anything?** $0 by default. Local embeddings, no API keys. Hosted embedder / LLM consolidation are opt-in.
+**Which agents?** Built for Claude Code via MCP, with hands-free capture and context injection through hooks.
+**Is it open source?** Fully — MIT. Star it, fork it, read every line.
+
+## Contributing & docs
+
+- 🌐 **Website:** https://victorbjuliani.github.io/agentbrainsystem/
+- 📖 **Agent & contributor onboarding:** [`docs/agent-handbook.md`](docs/agent-handbook.md)
+- 🏗️ **Design decisions:** [`docs/adr/`](docs/adr/)
+- 🗺️ **Roadmap & requirements:** [GitHub Issues](https://github.com/victorbjuliani/agentbrainsystem/issues)
 
 ## License
 
-See [`LICENSE`](LICENSE).
+[MIT](LICENSE) © 2026 Victor B. Juliani

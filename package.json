@@ -33,6 +33,7 @@
     "test:watch": "vitest",
     "test:e2e": "npm run build && vitest run -c vitest.e2e.config.ts && playwright test -c playwright.config.ts",
     "dev": "tsx src/index.ts",
+    "bench": "tsx bench/bench.ts",
     "check": "npm run lint && npm run typecheck && npm run test"
   },
   "dependencies": {
