@@ -19,43 +19,22 @@ import {
 } from './delete-client.js';
 import { mountOverlays } from './overlays.js';
 import { createRenderer, radiusFor } from './render.js';
-import type { ScopeMode, Theme, ViewEdge, ViewGraph, ViewNode } from './types.js';
+import { scopeToQuery } from './scope.js';
+import type { ScopeState, Theme, ViewEdge, ViewGraph, ViewNode } from './types.js';
+import { presentTypes } from './visible-types.js';
 import './app.css';
 
 const THEME_KEY = 'abs.theme';
 
-interface ScopeState {
-  mode: ScopeMode;
-  sessionId?: number;
-  similarity: boolean;
-  /** Store-wide project filter (topN mode only, #62-B). Undefined = all projects. */
-  project?: string;
-  /**
-   * Active store-wide search (#35). When set, it drives an authoritative server
-   * fetch (FTS) that reaches obs OUTSIDE the topN/session window, so it takes
-   * precedence over `mode`/`sessionId` in the query string.
-   */
-  search?: string;
-}
-
-/** Build the `/api/graph` query string from the current scope. */
-function scopeToQuery(scope: ScopeState): string {
-  const p = new URLSearchParams();
-  if (scope.search) {
-    // Search is store-wide and authoritative — it supersedes the topN/session
-    // scope server-side, so we send only it (plus the similarity toggle).
-    p.set('search', scope.search);
-  } else if (scope.mode === 'topN') {
-    p.set('topN', '200');
-    // Opt-in project filter scopes the topN window to one project (#62-B).
-    if (scope.project) p.set('project', scope.project);
-  } else if (scope.sessionId !== undefined) {
-    p.set('session', String(scope.sessionId));
-  }
-  if (scope.similarity) p.set('similarity', '1');
-  const qs = p.toString();
-  return qs ? `/api/graph?${qs}` : '/api/graph';
-}
+/** Every node type — the default lens (all visible) until a pill isolates one. */
+const ALL_TYPES: readonly NodeType[] = [
+  'session',
+  'user',
+  'assistant',
+  'tool',
+  'lesson',
+  'decision',
+];
 
 /** Project the frozen wire payload into the renderer's view model. */
 function toViewGraph(data: GraphData): ViewGraph {
@@ -101,16 +80,13 @@ async function main(): Promise<void> {
 
   applyTheme(loadTheme());
 
-  const scope: ScopeState = { mode: 'session', similarity: false };
-  // Visible types: start with everything; pills toggle entries off.
-  const visibleTypes = new Set<NodeType>([
-    'session',
-    'user',
-    'assistant',
-    'tool',
-    'lesson',
-    'decision',
-  ]);
+  // Open on the store-wide constellation with similarity edges (the "living brain"
+  // hero, DESIGN §0) — not a single recent session, which can render near-empty.
+  // Clicking a session hub still drills into `session` mode (see onSelect below).
+  const scope: ScopeState = { mode: 'topN', similarity: true };
+  // Visible types: a lens over the current payload. Reset to the payload's present
+  // types on every load (see load()); pills isolate/restore/toggle within that.
+  let visibleTypes = new Set<NodeType>(ALL_TYPES);
 
   let lastSearch = '';
 
@@ -181,9 +157,10 @@ async function main(): Promise<void> {
   });
 
   const overlays = mountOverlays(overlayRoot, {
-    onToggleType: (type, enabled) => {
-      if (enabled) visibleTypes.add(type);
-      else visibleTypes.delete(type);
+    onSetVisibleTypes: (types) => {
+      // The pill chrome computes the whole target set (isolate / restore / additive)
+      // via the pure visible-types module, so the container just applies it.
+      visibleTypes = new Set(types);
       renderer.setVisibleTypes(new Set(visibleTypes));
     },
     onSearch: (query) => {
@@ -274,6 +251,11 @@ async function main(): Promise<void> {
       const data = await fetchGraph(scope);
       if (seq !== loadSeq) return; // superseded by a newer load — drop stale payload
       overlays.syncFromData(data);
+      // Reset the type lens to whatever this payload actually contains: a fresh
+      // scope (or search) shows everything present, and any prior pill isolation is
+      // dropped rather than silently hiding a type the new scope still has (#35/#43).
+      const present = presentTypes(data.nodes);
+      visibleTypes = present.size > 0 ? present : new Set(ALL_TYPES);
       renderer.setData(toViewGraph(data));
       renderer.setVisibleTypes(new Set(visibleTypes));
     } catch (err) {
