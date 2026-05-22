@@ -57,10 +57,13 @@ Requires **Node ≥ 22**.
 ```bash
 git clone https://github.com/victorbjuliani/agentbrainsystem.git
 cd agentbrainsystem
-npm install        # sqlite-vec, transformers.js, MCP SDK
-npm run build      # compiles to dist/ and provides the `abs` CLI
-abs install-hooks  # wire up hands-free capture + recall in Claude Code
+npm install && npm run build   # provides the `abs` CLI
+abs setup                      # installs hooks + registers the MCP server with Claude Code
 ```
+
+`abs setup` is the one-shot onboarding: it installs the memory hooks **and** registers the
+MCP server with Claude Code (idempotent; if the `claude` CLI isn't found it just prints the
+manual command). Restart Claude Code afterwards and recall/remember are automatic.
 
 The first embedding call downloads the local model (~one-time, ~35 s); after that it runs
 **offline**. Everything is local by default — `$0`, no network. The store lives at
@@ -112,7 +115,8 @@ Measured on Apple Silicon (M-series), Node 26, over a synthetic 5,000-observatio
 
 ## Connect to Claude Code
 
-Register the MCP server so Claude Code can `recall` and `remember`:
+`abs setup` (above) already registers the MCP server. To do it manually, or to wire a second
+machine:
 
 ```bash
 claude mcp add agentbrainsystem -- node /absolute/path/to/agentbrainsystem/dist/cli/cli.js start

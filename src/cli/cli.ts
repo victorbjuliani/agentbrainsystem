@@ -11,6 +11,7 @@ import { spawn } from 'node:child_process';
 import { platform } from 'node:os';
 import { basename } from 'node:path';
 import { createInterface } from 'node:readline/promises';
+import { fileURLToPath } from 'node:url';
 import { loadConfig } from '../config.js';
 import { consolidate } from '../consolidate/index.js';
 import { type DeleteSelector, executeIds, previewSelector } from '../delete/index.js';
@@ -36,12 +37,16 @@ import {
 import { projectSlug } from '../optimize/targets.js';
 import { startUiServer } from '../ui/index.js';
 import { VERSION } from '../version.js';
+import { MCP_SERVER_NAME, type RunResult, registerMcpServer } from './setup.js';
 
 const USAGE = `agentbrainsystem (abs) v${VERSION} — local-first memory for AI coding agents
 
 Usage: abs <command> [options]
 
 Commands:
+  setup                 One-shot onboarding: install the hooks AND register the MCP
+                        server with Claude Code. Idempotent; non-fatal if the claude
+                        CLI is missing (prints the manual command instead).
   start                 Run the MCP server over stdio (what Claude Code spawns).
   ingest [--dir PATH]   Ingest Claude Code JSONL transcripts (default: ~/.claude/projects).
   status                Show real health: db path, schema, counts, index staleness.
@@ -300,6 +305,67 @@ async function cmdInstallHooks(): Promise<void> {
   if (result.added.length === 0 && result.alreadyPresent.length === 0) {
     out('no hooks to register');
   }
+}
+
+/**
+ * Real `run` for `abs setup`: spawn (no shell ⇒ no command injection), capture
+ * stdout/stderr, and resolve `code: null` on a spawn failure instead of throwing —
+ * matching the non-fatal `RunFn` contract the setup core expects.
+ */
+function spawnCapture(cmd: string, args: string[]): Promise<RunResult> {
+  return new Promise((resolve) => {
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch {
+      resolve({ code: null, stdout: '', stderr: '' });
+      return;
+    }
+    let stdout = '';
+    let stderr = '';
+    child.stdout?.on('data', (d) => {
+      stdout += String(d);
+    });
+    child.stderr?.on('data', (d) => {
+      stderr += String(d);
+    });
+    child.on('error', () => resolve({ code: null, stdout, stderr }));
+    child.on('close', (code) => resolve({ code, stdout, stderr }));
+  });
+}
+
+/**
+ * `abs setup` — one-shot onboarding: install the memory hooks AND register this CLI
+ * as a stdio MCP server with Claude Code. Both steps are idempotent. A missing
+ * `claude` CLI degrades to a printed manual command (non-fatal).
+ */
+async function cmdSetup(): Promise<void> {
+  const hooks = installHooks();
+  if (hooks.added.length > 0) out(`✓ hooks registered: ${hooks.added.join(', ')}`);
+  else if (hooks.alreadyPresent.length > 0) out('✓ hooks already registered');
+
+  const cliPath = fileURLToPath(import.meta.url);
+  const reg = await registerMcpServer(cliPath, spawnCapture);
+  switch (reg.status) {
+    case 'registered':
+      out(`✓ MCP server registered with Claude Code as "${MCP_SERVER_NAME}"`);
+      break;
+    case 'already':
+      out(`✓ MCP server already registered as "${MCP_SERVER_NAME}"`);
+      break;
+    case 'no-claude':
+      out('! Claude CLI not found — register the MCP server manually:');
+      out(`    ${reg.manualCommand}`);
+      break;
+    case 'error':
+      out(`! Could not auto-register the MCP server (${reg.message}). Run manually:`);
+      out(`    ${reg.manualCommand}`);
+      break;
+  }
+
+  out('');
+  out('Done. Restart Claude Code — it will recall + remember automatically.');
+  out('Explore your memory anytime with:  abs ui');
 }
 
 /** Print one candidate (header + rationale + evidence + indented diff) to stdout. */
@@ -789,6 +855,8 @@ async function main(): Promise<void> {
       return cmdHook(rest);
     case 'install-hooks':
       return cmdInstallHooks();
+    case 'setup':
+      return cmdSetup();
     case 'optimize':
       return cmdOptimize(rest);
     case 'forget':
