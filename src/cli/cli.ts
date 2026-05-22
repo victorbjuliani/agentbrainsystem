@@ -846,8 +846,10 @@ export async function cmdPromote(args: string[]): Promise<void> {
   const json = args.includes('--json');
   const idArg = positional(args);
   const id = idArg ? Number.parseInt(idArg, 10) : Number.NaN;
-  if (!Number.isInteger(id)) {
-    err('error: promote requires an observation id, e.g. `abs promote 42`');
+  // Strict parse (matches the --session/--ids sites): reject "42a", "42.9", ≤ 0 —
+  // parseInt would silently truncate and promote the wrong observation.
+  if (!Number.isInteger(id) || id <= 0 || String(id) !== (idArg ?? '').trim()) {
+    err('error: promote requires a positive observation id, e.g. `abs promote 42`');
     process.exitCode = 1;
     return;
   }

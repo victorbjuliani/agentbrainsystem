@@ -24,6 +24,8 @@ export interface RecallOptions {
    * cross-project memory cannot leak into a scoped session.
    */
   project?: string;
+  /** Also include the cross-project global brain (`__global__`) alongside the project (#). */
+  includeGlobal?: boolean;
 }
 
 export interface RecallHit {
@@ -88,15 +90,15 @@ export class Recall {
     const candidates = options.candidates ?? Math.max(limit * 5, 20);
     const rrfK = options.rrfK ?? DEFAULT_RRF_K;
 
-    const { project } = options;
+    const { project, includeGlobal } = options;
     const [queryVector] = await this.provider.embed([query]);
     const vectorIds = queryVector
-      ? this.store.knn(queryVector, candidates, project).map((h) => h.id)
+      ? this.store.knn(queryVector, candidates, project, includeGlobal).map((h) => h.id)
       : [];
 
     const ftsExpr = toFtsQuery(query);
     const ftsIds = ftsExpr
-      ? this.store.searchFts(ftsExpr, candidates, project).map((h) => h.id)
+      ? this.store.searchFts(ftsExpr, candidates, project, includeGlobal).map((h) => h.id)
       : [];
 
     const fused = reciprocalRankFusion(

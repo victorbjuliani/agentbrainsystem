@@ -317,6 +317,12 @@ describe('cmdProject — set / cwd / skip / status (hermetic, tmp ABS_HOME)', ()
     mem2.close();
   });
 
+  it('promote rejects a non-integer / truncatable id (no silent parseInt truncation)', async () => {
+    await cmdPromote(['42.9', '--json']);
+    expect(outLines.join('')).toContain('positive observation id');
+    expect(process.exitCode).toBe(1);
+  });
+
   it('--cwd binds the cwd-derived slug', async () => {
     await cmdProject(['--session', 'sess-B', '--cwd', '--json']);
     const o = JSON.parse(outLines.join(''));

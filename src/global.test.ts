@@ -17,6 +17,13 @@ describe('global brain sentinel', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  it('sentinel value is the literal hardcoded in the store SQL (listProjects/searchFts/knn)', () => {
+    // The store SQL embeds '__global__' inline (it cannot import this const — that
+    // would be a circular dep). This assertion ties the two together so a rename here
+    // fails loudly instead of silently desyncing the recall/exclusion filters.
+    expect(GLOBAL_PROJECT).toBe('__global__');
+  });
+
   it('creates one reserved session keyed by the sentinel and reuses it', () => {
     const a = getOrCreateGlobalSession(store);
     const b = getOrCreateGlobalSession(store);
