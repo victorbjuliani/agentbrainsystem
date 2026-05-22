@@ -141,10 +141,14 @@ right from the canvas.
 ## CLI
 
 ```bash
+abs setup                 # one-shot onboarding: install hooks + register the MCP server
+abs uninstall [--purge]   # reverse of setup: remove hooks + unregister MCP (--purge wipes the store)
 abs start                 # run the MCP server (what Claude Code spawns)
-abs ingest [--dir PATH]   # ingest Claude Code transcripts
+abs ingest [...]          # opt-in historical ingest — preview default; --apply + --all|--project <slug>
 abs status                # db path, schema, counts, index staleness
 abs project [...]         # set/confirm/skip the current session's project
+abs remember "…" --global # add a memory to the cross-project global brain
+abs promote <id>          # move an existing memory into the global brain
 abs export <path>         # write the whole store to a portable artifact
 abs import <path>         # load an artifact (merge | replace)
 abs ui [--port N]         # serve the interactive memory graph
