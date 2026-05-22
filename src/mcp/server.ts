@@ -20,6 +20,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { loadConfig } from '../config.js';
 import { DeleteRefusalError, type DeleteSelector, execute, preview } from '../delete/index.js';
+import { getOrCreateGlobalSession } from '../global.js';
 import { clearBinding, defaultClaudeProjectsDir, writeBinding } from '../ingest/index.js';
 import { type Memory, openMemory } from '../memory.js';
 import {
@@ -113,14 +114,15 @@ export function createMcpServer(memory: Memory): McpServer {
         content: z.string().min(1).describe('The text to remember.'),
         kind: z.string().optional().describe('Category, e.g. decision/lesson/note (default note).'),
         session: z.string().optional().describe('External session id to group the memory under.'),
+        scope: z
+          .enum(['project', 'global'])
+          .optional()
+          .describe(
+            "Where to file it. 'global' (cross-project brain, recalled in every project) ONLY when the user explicitly asks to save globally — never on your own initiative. Default 'project'.",
+          ),
       },
     },
-    async ({ content, kind, session }) => {
-      const externalId = session ?? DEFAULT_SESSION;
-      const sessionId = resolveSession(memory, externalId);
-      const id = await memory.indexer.write({ sessionId, kind: kind ?? 'note', content });
-      return jsonContent({ id, sessionId });
-    },
+    async (args) => jsonContent(await rememberAction(memory, args)),
   );
 
   server.registerTool(
@@ -361,6 +363,32 @@ export function createMcpServer(memory: Memory): McpServer {
   );
 
   return server;
+}
+
+/** Arguments accepted by {@link rememberAction}. */
+export interface RememberArgs {
+  content: string;
+  kind?: string;
+  session?: string;
+  scope?: 'project' | 'global';
+}
+
+/**
+ * Core of the `remember` MCP tool, extracted for direct testing. `scope:"global"`
+ * files the memory under the reserved global brain (cross-project) — the agent must
+ * only pass it when the user explicitly asks; otherwise it defaults to the project
+ * session (`session` or the MCP default).
+ */
+export async function rememberAction(
+  memory: Memory,
+  { content, kind, session, scope }: RememberArgs,
+): Promise<Record<string, unknown>> {
+  const sessionId =
+    scope === 'global'
+      ? getOrCreateGlobalSession(memory.store)
+      : resolveSession(memory, session ?? DEFAULT_SESSION);
+  const id = await memory.indexer.write({ sessionId, kind: kind ?? 'note', content });
+  return { id, sessionId, scope: scope ?? 'project' };
 }
 
 /** Arguments accepted by {@link setSessionProjectAction}. */
