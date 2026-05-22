@@ -14,7 +14,7 @@ No cloud, no account, no API keys.
 <a href="https://github.com/victorbjuliani/agentbrainsystem/blob/main/LICENSE"><img src="https://img.shields.io/github/license/victorbjuliani/agentbrainsystem?style=flat-square&color=8B5CF6&labelColor=1A1825" alt="MIT License" /></a>
 <a href="https://github.com/victorbjuliani/agentbrainsystem/stargazers"><img src="https://img.shields.io/github/stars/victorbjuliani/agentbrainsystem?style=flat-square&color=A78BFA&labelColor=1A1825&logo=github&logoColor=white" alt="Stars" /></a>
 <img src="https://img.shields.io/badge/node-%E2%89%A5%2022-7C3AED?style=flat-square&labelColor=1A1825&logo=node.js&logoColor=white" alt="Node ≥ 22" />
-<img src="https://img.shields.io/badge/tests-506%20passing-5EEAD4?style=flat-square&labelColor=1A1825" alt="506 tests" />
+<img src="https://img.shields.io/badge/tests-509%20passing-5EEAD4?style=flat-square&labelColor=1A1825" alt="506 tests" />
 <a href="https://victorbjuliani.github.io/agentbrainsystem/"><img src="https://img.shields.io/badge/website-live-22D3EE?style=flat-square&labelColor=1A1825" alt="Website" /></a>
 </p>
 
