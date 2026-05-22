@@ -348,6 +348,17 @@ export class MemoryStore {
     return row ? rowToObservation(row) : null;
   }
 
+  /**
+   * Re-link an observation to a different session (used by `promote` to lift a
+   * project memory into the global brain). The observation id (= fts/vec rowid)
+   * is unchanged, so the FTS and vector indexes stay valid; only the FK moves.
+   */
+  moveObservationToSession(observationId: number, sessionId: number): void {
+    this.conn()
+      .prepare('UPDATE observations SET session_id = ? WHERE id = ?')
+      .run(sessionId, observationId);
+  }
+
   listObservations(options: ListObservationsOptions = {}): Observation[] {
     const db = this.conn();
     const { sql, params } = this.buildObservationQuery(options);

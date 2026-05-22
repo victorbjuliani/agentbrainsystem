@@ -328,6 +328,21 @@ describe('MemoryStore', () => {
       expect(withGlobal.find((h) => h.id === o2)?.project).toBe('__global__');
     });
 
+    it('moveObservationToSession re-links an observation to another session', () => {
+      const a = store.createSession({ externalId: 'a', project: '-Users-me-Devs-foo' });
+      const b = store.createSession({ externalId: '__global__', project: '__global__' });
+      const id = store.createObservation({ sessionId: a, kind: 'decision', content: 'use RAP for S4' });
+      store.indexFts(id, 'use RAP for S4');
+
+      store.moveObservationToSession(id, b);
+
+      expect(store.getObservation(id)?.sessionId).toBe(b);
+      expect(store.searchFts('RAP', 10, '-Users-me-Devs-foo', true).find((h) => h.id === id)?.project).toBe(
+        '__global__',
+      );
+      expect(store.searchFts('RAP', 10, '-Users-me-Devs-foo').find((h) => h.id === id)).toBeUndefined();
+    });
+
     it('reindex replaces prior FTS content for the same row', () => {
       const a = store.createObservation({ sessionId, kind: 'user', content: 'first' });
       store.indexFts(a, 'first');
