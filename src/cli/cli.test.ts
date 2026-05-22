@@ -209,32 +209,13 @@ describe('parseProjectAction — exactly one action', () => {
     expect(parseProjectAction(['--json'])).toEqual({ kind: 'status' });
   });
 
-  it('parses --set <name>', () => {
-    expect(parseProjectAction(['--set', 'My Project'])).toEqual({
-      kind: 'set',
-      name: 'My Project',
-    });
-  });
-
   it('parses --cwd and --skip', () => {
     expect(parseProjectAction(['--cwd'])).toEqual({ kind: 'cwd' });
     expect(parseProjectAction(['--skip'])).toEqual({ kind: 'skip' });
   });
 
-  it('rejects --set without a value (or a flag-looking value)', () => {
-    expect(parseProjectAction(['--set'])).toEqual({
-      error: expect.stringContaining('--set requires'),
-    });
-    expect(parseProjectAction(['--set', '--session'])).toEqual({
-      error: expect.stringContaining('--set requires'),
-    });
-  });
-
   it('rejects more than one action', () => {
     expect(parseProjectAction(['--cwd', '--skip'])).toEqual({
-      error: expect.stringContaining('exactly one'),
-    });
-    expect(parseProjectAction(['--set', 'x', '--skip'])).toEqual({
       error: expect.stringContaining('exactly one'),
     });
   });
@@ -304,34 +285,6 @@ describe('cmdProject — set / cwd / skip / status (hermetic, tmp ABS_HOME)', ()
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('--set writes a set binding and reports (new)', async () => {
-    await cmdProject(['--session', 'sess-A', '--set', 'My Feature', '--json']);
-    const o = JSON.parse(outLines.join(''));
-    expect(o).toMatchObject({
-      session: 'sess-A',
-      action: 'set',
-      project: 'My Feature',
-      kind: 'new',
-    });
-
-    const mem = await openMemory(loadConfig(), { ensure: false });
-    expect(mem.store.getMeta('session-project:sess-A')).toContain('"project":"My Feature"');
-    mem.close();
-  });
-
-  it('--set sanitizes the name and surfaces an error for an unusable name', async () => {
-    // whitespace/control-only → sanitizes to null → no binding, actionable error
-    await cmdProject(['--session', 'sess-A', '--set', '  \t ', '--json']);
-    expect(outLines.join('')).toContain('not a usable project name');
-    expect(process.exitCode).toBe(1);
-  });
-
-  it('--set collapses path separators into an inert label (no traversal)', async () => {
-    await cmdProject(['--session', 'sess-A', '--set', '../../etc', '--json']);
-    const o = JSON.parse(outLines.join(''));
-    expect(o.project).toBe('..-..-etc');
-  });
-
   it('--cwd binds the cwd-derived slug', async () => {
     await cmdProject(['--session', 'sess-B', '--cwd', '--json']);
     const o = JSON.parse(outLines.join(''));
@@ -383,7 +336,7 @@ describe('cmdProject — set / cwd / skip / status (hermetic, tmp ABS_HOME)', ()
     mem2.close();
   });
 
-  it('status (no action) lists existing projects + the cwd suggestion as JSON', async () => {
+  it('status (no action) lists existing projects as JSON', async () => {
     const mem = await openMemory(loadConfig(), { ensure: false });
     mem.store.createSession({ externalId: 's-x', project: 'Alpha' });
     mem.store.createSession({ externalId: 's-y', project: 'Beta' });
@@ -393,13 +346,13 @@ describe('cmdProject — set / cwd / skip / status (hermetic, tmp ABS_HOME)', ()
     const o = JSON.parse(outLines.join(''));
     expect(o.session).toBe('sess-F');
     expect(o.existingProjects).toEqual(['Alpha', 'Beta']);
-    expect(o.suggestedName).toBe(process.cwd().split('/').pop());
+    expect(o.autoProject).toBe(process.cwd().split('/').join('-'));
     expect(o.binding).toBeNull();
   });
 
   it('errors with no resolvable session id', async () => {
     delete process.env.CLAUDE_CODE_SESSION_ID;
-    await cmdProject(['--set', 'x', '--json']);
+    await cmdProject(['--skip', '--json']);
     expect(outLines.join('')).toContain('no current session id');
     expect(process.exitCode).toBe(1);
   });
@@ -412,19 +365,20 @@ describe('cmdProject — set / cwd / skip / status (hermetic, tmp ABS_HOME)', ()
     delete process.env.CLAUDE_CODE_SESSION_ID;
   });
 
-  it('--set applies immediately to an already-ingested session row (Codex P2)', async () => {
+  it('--cwd applies immediately to an already-ingested session row (Codex P2)', async () => {
     // Simulate a fully-ingested session whose file will never grow again.
     const mem = await openMemory(loadConfig(), { ensure: false });
     mem.store.createSession({ externalId: 'sess-ingested', project: 'old-slug' });
     mem.close();
 
-    await cmdProject(['--session', 'sess-ingested', '--set', 'Renamed', '--json']);
+    await cmdProject(['--session', 'sess-ingested', '--cwd', '--json']);
     const o = JSON.parse(outLines.join(''));
-    expect(o).toMatchObject({ action: 'set', project: 'Renamed' });
+    const cwdSlug = process.cwd().split('/').join('-');
+    expect(o).toMatchObject({ action: 'set', project: cwdSlug });
 
     const mem2 = await openMemory(loadConfig(), { ensure: false });
     // The stored row is updated NOW, not left under the old project awaiting a re-ingest.
-    expect(mem2.store.getSessionByExternalId('sess-ingested')?.project).toBe('Renamed');
+    expect(mem2.store.getSessionByExternalId('sess-ingested')?.project).toBe(cwdSlug);
     mem2.close();
   });
 });

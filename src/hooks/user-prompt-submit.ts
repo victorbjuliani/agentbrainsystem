@@ -20,6 +20,7 @@ import { verifyOnRecall } from '../anchoring/index.js';
 import { type AppConfig, loadConfig } from '../config.js';
 import { currentBranch } from '../ground-truth/git.js';
 import { createGroundTruthProvider } from '../ground-truth/index.js';
+import { readBinding } from '../ingest/index.js';
 import type { Memory } from '../memory.js';
 import { openMemory } from '../memory.js';
 import {
@@ -161,8 +162,13 @@ async function recallFromStore(prompt: string, payload: HookPayload): Promise<Sc
     // Label each hit with its (now-healed) ground-truth freshness; demote stale;
     // flag facts verified on another branch (FR-C1).
     const annotated = annotateFreshness(memory.store, hits, currentBranch(process.cwd()));
-    // Reinforce the memory notice on the session's first prompt (#52, max-effort).
-    const firstPrompt = consumeFirstPromptFlag(memory.store, payload.sessionId);
+    // Reinforce the memory notice on the session's first prompt (#52, max-effort) —
+    // but never when the user already chose to skip this session (the notice would
+    // falsely say it is being saved). The skip guard short-circuits the flag write.
+    const skipped = payload.sessionId
+      ? readBinding(memory.store, payload.sessionId)?.action === 'skip'
+      : false;
+    const firstPrompt = !skipped && consumeFirstPromptFlag(memory.store, payload.sessionId);
     return { hits: annotated, project, firstPrompt };
   } finally {
     memory.close();

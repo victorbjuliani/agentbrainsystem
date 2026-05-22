@@ -77,11 +77,12 @@ Commands:
                         --search "q" [--limit N] (FTS keyword recall, no embedding).
                         Default is preview-only — nothing is deleted without --apply.
                         With --apply: per-id [y/N] confirmation (or --yes to skip prompts).
-  project [opts]        Set/confirm/skip the CURRENT session's project (deterministic;
-                        writes a decision binding applied at the next ingest). No args:
-                        show resolved session, auto slug, existing projects + suggestions.
-                        Exactly one action: --set "<name>" (link existing or create new),
-                        --cwd (accept the cwd-derived slug), --skip (exclude this session).
+  project [opts]        Confirm/skip the CURRENT session's project (deterministic;
+                        writes a decision binding applied at the next ingest). The
+                        project is ALWAYS the session's folder (cwd) — no custom name.
+                        No args: show resolved session, folder slug, existing projects.
+                        Exactly one action: --cwd (file under the folder, reverting a
+                        prior skip), --skip (exclude this session).
                         Session id: CLAUDE_CODE_SESSION_ID, or --session <id> to override.
                         --skip hard-deletes already-stored observations → requires --yes.
                         --json for machine-readable output.
@@ -645,25 +646,19 @@ export function resolveSessionId(args: string[]): SessionResolution {
   return null;
 }
 
-export type ProjectAction =
-  | { kind: 'status' }
-  | { kind: 'set'; name: string }
-  | { kind: 'cwd' }
-  | { kind: 'skip' };
+export type ProjectAction = { kind: 'status' } | { kind: 'cwd' } | { kind: 'skip' };
 
-/** Parse the single action from the flags. Exactly one of --set/--cwd/--skip (or status). */
+/**
+ * Parse the single action from the flags. Exactly one of --cwd/--skip (or status).
+ * There is deliberately no custom project name: a session's project is ALWAYS its
+ * folder (cwd), so `--cwd` files it under that folder (and reverts a prior skip),
+ * and `--skip` excludes it.
+ */
 export function parseProjectAction(args: string[]): ProjectAction | { error: string } {
   const actions: ProjectAction[] = [];
-  if (args.includes('--set')) {
-    const name = optionValue(args, '--set');
-    if (name === undefined || name.startsWith('-')) {
-      return { error: '--set requires a project name (e.g. --set "My Project")' };
-    }
-    actions.push({ kind: 'set', name });
-  }
   if (args.includes('--cwd')) actions.push({ kind: 'cwd' });
   if (args.includes('--skip')) actions.push({ kind: 'skip' });
-  if (actions.length > 1) return { error: 'choose exactly one of --set <name> | --cwd | --skip' };
+  if (actions.length > 1) return { error: 'choose exactly one of --cwd | --skip' };
   return actions[0] ?? { kind: 'status' };
 }
 
@@ -716,7 +711,6 @@ export async function cmdProject(args: string[]): Promise<void> {
               sessionSource: resolved.source,
               cwd,
               autoProject: autoSlug,
-              suggestedName: basename(cwd),
               storedProject: session?.project ?? null,
               binding: binding ?? null,
               existingProjects: existing,
@@ -734,7 +728,6 @@ export async function cmdProject(args: string[]): Promise<void> {
       out(
         `binding:        ${binding ? describeBinding(binding) : '(none — auto-derivation applies)'}`,
       );
-      out(`suggested name: ${basename(cwd)}`);
       if (existing.length > 0) {
         out('existing projects:');
         for (const p of existing) out(`  ${p}`);
@@ -742,20 +735,16 @@ export async function cmdProject(args: string[]): Promise<void> {
         out('existing projects: (none)');
       }
       out('actions:');
-      out(`  --cwd                accept the auto project slug above (${autoSlug})`);
-      out(
-        `  --set "<name>"       link/create a label, e.g. --set "${basename(cwd)}" (the suggested name)`,
-      );
+      out(`  --cwd                file this session under its folder (${autoSlug})`);
       out('  --skip               exclude this session (--yes to also delete already-stored obs)');
       out('  (add --session <id> when running outside a Claude Code session)');
       return;
     }
 
-    if (action.kind === 'set' || action.kind === 'cwd') {
-      const rawName = action.kind === 'cwd' ? autoSlug : action.name;
-      const clean = sanitizeProjectName(rawName);
+    if (action.kind === 'cwd') {
+      const clean = sanitizeProjectName(autoSlug);
       if (clean === null) {
-        err(`error: '${rawName}' is not a usable project name after sanitizing`);
+        err(`error: '${autoSlug}' is not a usable project name after sanitizing`);
         process.exitCode = 1;
         return;
       }
