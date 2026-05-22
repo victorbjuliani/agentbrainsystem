@@ -34,7 +34,7 @@ import {
   generateOptimizations,
   type OptimizeCandidate,
 } from '../optimize/index.js';
-import { getOrCreateGlobalSession } from '../global.js';
+import { GLOBAL_PROJECT, getOrCreateGlobalSession } from '../global.js';
 import { projectSlug } from '../optimize/targets.js';
 import { startUiServer } from '../ui/index.js';
 import { VERSION } from '../version.js';
@@ -75,6 +75,7 @@ Commands:
                         (abs export) before deleting. Exactly one selector:
                         --ids a,b,c (observation ids), --session N, --project NAME,
                         --null-project (sessions with no project, NOT the literal "null"),
+                        --global (the cross-project global brain),
                         --search "q" [--limit N] (FTS keyword recall, no embedding).
                         Default is preview-only — nothing is deleted without --apply.
                         With --apply: per-id [y/N] confirmation (or --yes to skip prompts).
@@ -129,6 +130,10 @@ async function cmdStatus(): Promise<void> {
   const memory = await openMemory(config);
   try {
     const status = memory.indexer.status();
+    const globalSession = memory.store.getSessionByExternalId(GLOBAL_PROJECT);
+    const globalObservations = globalSession
+      ? memory.store.listObservations({ sessionId: globalSession.id }).length
+      : 0;
     out(
       JSON.stringify(
         {
@@ -137,6 +142,7 @@ async function cmdStatus(): Promise<void> {
           schemaVersion: memory.store.schemaVersion(),
           embedding: config.embedding,
           counts: memory.store.counts(),
+          globalObservations,
           index: {
             stale: status.stale,
             signature: status.signature,
@@ -507,6 +513,7 @@ export function parseForgetSelector(args: string[]): DeleteSelector {
   const rawSession = optionValue(args, '--session');
   const rawProject = optionValue(args, '--project');
   const nullProject = args.includes('--null-project');
+  const global = args.includes('--global');
   const rawSearch = optionValue(args, '--search');
 
   const chosen = [
@@ -514,11 +521,12 @@ export function parseForgetSelector(args: string[]): DeleteSelector {
     rawSession !== undefined,
     rawProject !== undefined,
     nullProject,
+    global,
     rawSearch !== undefined,
   ].filter(Boolean).length;
   if (chosen === 0) {
     throw new Error(
-      'forget requires exactly one selector: --ids, --session, --project, --null-project, or --search',
+      'forget requires exactly one selector: --ids, --session, --project, --null-project, --global, or --search',
     );
   }
   if (chosen > 1) {
@@ -533,6 +541,7 @@ export function parseForgetSelector(args: string[]): DeleteSelector {
     }
     return { bySession: n };
   }
+  if (global) return { byProject: GLOBAL_PROJECT };
   if (rawProject !== undefined) return { byProject: rawProject };
   if (nullProject) return { byProject: null };
 

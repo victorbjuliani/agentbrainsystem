@@ -119,6 +119,14 @@ describe('parseForgetSelector — mutual exclusion + shapes', () => {
       /mutually exclusive/,
     );
   });
+
+  it('resolves --global to the reserved global project selector', () => {
+    expect(parseForgetSelector(['--global'])).toEqual({ byProject: '__global__' });
+  });
+
+  it('rejects --global combined with another selector', () => {
+    expect(() => parseForgetSelector(['--global', '--null-project'])).toThrow(/mutually exclusive/);
+  });
 });
 
 describe('cmdForget — preview default + apply path (hermetic, tmp ABS_HOME)', () => {
