@@ -9,8 +9,14 @@
 
 export type { DispatchOptions } from './dispatch.js';
 export { dispatchHook } from './dispatch.js';
-export type { HookSpec, InstallOptions, InstallResult } from './installer.js';
-export { HOOK_REGISTRY, installHooks } from './installer.js';
+export type {
+  HookSpec,
+  InstallOptions,
+  InstallResult,
+  UninstallOptions,
+  UninstallResult,
+} from './installer.js';
+export { HOOK_REGISTRY, installHooks, uninstallHooks } from './installer.js';
 export type { HookEvent, HookPayload } from './payload.js';
 export { buildContextOutput, parseHookPayload, readStdin } from './payload.js';
 export { DEFAULT_HOOK_TIMEOUT_MS, runHookSafely } from './runner.js';

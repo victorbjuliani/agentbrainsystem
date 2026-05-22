@@ -67,3 +67,52 @@ export async function registerMcpServer(cliPath: string, run: RunFn): Promise<Re
   const message = (added.stderr || added.stdout).trim() || `exit ${added.code}`;
   return { status: 'error', message, manualCommand };
 }
+
+/** The `claude mcp remove …` argv that unregisters this CLI as a stdio MCP server. */
+export function buildClaudeMcpRemoveArgs(): string[] {
+  return ['mcp', 'remove', MCP_SERVER_NAME];
+}
+
+/** The copy-pasteable command shown when auto-unregistration isn't possible. */
+export function manualMcpRemoveCommand(): string {
+  return `claude mcp remove ${MCP_SERVER_NAME}`;
+}
+
+export type UnregisterResult =
+  | { status: 'removed' }
+  | { status: 'not-registered' }
+  | { status: 'no-claude'; manualCommand: string }
+  | { status: 'error'; message: string; manualCommand: string };
+
+/**
+ * Unregister the MCP server from Claude Code, idempotently — the inverse of
+ * {@link registerMcpServer}:
+ *   1. probe `claude --version` — absent ⇒ `no-claude` (caller prints the manual command)
+ *   2. `claude mcp list` does NOT list the server ⇒ `not-registered`
+ *   3. `claude mcp remove …` ⇒ `removed`, or `error` with the captured message
+ */
+export async function unregisterMcpServer(run: RunFn): Promise<UnregisterResult> {
+  const manualCommand = manualMcpRemoveCommand();
+
+  let probe: RunResult;
+  try {
+    probe = await run('claude', ['--version']);
+  } catch {
+    return { status: 'no-claude', manualCommand };
+  }
+  if (probe.code !== 0) return { status: 'no-claude', manualCommand };
+
+  try {
+    const list = await run('claude', ['mcp', 'list']);
+    if (list.code === 0 && !list.stdout.includes(MCP_SERVER_NAME)) {
+      return { status: 'not-registered' };
+    }
+  } catch {
+    // listing failed — fall through and attempt the remove anyway
+  }
+
+  const removed = await run('claude', buildClaudeMcpRemoveArgs());
+  if (removed.code === 0) return { status: 'removed' };
+  const message = (removed.stderr || removed.stdout).trim() || `exit ${removed.code}`;
+  return { status: 'error', message, manualCommand };
+}

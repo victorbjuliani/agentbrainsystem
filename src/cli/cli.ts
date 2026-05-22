@@ -8,6 +8,7 @@
  * is the MCP JSON-RPC transport; diagnostics go to stderr.
  */
 import { spawn } from 'node:child_process';
+import { existsSync, rmSync } from 'node:fs';
 import { platform } from 'node:os';
 import { basename } from 'node:path';
 import { createInterface } from 'node:readline/promises';
@@ -17,7 +18,7 @@ import { consolidate } from '../consolidate/index.js';
 import { type DeleteSelector, executeIds, previewSelector } from '../delete/index.js';
 import { exportStore, importStore } from '../export/index.js';
 import { GLOBAL_PROJECT, getOrCreateGlobalSession } from '../global.js';
-import { dispatchHook, installHooks } from '../hooks/index.js';
+import { dispatchHook, installHooks, uninstallHooks } from '../hooks/index.js';
 import {
   defaultClaudeProjectsDir,
   ingestClaudeProjects,
@@ -38,7 +39,12 @@ import {
 import { projectSlug } from '../optimize/targets.js';
 import { startUiServer } from '../ui/index.js';
 import { VERSION } from '../version.js';
-import { MCP_SERVER_NAME, type RunResult, registerMcpServer } from './setup.js';
+import {
+  MCP_SERVER_NAME,
+  type RunResult,
+  registerMcpServer,
+  unregisterMcpServer,
+} from './setup.js';
 
 const USAGE = `agentbrainsystem (abs) v${VERSION} — local-first memory for AI coding agents
 
@@ -48,6 +54,11 @@ Commands:
   setup                 One-shot onboarding: install the hooks AND register the MCP
                         server with Claude Code. Idempotent; non-fatal if the claude
                         CLI is missing (prints the manual command instead).
+  uninstall [--purge]   Reverse of setup: remove the hooks from ~/.claude/settings.json
+                        AND unregister the MCP server. Idempotent; backup-first.
+                        Your memory store is PRESERVED unless --purge (then it is
+                        hard-deleted — IRREVERSIBLE; export first; --yes skips the
+                        prompt). Prints the final 'npm uninstall -g' to run yourself.
   start                 Run the MCP server over stdio (what Claude Code spawns).
   ingest [--dir PATH]   Ingest Claude Code JSONL transcripts (default: ~/.claude/projects).
   status                Show real health: db path, schema, counts, index staleness.
@@ -378,6 +389,96 @@ async function cmdSetup(): Promise<void> {
   out('');
   out('Done. Restart Claude Code — it will recall + remember automatically.');
   out('Explore your memory anytime with:  abs ui');
+}
+
+/**
+ * Hard-delete the SQLite store and its WAL/SHM sidecars. IRREVERSIBLE — prompts for
+ * confirmation unless `yes`. Called only on `abs uninstall --purge`. The data dir
+ * (model cache etc.) is left intact; only the user's memory store is removed.
+ */
+async function purgeStore(dbPath: string, yes: boolean): Promise<void> {
+  const targets = [dbPath, `${dbPath}-wal`, `${dbPath}-shm`].filter((p) => existsSync(p));
+  out('');
+  if (targets.length === 0) {
+    out(`No memory store found at ${dbPath} — nothing to purge.`);
+    return;
+  }
+  out('--purge will hard-delete your memory store (IRREVERSIBLE):');
+  for (const t of targets) out(`  ${t}`);
+  out('  export first (abs export <path>) to keep a recoverable copy.');
+
+  if (!yes) {
+    // Prompt on stderr so stdout stays clean.
+    const rl = createInterface({ input: process.stdin, output: process.stderr });
+    try {
+      const ans = (await rl.question('delete the memory store? [y/N] ')).trim().toLowerCase();
+      if (ans !== 'y' && ans !== 'yes') {
+        out('purge skipped — memory store kept.');
+        return;
+      }
+    } finally {
+      rl.close();
+    }
+  }
+  for (const t of targets) rmSync(t, { force: true });
+  out(`✓ memory store deleted (${targets.length} file(s)).`);
+}
+
+/**
+ * `abs uninstall` — the inverse of `abs setup`. Removes our hooks from
+ * settings.json and unregisters the MCP server (both idempotent, backup-first,
+ * non-fatal when the claude CLI is missing). The memory store is PRESERVED unless
+ * `--purge` (then it's hard-deleted, confirmed unless `--yes`). The npm package
+ * itself is NOT removed here — a process can't reliably delete the binary it's
+ * running from — so we print the final `npm uninstall -g` line to run afterwards.
+ */
+async function cmdUninstall(args: string[]): Promise<void> {
+  const purge = args.includes('--purge');
+  const yes = args.includes('--yes');
+
+  // 1. Remove our hooks from settings.json (symlink-safe, backup-first, atomic).
+  const hooks = uninstallHooks();
+  if (hooks.removed.length > 0) {
+    out(`✓ hooks removed: ${hooks.removed.join(', ')} → ${hooks.settingsPath}`);
+    if (hooks.backupPath) out(`  backup: ${hooks.backupPath}`);
+  } else {
+    out('✓ no abs hooks were present in settings.json');
+  }
+
+  // 2. Unregister the MCP server with Claude Code.
+  const reg = await unregisterMcpServer(spawnCapture);
+  switch (reg.status) {
+    case 'removed':
+      out(`✓ MCP server "${MCP_SERVER_NAME}" unregistered from Claude Code`);
+      break;
+    case 'not-registered':
+      out(`✓ MCP server "${MCP_SERVER_NAME}" was not registered (nothing to do)`);
+      break;
+    case 'no-claude':
+      out('! Claude CLI not found — unregister the MCP server manually:');
+      out(`    ${reg.manualCommand}`);
+      break;
+    case 'error':
+      out(`! Could not auto-unregister the MCP server (${reg.message}). Run manually:`);
+      out(`    ${reg.manualCommand}`);
+      break;
+  }
+
+  // 3. Memory store: preserved by default, hard-deleted only with --purge.
+  const config = loadConfig();
+  if (purge) {
+    await purgeStore(config.dbPath, yes);
+  } else {
+    out('');
+    out(`Memory preserved at ${config.dbPath}`);
+    out('  (re-run with --purge to delete it — IRREVERSIBLE; abs export first to keep a copy).');
+  }
+
+  // 4. The package itself: npm's job, not ours. Run it AFTER this command, while we
+  //    still exist to do the cleanup above.
+  out('');
+  out('Final step — remove the program (run this yourself, after this command):');
+  out('    npm uninstall -g agentbrainsystem');
 }
 
 /** Print one candidate (header + rationale + evidence + indented diff) to stdout. */
@@ -914,6 +1015,8 @@ async function main(): Promise<void> {
       return cmdInstallHooks();
     case 'setup':
       return cmdSetup();
+    case 'uninstall':
+      return cmdUninstall(rest);
     case 'optimize':
       return cmdOptimize(rest);
     case 'forget':
