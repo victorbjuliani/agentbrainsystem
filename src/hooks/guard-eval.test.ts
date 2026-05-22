@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { type Memory, openMemory } from '../memory.js';
 import { evaluateGuard, type GuardCase } from './guard-eval.js';
 
 /** Seed a graph whose existing symbols live in `src/existing.ts`. */
@@ -27,16 +28,25 @@ function seedGraph(repoRoot: string, symbols: string[]): void {
 describe('guard evaluation harness (#30, O3 gate)', () => {
   let dir: string;
   let repo: string;
+  // An empty store injected so the warn-only decision-surfacing lens (#48 Phase A)
+  // stays silent — the O3 gate measures the block-eligible duplication lens only.
+  let emptyMemory: Memory;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), 'abs-guardeval-'));
     repo = join(dir, 'repo');
     mkdirSync(repo, { recursive: true });
     delete process.env.ABS_GUARD_MODE;
+    process.env.ABS_HOME = join(dir, 'abs');
+    process.env.ABS_EMBED_DIM = '8';
     seedGraph(repo, ['existingA', 'existingB', 'existingC']);
+    emptyMemory = await openMemory(undefined, { ensure: false });
   });
 
   afterEach(() => {
+    emptyMemory.close();
+    delete process.env.ABS_HOME;
+    delete process.env.ABS_EMBED_DIM;
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -137,27 +147,31 @@ describe('guard evaluation harness (#30, O3 gate)', () => {
     ];
   }
 
-  it('meets the O3 release gate: TP >= 30% AND FP < 1 per 10 actions', () => {
-    const result = evaluateGuard(buildCases());
+  it('meets the O3 release gate: TP >= 30% AND FP < 1 per 10 actions', async () => {
+    const result = await evaluateGuard(buildCases(), {}, { memory: emptyMemory });
     // This guard is precise: every seeded duplication is caught, zero false alarms.
     expect(result.tpRate).toBe(1);
     expect(result.fpPerAction).toBe(0);
     expect(result.passesGate).toBe(true);
   });
 
-  it('reports the underlying counts for the release artifact', () => {
-    const result = evaluateGuard(buildCases());
+  it('reports the underlying counts for the release artifact', async () => {
+    const result = await evaluateGuard(buildCases(), {}, { memory: emptyMemory });
     expect(result.badCases).toBe(3);
     expect(result.benignCases).toBe(7);
     expect(result.truePositives).toBe(3);
     expect(result.falsePositives).toBe(0);
   });
 
-  it('flags a gate failure when FP is too high (sanity of the metric itself)', () => {
+  it('flags a gate failure when FP is too high (sanity of the metric itself)', async () => {
     // A pathological set where every benign action is mislabelled "should fire"
     // would still measure fpPerAction against true labels — here we prove the
     // gate math rejects a noisy guard by tightening the threshold to 0.
-    const result = evaluateGuard(buildCases(), { fpPerActionMax: 0 });
+    const result = await evaluateGuard(
+      buildCases(),
+      { fpPerActionMax: 0 },
+      { memory: emptyMemory },
+    );
     // fpPerAction is 0, and the gate uses strict <, so max=0 fails by construction.
     expect(result.passesGate).toBe(false);
   });
