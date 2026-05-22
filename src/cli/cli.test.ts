@@ -20,6 +20,7 @@ import {
   cmdForget,
   cmdProject,
   cmdPromote,
+  cmdRemember,
   parseForgetSelector,
   parseIds,
   parseProjectAction,
@@ -399,5 +400,50 @@ describe('cmdProject — set / cwd / skip / status (hermetic, tmp ABS_HOME)', ()
     // The stored row is updated NOW, not left under the old project awaiting a re-ingest.
     expect(mem2.store.getSessionByExternalId('sess-ingested')?.project).toBe(cwdSlug);
     mem2.close();
+  });
+});
+
+describe('cmdRemember — global authoring (hermetic, tmp ABS_HOME, real local provider)', () => {
+  let dir: string;
+  let outLines: string[];
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'abs-cli-remember-'));
+    process.env.ABS_HOME = dir;
+    delete process.env.ABS_EMBED_DIM; // default dim matches the local provider (embeds for real)
+    outLines = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk: string | Uint8Array) => {
+      outLines.push(String(chunk));
+      return true;
+    });
+    vi.spyOn(process.stderr, 'write').mockImplementation((chunk: string | Uint8Array) => {
+      outLines.push(String(chunk));
+      return true;
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete process.env.ABS_HOME;
+    process.exitCode = 0;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('remember --global writes under the reserved global session', async () => {
+    await cmdRemember(['Always pin Node with .nvmrc.', '--global', '--kind', 'lesson', '--json']);
+    const o = JSON.parse(outLines.join(''));
+    expect(o).toMatchObject({ scope: 'global', kind: 'lesson', applied: true });
+
+    const mem = await openMemory(loadConfig(), { ensure: false });
+    const g = mem.store.getSessionByExternalId('__global__');
+    const rows = mem.store.listObservations({ sessionId: g?.id });
+    expect(rows.some((x) => x.content === 'Always pin Node with .nvmrc.')).toBe(true);
+    mem.close();
+  });
+
+  it('errors without --global (project authoring stays in MCP/ingest)', async () => {
+    await cmdRemember(['some text', '--json']);
+    expect(outLines.join('')).toContain('--global');
+    expect(process.exitCode).toBe(1);
   });
 });
