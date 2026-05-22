@@ -11,18 +11,18 @@ No cloud, no account, no API keys.
 </p>
 
 <p>
-<a href="https://github.com/victorbjuliani/agentbrainsystem/blob/main/LICENSE"><img src="https://img.shields.io/github/license/victorbjuliani/agentbrainsystem?style=flat-square&color=8B5CF6" alt="MIT License" /></a>
-<a href="https://github.com/victorbjuliani/agentbrainsystem/stargazers"><img src="https://img.shields.io/github/stars/victorbjuliani/agentbrainsystem?style=flat-square&color=8B5CF6&logo=github" alt="Stars" /></a>
-<img src="https://img.shields.io/badge/node-%E2%89%A5%2022-8B5CF6?style=flat-square&logo=node.js&logoColor=white" alt="Node ≥ 22" />
-<img src="https://img.shields.io/badge/tests-506%20passing-34D399?style=flat-square" alt="506 tests" />
-<a href="https://victorbjuliani.github.io/agentbrainsystem/"><img src="https://img.shields.io/badge/website-live-A78BFA?style=flat-square" alt="Website" /></a>
+<a href="https://github.com/victorbjuliani/agentbrainsystem/blob/main/LICENSE"><img src="https://img.shields.io/github/license/victorbjuliani/agentbrainsystem?style=flat-square&color=8B5CF6&labelColor=1A1825" alt="MIT License" /></a>
+<a href="https://github.com/victorbjuliani/agentbrainsystem/stargazers"><img src="https://img.shields.io/github/stars/victorbjuliani/agentbrainsystem?style=flat-square&color=A78BFA&labelColor=1A1825&logo=github&logoColor=white" alt="Stars" /></a>
+<img src="https://img.shields.io/badge/node-%E2%89%A5%2022-7C3AED?style=flat-square&labelColor=1A1825&logo=node.js&logoColor=white" alt="Node ≥ 22" />
+<img src="https://img.shields.io/badge/tests-506%20passing-5EEAD4?style=flat-square&labelColor=1A1825" alt="506 tests" />
+<a href="https://victorbjuliani.github.io/agentbrainsystem/"><img src="https://img.shields.io/badge/website-live-22D3EE?style=flat-square&labelColor=1A1825" alt="Website" /></a>
 </p>
 
 <p>
-<img src="https://img.shields.io/badge/local--first-%240%20%C2%B7%20offline-8B5CF6?style=for-the-badge" alt="local-first · $0 · offline" />
-<img src="https://img.shields.io/badge/8-MCP%20tools-22D3EE?style=for-the-badge" alt="8 MCP tools" />
-<img src="https://img.shields.io/badge/5-dependencies-A78BFA?style=for-the-badge" alt="5 dependencies" />
-<img src="https://img.shields.io/badge/embedded-SQLite-5EEAD4?style=for-the-badge" alt="embedded SQLite" />
+<img src="https://img.shields.io/badge/local--first-%240%20%C2%B7%20offline-8B5CF6?style=for-the-badge&labelColor=0A0810" alt="local-first · $0 · offline" />
+<img src="https://img.shields.io/badge/MCP-8%20tools-22D3EE?style=for-the-badge&labelColor=0A0810" alt="8 MCP tools" />
+<img src="https://img.shields.io/badge/deps-just%205-A78BFA?style=for-the-badge&labelColor=0A0810" alt="just 5 dependencies" />
+<img src="https://img.shields.io/badge/storage-embedded%20SQLite-5EEAD4?style=for-the-badge&labelColor=0A0810" alt="embedded SQLite" />
 </p>
 
 <sub>
@@ -70,11 +70,11 @@ The first embedding call downloads the local model (~one-time, ~35 s); after tha
 
 Three steps, zero effort once installed:
 
-| | | |
+| Step | What happens | |
 |---|---|---|
 | **1 · Capture** | Hooks auto-ingest every Claude Code session when it ends. | `$0 · no LLM` |
 | **2 · Store** | Local embeddings in an embedded SQLite + `sqlite-vec` + FTS5 store, on your machine. | `offline` |
-| **3 · Recall** | Hybrid semantic + keyword search surfaces relevant memory — at session start **and on every prompt**, as you work. | `per-prompt · MCP` |
+| **3 · Recall** | Hybrid semantic + keyword search surfaces relevant memory — at session start **and on every prompt**. | `per-prompt · MCP` |
 
 ## What makes it different
 
@@ -162,13 +162,33 @@ Out of scope (for now): multi-user/team sharing, image/vision embeddings, heavyw
 
 ## FAQ
 
-**Does it send my code anywhere?** No. Everything runs locally and offline — no network calls, no telemetry, no account.
-**Does it cost anything?** $0 by default. Local embeddings, no API keys. Hosted embedder / LLM consolidation are opt-in.
-**Which agents?** Built for Claude Code via MCP, with hands-free capture and context injection through hooks.
-**Is it open source?** Fully — MIT. Star it, fork it, read every line.
+<details>
+<summary><b>Does it send my code anywhere?</b></summary>
+
+No. Everything runs locally and offline — no network calls, no telemetry, no account.
+</details>
+
+<details>
+<summary><b>Does it cost anything?</b></summary>
+
+$0 by default — local embeddings, no API keys. A hosted embedder or any OpenAI-compatible LLM (local Ollama or hosted) for deeper consolidation are **opt-in and off by default**.
+</details>
+
+<details>
+<summary><b>Which agents does it work with?</b></summary>
+
+Built for Claude Code via MCP, with hands-free session capture and context injection through hooks.
+</details>
+
+<details>
+<summary><b>Is it open source?</b></summary>
+
+Fully — MIT licensed. Star it, fork it, read every line.
+</details>
 
 ## Contributing & docs
 
+- 🤝 **Contributing:** [`CONTRIBUTING.md`](CONTRIBUTING.md) — setup, validation, workflow
 - 🌐 **Website:** https://victorbjuliani.github.io/agentbrainsystem/
 - 📖 **Agent & contributor onboarding:** [`docs/agent-handbook.md`](docs/agent-handbook.md)
 - 🏗️ **Design decisions:** [`docs/adr/`](docs/adr/)
