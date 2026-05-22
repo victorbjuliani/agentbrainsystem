@@ -8,6 +8,7 @@ import type { Memory } from '../memory.js';
 import { Recall } from '../recall/index.js';
 import { MemoryStore } from '../store/index.js';
 import { ingestClaudeProjects } from './ingest.js';
+import { writeBinding } from './session-binding.js';
 
 /** Deterministic, offline provider so ingestion tests run without a model download. */
 class FakeProvider implements EmbeddingProvider {
@@ -313,6 +314,137 @@ describe('ingestClaudeProjects — anchor seeding (#25)', () => {
     const result = await ingestClaudeProjects(memory, { projectsDir });
     expect(result.observationsAdded).toBe(0); // both textless + non-anchorable → skipped
     expect(result.anchorsSeeded).toBe(0);
+    memory.close();
+  });
+});
+
+describe('ingestClaudeProjects — decision-aware (#50)', () => {
+  /** Write a one-session transcript file under a cwd-derived project dir. */
+  function writeTranscript(projectDir: string, fileName: string, lines: string[]): string {
+    const projDir = join(projectsDir, projectDir);
+    mkdirSync(projDir, { recursive: true });
+    const file = join(projDir, fileName);
+    writeFileSync(file, `${lines.join('\n')}\n`);
+    return file;
+  }
+
+  it('NO binding → byte-for-byte the cwd-derived project (zero regression)', async () => {
+    writeTranscript('-Users-me-Devs-foo', 'sess-1.jsonl', [
+      userLine('sess-1', '/Users/me/Devs/foo', 'hello world', 'u1'),
+    ]);
+    const memory = newMemory();
+    const result = await ingestClaudeProjects(memory, { projectsDir });
+    expect(result.observationsAdded).toBe(1);
+    expect(memory.store.getSessionByExternalId('sess-1')?.project).toBe('-Users-me-Devs-foo');
+    memory.close();
+  });
+
+  it('SET binding written before ingest → session created with the chosen project', async () => {
+    writeTranscript('-Users-me-Devs-foo', 'sess-1.jsonl', [
+      userLine('sess-1', '/Users/me/Devs/foo', 'hello world', 'u1'),
+    ]);
+    const memory = newMemory();
+    expect(writeBinding(memory.store, 'sess-1', { action: 'set', project: 'Milhas' })).toBe(true);
+
+    const result = await ingestClaudeProjects(memory, { projectsDir });
+    expect(result.observationsAdded).toBe(1);
+    const s = memory.store.getSessionByExternalId('sess-1');
+    expect(s?.project).toBe('Milhas'); // override, NOT '-Users-me-Devs-foo'
+    expect(memory.store.counts().sessions).toBe(1);
+    memory.close();
+  });
+
+  it('SET binding after a prior auto-ingest → next run UPDATEs the project (Risk #2)', async () => {
+    const file = writeTranscript('-Users-me-Devs-foo', 'sess-1.jsonl', [
+      userLine('sess-1', '/Users/me/Devs/foo', 'first', 'u1'),
+    ]);
+    const memory = newMemory();
+
+    // Run 1: no binding → auto project, row created.
+    await ingestClaudeProjects(memory, { projectsDir });
+    expect(memory.store.getSessionByExternalId('sess-1')?.project).toBe('-Users-me-Devs-foo');
+
+    // User decides the project AFTER the row already exists; a new line arrives.
+    writeBinding(memory.store, 'sess-1', { action: 'set', project: 'Necxor' });
+    appendFileSync(
+      file,
+      `${assistantLine('sess-1', '/Users/me/Devs/foo', [{ type: 'text', text: 'second' }], 'a1')}\n`,
+    );
+
+    // Run 2: grown file → the existing row's project is UPDATEd, not duplicated.
+    const second = await ingestClaudeProjects(memory, { projectsDir });
+    expect(second.observationsAdded).toBe(1);
+    expect(memory.store.getSessionByExternalId('sess-1')?.project).toBe('Necxor');
+    expect(memory.store.counts().sessions).toBe(1);
+    expect(memory.store.counts().observations).toBe(2);
+    memory.close();
+  });
+
+  it('SKIP binding before ingest → no session, no observations, cursor still advances', async () => {
+    writeTranscript('-Users-me-Devs-junk', 'sess-2.jsonl', [
+      userLine('sess-2', '/Users/me/Devs/junk', 'throwaway one', 'u1'),
+      assistantLine(
+        'sess-2',
+        '/Users/me/Devs/junk',
+        [{ type: 'text', text: 'throwaway two' }],
+        'a1',
+      ),
+    ]);
+    const memory = newMemory();
+    writeBinding(memory.store, 'sess-2', { action: 'skip' });
+
+    const first = await ingestClaudeProjects(memory, { projectsDir });
+    expect(first.observationsAdded).toBe(0);
+    expect(first.observationsSkipped).toBe(2);
+    expect(first.filesProcessed).toBe(1);
+    expect(memory.store.getSessionByExternalId('sess-2')).toBeNull();
+    expect(memory.store.counts().sessions).toBe(0);
+    expect(memory.store.counts().observations).toBe(0);
+
+    // Cursor advanced to EOF → a re-run skips the file entirely (no re-ingest loop).
+    const second = await ingestClaudeProjects(memory, { projectsDir });
+    expect(second.filesProcessed).toBe(0);
+    expect(second.filesSkipped).toBe(1);
+    expect(second.observationsAdded).toBe(0);
+    memory.close();
+  });
+
+  it('at-least-once: SKIP after a session was already fully ingested → reconciled away', async () => {
+    // Models the abrupt-Ctrl-C window: SessionEnd did not fire to apply the
+    // decision, but ingest already ran once. The binding is the durable carrier.
+    writeTranscript('-Users-me-Devs-junk', 'sess-3.jsonl', [
+      userLine('sess-3', '/Users/me/Devs/junk', 'oops stored this', 'u1'),
+    ]);
+    const memory = newMemory();
+
+    // It got ingested first.
+    await ingestClaudeProjects(memory, { projectsDir });
+    expect(memory.store.counts().observations).toBe(1);
+
+    // Then the user marks it skip — writeBinding reconciles the already-stored row.
+    writeBinding(memory.store, 'sess-3', { action: 'skip' });
+    expect(memory.store.getSessionByExternalId('sess-3')).toBeNull();
+    expect(memory.store.counts().observations).toBe(0);
+    memory.close();
+  });
+
+  it('at-least-once: SET written while offline, applied whenever ingest next runs', async () => {
+    const file = writeTranscript('-Users-me-Devs-foo', 'sess-4.jsonl', [
+      userLine('sess-4', '/Users/me/Devs/foo', 'line one', 'u1'),
+    ]);
+    const memory = newMemory();
+
+    // Decision recorded BEFORE any ingest (SessionEnd may never have fired).
+    writeBinding(memory.store, 'sess-4', { action: 'set', project: 'Chosen' });
+    // More lines accrue, then ingest finally runs.
+    appendFileSync(
+      file,
+      `${assistantLine('sess-4', '/Users/me/Devs/foo', [{ type: 'text', text: 'line two' }], 'a1')}\n`,
+    );
+
+    const result = await ingestClaudeProjects(memory, { projectsDir });
+    expect(result.observationsAdded).toBe(2);
+    expect(memory.store.getSessionByExternalId('sess-4')?.project).toBe('Chosen');
     memory.close();
   });
 });

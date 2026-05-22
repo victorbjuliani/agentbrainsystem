@@ -24,10 +24,14 @@ import { basename, dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { Memory } from '../memory.js';
 import { parseLine, type ToolAnchorSeed } from './claude-jsonl.js';
+import { cleanupBindings, readBinding, type SessionBinding } from './session-binding.js';
 import type { IngestOptions, IngestResult } from './types.js';
 
 /** kv_meta key prefix for the per-file byte-offset cursor. */
 const CURSOR_PREFIX = 'ingest:cursor:';
+
+/** Per-run session-cache sentinel marking a session a `skip` binding excludes. */
+const SKIP = -1;
 
 /**
  * A one-line, footprint-cheap summary for an edit-only turn (no prose), so the
@@ -98,20 +102,60 @@ function writeCursor(memory: Memory, absPath: string, offset: number): void {
 }
 
 /**
- * Look up (or lazily create) the store session for a Claude Code `sessionId`,
- * caching the resolution so we touch the store once per session per run.
- * `project` is the encoded project dir name (stable across machines for a repo);
- * `cwd` is kept on the session meta as a human-readable hint.
+ * Read the session→project binding once per externalId per run (mirrors the
+ * session cache so a binding lookup is one `kv_meta` read per session, not per
+ * line). Caches the `null` (no-binding) result too.
+ */
+function resolveBinding(
+  cache: Map<string, SessionBinding | null>,
+  memory: Memory,
+  externalId: string,
+): SessionBinding | null {
+  const cached = cache.get(externalId);
+  if (cached !== undefined) return cached;
+  const binding = readBinding(memory.store, externalId);
+  cache.set(externalId, binding);
+  return binding;
+}
+
+/**
+ * Resolve the store session id for a Claude Code `sessionId`, applying any
+ * intentional decision binding (#50). Returns `null` when the session is bound
+ * `skip` (the caller skips the line — advancing the cursor but writing nothing).
+ *
+ * Caching keeps this one store touch per session per run:
+ *   - `skip`  → reconcile any session created in a prior run (delete, cascade),
+ *     then cache the SKIP sentinel so every subsequent line short-circuits.
+ *   - `set X` → upsert the project (UPDATE-safe), overriding an auto-derived
+ *     project even if a prior run already created the row (Risk #2).
+ *   - none    → byte-for-byte the original behavior (look up or create with the
+ *     cwd-derived project) — zero regression.
  */
 function resolveSession(
   memory: Memory,
   cache: Map<string, number>,
+  bindingCache: Map<string, SessionBinding | null>,
   externalId: string,
   project: string,
   cwd: string | undefined,
-): number {
+): number | null {
   const cached = cache.get(externalId);
-  if (cached !== undefined) return cached;
+  if (cached !== undefined) return cached === SKIP ? null : cached;
+
+  const binding = resolveBinding(bindingCache, memory, externalId);
+
+  if (binding?.action === 'skip') {
+    const existing = memory.store.getSessionByExternalId(externalId);
+    if (existing) memory.store.deleteSession(existing.id);
+    cache.set(externalId, SKIP);
+    return null;
+  }
+
+  if (binding?.action === 'set') {
+    const id = memory.store.setSessionProject(externalId, binding.project);
+    cache.set(externalId, id);
+    return id;
+  }
 
   const existing = memory.store.getSessionByExternalId(externalId);
   if (existing) {
@@ -144,6 +188,7 @@ async function ingestFile(
   result: IngestResult,
 ): Promise<void> {
   const sessionCache = new Map<string, number>();
+  const bindingCache = new Map<string, SessionBinding | null>();
   let offset = startOffset;
   let added = 0;
   let skipped = 0;
@@ -163,7 +208,20 @@ async function ingestFile(
       continue;
     }
 
-    const sessionId = resolveSession(memory, sessionCache, entry.sessionId, project, entry.cwd);
+    const sessionId = resolveSession(
+      memory,
+      sessionCache,
+      bindingCache,
+      entry.sessionId,
+      project,
+      entry.cwd,
+    );
+    // A `skip` binding excludes this session: advance the cursor (done above) but
+    // write nothing — no session, no observation, no anchors (#50).
+    if (sessionId === null) {
+      skipped++;
+      continue;
+    }
     // Prose turn → store the text under its role. Edit-only turn (no prose) →
     // store a compact 'tool_edit' summary so the seeded anchor has a home.
     const hasText = entry.text.length > 0;
@@ -204,6 +262,9 @@ export async function ingestClaudeProjects(
     observationsSkipped: 0,
     anchorsSeeded: 0,
   };
+
+  // Housekeeping: drop expired `set` bindings once per run (`skip` is permanent).
+  cleanupBindings(memory.store);
 
   for await (const absPath of walkJsonlFiles(root)) {
     let size: number;

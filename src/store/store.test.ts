@@ -503,4 +503,48 @@ describe('MemoryStore', () => {
       expect(rows[0]?.source).toBe('consolidate');
     });
   });
+
+  describe('setSessionProject (#50)', () => {
+    it('creates a session when none exists for the externalId', () => {
+      const id = store.setSessionProject('sess-new', 'MyProject');
+      expect(id).toBeGreaterThan(0);
+      const s = store.getSessionByExternalId('sess-new');
+      expect(s?.id).toBe(id);
+      expect(s?.project).toBe('MyProject');
+    });
+
+    it('UPDATEs the project of an existing row, keeping the same id (Risk #2 override)', () => {
+      const created = store.createSession({ externalId: 'sess-auto', project: 'auto-slug' });
+      const updated = store.setSessionProject('sess-auto', 'Intentional');
+      expect(updated).toBe(created);
+      expect(store.getSessionByExternalId('sess-auto')?.project).toBe('Intentional');
+      expect(store.counts().sessions).toBe(1); // updated, not duplicated
+    });
+  });
+
+  describe('deleteMeta / listMetaKeys (#50)', () => {
+    it('deleteMeta removes a key and is a no-op when absent', () => {
+      store.setMeta('k1', 'v1');
+      store.deleteMeta('k1');
+      expect(store.getMeta('k1')).toBeNull();
+      expect(() => store.deleteMeta('missing')).not.toThrow();
+    });
+
+    it('listMetaKeys returns only keys under a literal prefix, ascending', () => {
+      store.setMeta('session-project:b', 'x');
+      store.setMeta('session-project:a', 'x');
+      store.setMeta('ingest:cursor:/f', '1');
+      store.setMeta('session-projectZZ', 'x'); // outside the ':'-suffixed range — must be excluded
+      expect(store.listMetaKeys('session-project:')).toEqual([
+        'session-project:a',
+        'session-project:b',
+      ]);
+    });
+
+    it('listMetaKeys with an empty prefix returns all keys', () => {
+      store.setMeta('a', '1');
+      store.setMeta('b', '2');
+      expect(store.listMetaKeys('')).toEqual(['a', 'b']);
+    });
+  });
 });

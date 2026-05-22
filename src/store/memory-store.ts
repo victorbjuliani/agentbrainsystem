@@ -710,6 +710,55 @@ export class MemoryStore {
       .run(key, value);
   }
 
+  /** Delete a bookkeeping value. No-op when the key is absent. */
+  deleteMeta(key: string): void {
+    this.conn().prepare('DELETE FROM kv_meta WHERE key = ?').run(key);
+  }
+
+  /**
+   * List kv_meta keys sharing a literal `prefix`, ascending. Implemented as a
+   * half-open range scan (`key >= prefix AND key < prefixSucc`) so it rides the
+   * `kv_meta` PRIMARY KEY index instead of a full-table LIKE scan. Drives the
+   * session→project binding cleanup (#50), which enumerates `session-project:*`.
+   */
+  listMetaKeys(prefix: string): string[] {
+    const conn = this.conn();
+    if (prefix.length === 0) {
+      const all = conn.prepare('SELECT key FROM kv_meta ORDER BY key').all() as Array<{
+        key: string;
+      }>;
+      return all.map((r) => r.key);
+    }
+    // Successor of `prefix`: bump the last code unit by one for the exclusive bound.
+    const prefixSucc =
+      prefix.slice(0, -1) + String.fromCharCode(prefix.charCodeAt(prefix.length - 1) + 1);
+    const rows = conn
+      .prepare('SELECT key FROM kv_meta WHERE key >= ? AND key < ? ORDER BY key')
+      .all(prefix, prefixSucc) as Array<{ key: string }>;
+    return rows.map((r) => r.key);
+  }
+
+  // --------------------------------------------------------- session → project
+
+  /**
+   * Upsert a session's project label (#50). UPDATEs the project of an existing
+   * row, or creates the session when none exists for `externalId`. The UPDATE
+   * branch is what lets an intentional decision override an auto-derived project
+   * even after ingest already created the row with the cwd-derived slug (Risk #2).
+   * Returns the row id. Deliberately separate from `createSession` so that
+   * signature (high blast-radius) stays untouched.
+   */
+  setSessionProject(externalId: string, project: string): number {
+    const existing = this.getSessionByExternalId(externalId);
+    if (existing) {
+      this.conn()
+        .prepare('UPDATE sessions SET project = ? WHERE external_id = ?')
+        .run(project, externalId);
+      return existing.id;
+    }
+    return this.createSession({ externalId, project });
+  }
+
   // -------------------------------------------------------------------- counts
 
   /**
