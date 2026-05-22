@@ -61,7 +61,10 @@ describe('renderRecallBlock — bounding', () => {
 
   it('tags global hits distinctly so the agent reads them as cross-project', () => {
     const projectHit = hit(1, 'note', 'Local detail about the foo service module.');
-    const globalHit = { ...hit(2, 'decision', 'Always use dependency injection here.'), global: true };
+    const globalHit = {
+      ...hit(2, 'decision', 'Always use dependency injection here.'),
+      global: true,
+    };
     const block = renderRecallBlock([projectHit, globalHit]);
     expect(block).toContain('🌐global');
     expect(block).toContain('Always use dependency injection');

@@ -21,7 +21,9 @@ class FakeProvider implements EmbeddingProvider {
   async embed(texts: string[]): Promise<number[][]> {
     return texts.map((t) => {
       const v = new Array(this.dimensions).fill(0) as number[];
-      for (let i = 0; i < t.length; i++) v[i % this.dimensions] += t.charCodeAt(i);
+      for (let i = 0; i < t.length; i++) {
+        v[i % this.dimensions] = (v[i % this.dimensions] ?? 0) + t.charCodeAt(i);
+      }
       const norm = Math.hypot(...v) || 1;
       return v.map((x) => x / norm);
     });
@@ -47,7 +49,10 @@ describe('rememberAction (#)', () => {
   });
 
   it('scope=global stores under the reserved global session', async () => {
-    const r = await rememberAction(memory, { content: 'Prefer pnpm in all repos.', scope: 'global' });
+    const r = await rememberAction(memory, {
+      content: 'Prefer pnpm in all repos.',
+      scope: 'global',
+    });
     expect(r).toMatchObject({ scope: 'global' });
     const g = memory.store.getSessionByExternalId('__global__');
     const rows = memory.store.listObservations({ sessionId: g?.id });

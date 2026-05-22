@@ -299,7 +299,11 @@ describe('cmdProject — set / cwd / skip / status (hermetic, tmp ABS_HOME)', ()
   it('promote moves an observation into the global brain', async () => {
     const mem = await openMemory(loadConfig(), { ensure: false });
     const sid = mem.store.createSession({ externalId: 's', project: '-Users-me-Devs-foo' });
-    const id = mem.store.createObservation({ sessionId: sid, kind: 'decision', content: 'monorepo via turborepo' });
+    const id = mem.store.createObservation({
+      sessionId: sid,
+      kind: 'decision',
+      content: 'monorepo via turborepo',
+    });
     mem.store.indexFts(id, 'monorepo via turborepo');
     mem.close();
 

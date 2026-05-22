@@ -315,8 +315,16 @@ describe('MemoryStore', () => {
     it('searchFts with includeGlobal returns project hits AND global hits, tagged by project', () => {
       const proj = store.createSession({ externalId: 'p1', project: '-Users-me-Devs-foo' });
       const glob = store.createSession({ externalId: '__global__', project: '__global__' });
-      const o1 = store.createObservation({ sessionId: proj, kind: 'note', content: 'kangaroo project fact' });
-      const o2 = store.createObservation({ sessionId: glob, kind: 'decision', content: 'kangaroo global rule' });
+      const o1 = store.createObservation({
+        sessionId: proj,
+        kind: 'note',
+        content: 'kangaroo project fact',
+      });
+      const o2 = store.createObservation({
+        sessionId: glob,
+        kind: 'decision',
+        content: 'kangaroo global rule',
+      });
       store.indexFts(o1, 'kangaroo project fact');
       store.indexFts(o2, 'kangaroo global rule');
 
@@ -324,23 +332,31 @@ describe('MemoryStore', () => {
       expect(scoped.map((h) => h.id)).toEqual([o1]);
 
       const withGlobal = store.searchFts('kangaroo', 10, '-Users-me-Devs-foo', true);
-      expect(withGlobal.map((h) => h.id).sort((a, b) => a - b)).toEqual([o1, o2].sort((a, b) => a - b));
+      expect(withGlobal.map((h) => h.id).sort((a, b) => a - b)).toEqual(
+        [o1, o2].sort((a, b) => a - b),
+      );
       expect(withGlobal.find((h) => h.id === o2)?.project).toBe('__global__');
     });
 
     it('moveObservationToSession re-links an observation to another session', () => {
       const a = store.createSession({ externalId: 'a', project: '-Users-me-Devs-foo' });
       const b = store.createSession({ externalId: '__global__', project: '__global__' });
-      const id = store.createObservation({ sessionId: a, kind: 'decision', content: 'use RAP for S4' });
+      const id = store.createObservation({
+        sessionId: a,
+        kind: 'decision',
+        content: 'use RAP for S4',
+      });
       store.indexFts(id, 'use RAP for S4');
 
       store.moveObservationToSession(id, b);
 
       expect(store.getObservation(id)?.sessionId).toBe(b);
-      expect(store.searchFts('RAP', 10, '-Users-me-Devs-foo', true).find((h) => h.id === id)?.project).toBe(
-        '__global__',
-      );
-      expect(store.searchFts('RAP', 10, '-Users-me-Devs-foo').find((h) => h.id === id)).toBeUndefined();
+      expect(
+        store.searchFts('RAP', 10, '-Users-me-Devs-foo', true).find((h) => h.id === id)?.project,
+      ).toBe('__global__');
+      expect(
+        store.searchFts('RAP', 10, '-Users-me-Devs-foo').find((h) => h.id === id),
+      ).toBeUndefined();
     });
 
     it('reindex replaces prior FTS content for the same row', () => {

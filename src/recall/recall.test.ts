@@ -140,8 +140,16 @@ describe('Recall.recallFts — FTS-only fast path (#19 / ADR-0005)', () => {
     const recall = new Recall(store, new ExplodingProvider());
     const proj = store.createSession({ externalId: 'p', project: '-Users-me-Devs-foo' });
     const glob = store.createSession({ externalId: '__global__', project: '__global__' });
-    const op = store.createObservation({ sessionId: proj, kind: 'note', content: 'zebra project note' });
-    const og = store.createObservation({ sessionId: glob, kind: 'decision', content: 'zebra global decision' });
+    const op = store.createObservation({
+      sessionId: proj,
+      kind: 'note',
+      content: 'zebra project note',
+    });
+    const og = store.createObservation({
+      sessionId: glob,
+      kind: 'decision',
+      content: 'zebra global decision',
+    });
     store.indexFts(op, 'zebra project note');
     store.indexFts(og, 'zebra global decision');
 
