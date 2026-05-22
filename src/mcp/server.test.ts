@@ -37,12 +37,17 @@ function parse(result: unknown): unknown {
 
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), 'abs-mcp-'));
+  // Store-wide recall by default for these tests; the project-isolation test passes
+  // an explicit `project` arg so it is unaffected by this. (The recall handler reads
+  // ABS_RECALL_SCOPE from the live env, not the test's config literal.)
+  process.env.ABS_RECALL_SCOPE = 'global';
   mem = await openMemory(config());
   __clearDeleteCacheForTests();
 });
 
 afterEach(() => {
   mem.close();
+  delete process.env.ABS_RECALL_SCOPE;
   rmSync(dir, { recursive: true, force: true });
 });
 

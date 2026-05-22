@@ -27,6 +27,7 @@ import {
   generateOptimizations,
   type OptimizeCandidate,
 } from '../optimize/index.js';
+import { resolveRecallProject } from '../recall/index.js';
 import { VERSION } from '../version.js';
 
 /** Default external session id used when a `remember` call omits one. */
@@ -74,16 +75,20 @@ export function createMcpServer(memory: Memory): McpServer {
       },
     },
     async ({ query, limit, project }) => {
-      // Explicit `project` wins; otherwise scope to the current session's stored
-      // project under project-scope, or store-wide under global-scope (#47). An
-      // empty-string arg is treated as "no explicit project" (not a zero-match filter).
-      let scopeProject = project && project.length > 0 ? project : undefined;
-      if (scopeProject === undefined && loadConfig().recallScope === 'project') {
-        const sid = process.env.CLAUDE_CODE_SESSION_ID;
-        scopeProject = sid
-          ? (memory.store.getSessionByExternalId(sid)?.project ?? undefined)
-          : undefined;
-      }
+      // Explicit `project` wins (empty string = "no explicit project", not a
+      // zero-match filter). Otherwise resolve the scope from the session BINDING
+      // first, then the stored row, then the cwd slug (#47 `resolveRecallProject`)
+      // — a freshly-written `set_session_project` binding whose row isn't updated
+      // yet is honored, so recall can't leak store-wide before the next ingest
+      // (Codex review on #47). Under ABS_RECALL_SCOPE=global → undefined → store-wide.
+      const explicit = project && project.length > 0 ? project : undefined;
+      const scopeProject =
+        explicit ??
+        resolveRecallProject(memory.store, {
+          scope: loadConfig().recallScope,
+          sessionId: process.env.CLAUDE_CODE_SESSION_ID,
+          cwd: process.cwd(),
+        });
       const hits = await memory.recall.recall(query, { limit, project: scopeProject });
       return jsonContent(
         hits.map((h) => ({

@@ -52,6 +52,7 @@ describe('renderPicker (#52, F5)', () => {
     expect(block).toContain('set_session_project');
     expect(block).toContain('session="sess-1"');
     expect(block).toContain('SKIP');
+    expect(block).toContain('confirmDelete=true'); // skip-with-stored-obs second call (Codex P1)
     expect(block).toContain('"-Users-me-Devs-foo"'); // auto slug suggestion
     expect(block).toContain('"foo"'); // basename new-name suggestion
     expect(block).toContain('"Alpha"'); // existing project listed

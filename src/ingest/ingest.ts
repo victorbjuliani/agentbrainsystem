@@ -152,7 +152,13 @@ function resolveSession(
   }
 
   if (binding?.action === 'set') {
-    const id = memory.store.setSessionProject(externalId, binding.project);
+    // Carry the cwd hint on the create-on-miss path so a `set` binding that fires
+    // before the first ingest still records `meta.cwd` like the normal create.
+    const id = memory.store.setSessionProject(
+      externalId,
+      binding.project,
+      cwd ? { cwd } : undefined,
+    );
     cache.set(externalId, id);
     return id;
   }
