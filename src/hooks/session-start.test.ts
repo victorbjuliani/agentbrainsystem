@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { handleSessionStart, renderBaseline, renderPicker } from './session-start.js';
+import { handleSessionStart, renderBaseline, renderNotice } from './session-start.js';
 
 /** Extract the injected additionalContext from a SessionStart hook output line. */
 function injected(line: string | undefined): string {
@@ -46,69 +46,68 @@ describe('handleSessionStart', () => {
   });
 });
 
-describe('renderPicker (#52, F5)', () => {
-  it('emits an imperative instruction naming the MCP tool + the explicit session id', () => {
-    const block = renderPicker('sess-1', '/Users/me/Devs/foo', ['Alpha', 'Beta']);
+describe('renderNotice (memory transparency)', () => {
+  it('names the folder, instructs telling the user once, and gives the MCP skip path', () => {
+    const block = renderNotice('sess-1', '/Users/me/Devs/foo');
+    expect(block).toContain('"foo"'); // the folder name (basename of cwd)
+    expect(block).toContain('saved'); // it WILL be saved (default)
+    expect(block).toContain('ONCE'); // tell the user once
     expect(block).toContain('set_session_project');
     expect(block).toContain('session="sess-1"');
-    expect(block).toContain('SKIP');
-    expect(block).toContain('confirmDelete=true'); // skip-with-stored-obs second call (Codex P1)
-    expect(block).toContain('"-Users-me-Devs-foo"'); // auto slug suggestion
-    expect(block).toContain('"foo"'); // basename new-name suggestion
-    expect(block).toContain('"Alpha"'); // existing project listed
+    expect(block).toContain('skip');
+    // No project-name choice is offered anymore (folder is the project).
+    expect(block).not.toContain('new name');
+    expect(block).not.toContain('action="set"');
   });
 
-  it('returns nothing without a session id (fail-safe — no unfulfillable instruction)', () => {
-    expect(renderPicker('', '/x', [])).toBe('');
+  it('returns nothing without a session id (no fulfillable skip instruction)', () => {
+    expect(renderNotice('', '/Users/me/Devs/foo')).toBe('');
   });
 
-  it('renders without cwd-derived suggestions when cwd is absent', () => {
-    const block = renderPicker('sess-2', undefined, []);
-    expect(block).toContain('set_session_project');
-    expect(block).not.toContain('working dir');
+  it('returns nothing without a cwd (cannot name the project)', () => {
+    expect(renderNotice('sess-2', undefined)).toBe('');
   });
 });
 
-describe('handleSessionStart — project picker (#52)', () => {
-  const pickerFacts = {
+describe('handleSessionStart — memory notice', () => {
+  const noticeFacts = {
     sessions: 1,
     observations: 5,
     pending: 0,
     flagged: false,
-    projects: ['Alpha'],
     hasBinding: false,
   };
 
-  it('injects the picker when a session id is present and no binding exists', async () => {
+  it('injects the notice when a session id + cwd are present and no binding exists', async () => {
     const line = await handleSessionStart(
       { sessionId: 'sess-1', cwd: '/Users/me/Devs/foo', source: 'startup' },
-      { gatherFacts: async () => pickerFacts },
+      { gatherFacts: async () => noticeFacts },
     );
     const ctx = injected(line);
     expect(ctx).toContain('persistent memory active'); // baseline still present
-    expect(ctx).toContain('set_session_project'); // picker present
+    expect(ctx).toContain('"foo"'); // notice names the folder
     expect(ctx).toContain('session="sess-1"');
   });
 
-  it('suppresses the picker when a binding already exists (idempotent on resume)', async () => {
+  it('suppresses the notice when a binding already exists (decision made)', async () => {
     const line = await handleSessionStart(
       { sessionId: 'sess-1', cwd: '/Users/me/Devs/foo', source: 'resume' },
-      { gatherFacts: async () => ({ ...pickerFacts, hasBinding: true }) },
+      { gatherFacts: async () => ({ ...noticeFacts, hasBinding: true }) },
     );
     const ctx = injected(line);
     expect(ctx).toContain('persistent memory active');
-    expect(ctx).not.toContain('set_session_project');
+    expect(ctx).not.toContain('saved to');
   });
 
-  it('suppresses the picker when the payload has no session id (fail-safe)', async () => {
+  it('suppresses the notice when the payload has no session id (fail-safe)', async () => {
     const line = await handleSessionStart(
       { cwd: '/Users/me/Devs/foo', source: 'startup' },
-      { gatherFacts: async () => pickerFacts },
+      { gatherFacts: async () => noticeFacts },
     );
     expect(injected(line)).not.toContain('set_session_project');
   });
 
-  it('still injects the picker on a brand-new (empty) store', async () => {
+  it('still injects the notice on a brand-new (empty) store', async () => {
     const line = await handleSessionStart(
       { sessionId: 'sess-new', cwd: '/Users/me/Devs/foo', source: 'startup' },
       {
@@ -117,13 +116,12 @@ describe('handleSessionStart — project picker (#52)', () => {
           observations: 0,
           pending: 0,
           flagged: false,
-          projects: [],
           hasBinding: false,
         }),
       },
     );
     const ctx = injected(line);
     expect(ctx).not.toContain('persistent memory active'); // empty store → no baseline
-    expect(ctx).toContain('set_session_project'); // but the picker still fires
+    expect(ctx).toContain('"foo"'); // but the notice still fires
   });
 });

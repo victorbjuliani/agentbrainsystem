@@ -111,6 +111,18 @@ export function writeBinding(
 }
 
 /**
+ * Remove a session's decision binding (e.g. the user reverts a `skip`), so the
+ * session falls back to the default — stored under its folder (cwd). Returns
+ * whether a binding was actually present and removed.
+ */
+export function clearBinding(store: MemoryStore, externalId: string): boolean {
+  const key = bindingKey(externalId);
+  if (store.getMeta(key) === null) return false;
+  store.deleteMeta(key);
+  return true;
+}
+
+/**
  * Read the decision binding for a session, or `null` when absent, expired, or
  * malformed. A `set` binding older than {@link SET_BINDING_TTL_MS} is lazily
  * expired (deleted, returns `null`); a `set` binding with an empty/missing project

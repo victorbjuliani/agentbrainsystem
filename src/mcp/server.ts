@@ -20,7 +20,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { loadConfig } from '../config.js';
 import { DeleteRefusalError, type DeleteSelector, execute, preview } from '../delete/index.js';
-import { defaultClaudeProjectsDir, sanitizeProjectName, writeBinding } from '../ingest/index.js';
+import { clearBinding, defaultClaudeProjectsDir, writeBinding } from '../ingest/index.js';
 import { type Memory, openMemory } from '../memory.js';
 import {
   applyApprovedCandidate,
@@ -336,19 +336,18 @@ export function createMcpServer(memory: Memory): McpServer {
   server.registerTool(
     'set_session_project',
     {
-      title: 'Set this session’s project',
+      title: 'Skip or include this session in memory',
       description:
-        "Record which project the CURRENT session is filed under (or skip it), as the user chose. action='set' needs a project name (sanitized); action='skip' excludes the session from memory. Pass `session` (the id from the SessionStart picker); if omitted it falls back to CLAUDE_CODE_SESSION_ID, which MAY bind the wrong session if the server is shared. SKIP IS IRREVERSIBLE: it hard-deletes any already-stored observations for the session — that delete only runs with confirmDelete=true (export first via `abs export`); otherwise it returns a preview with the count.",
+        "Decide whether the CURRENT session is saved to memory. The project is ALWAYS the session's folder (its cwd) — there is no name to choose. action='skip' excludes the session from memory; action='include' reverts a prior skip so it is saved under its folder again. Pass `session` (the id from the SessionStart notice); if omitted it falls back to CLAUDE_CODE_SESSION_ID, which MAY bind the wrong session if the server is shared. SKIP IS IRREVERSIBLE: it hard-deletes any already-stored observations for the session — that delete only runs with confirmDelete=true (export first via `abs export`); otherwise it returns a preview with the count.",
       inputSchema: {
         action: z
-          .enum(['set', 'skip'])
-          .describe("'set' to file under a project, 'skip' to exclude."),
-        project: z.string().optional().describe("Project label (required for action='set')."),
+          .enum(['skip', 'include'])
+          .describe("'skip' to exclude this session from memory, 'include' to revert a skip."),
         session: z
           .string()
           .optional()
           .describe(
-            'The current session id (from the picker). Falls back to CLAUDE_CODE_SESSION_ID.',
+            'The current session id (from the notice). Falls back to CLAUDE_CODE_SESSION_ID.',
           ),
         confirmDelete: z
           .boolean()
@@ -366,43 +365,36 @@ export function createMcpServer(memory: Memory): McpServer {
 
 /** Arguments accepted by {@link setSessionProjectAction}. */
 export interface SetSessionProjectArgs {
-  action: 'set' | 'skip';
-  project?: string;
+  action: 'skip' | 'include';
   session?: string;
   confirmDelete?: boolean;
 }
 
 /**
  * Core of the `set_session_project` MCP tool (#52, F6), extracted for direct
- * testing. Mirrors `abs project` (#51): sanitize the label, write the binding,
- * and gate the IRREVERSIBLE skip-delete behind `confirmDelete` (the MCP analog of
- * the CLI's `--yes`; ADR-0008). Session id comes from `session` (preferred — the
- * picker passes it) or `CLAUDE_CODE_SESSION_ID` (last resort). Read-only store
- * lookups (`getSessionByExternalId`/`listObservations`) never mint a session row.
+ * testing. The project is always the session's folder (the cwd) — there is no name
+ * to choose — so this only decides skip vs include. `include` clears a prior skip
+ * binding (back to the default: stored under the folder); `skip` excludes the
+ * session, gating the IRREVERSIBLE delete of already-stored observations behind
+ * `confirmDelete` (the MCP analog of the CLI's `--yes`; ADR-0008). Session id comes
+ * from `session` (preferred — the notice passes it) or `CLAUDE_CODE_SESSION_ID`
+ * (last resort). Read-only store lookups never mint a session row.
  */
 export function setSessionProjectAction(
   memory: Memory,
-  { action, project, session, confirmDelete }: SetSessionProjectArgs,
+  { action, session, confirmDelete }: SetSessionProjectArgs,
 ): Record<string, unknown> {
   const sid = session ?? process.env.CLAUDE_CODE_SESSION_ID;
   if (!sid) {
     return {
       error:
-        'no session id — pass `session` (from the SessionStart picker) or set CLAUDE_CODE_SESSION_ID',
+        'no session id — pass `session` (from the SessionStart notice) or set CLAUDE_CODE_SESSION_ID',
     };
   }
 
-  if (action === 'set') {
-    if (project === undefined) {
-      return { error: "action='set' requires a `project` name" };
-    }
-    const clean = sanitizeProjectName(project);
-    if (clean === null) {
-      return { error: `'${project}' is not a usable project name after sanitizing` };
-    }
-    const kind = memory.store.listProjects().includes(clean) ? 'existing' : 'new';
-    writeBinding(memory.store, sid, { action: 'set', project: clean });
-    return { session: sid, action: 'set', project: clean, kind, applied: true };
+  if (action === 'include') {
+    const cleared = clearBinding(memory.store, sid);
+    return { session: sid, action: 'include', cleared, applied: true };
   }
 
   // skip — gate the IRREVERSIBLE delete of already-stored observations.
