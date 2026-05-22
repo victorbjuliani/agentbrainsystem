@@ -118,7 +118,10 @@ function surfaceDecisions(
     .slice(0, MAX_DECISIONS);
   if (decisions.length === 0) return undefined;
 
-  const lines = decisions.map((h) => `- [${h.observation.kind}] ${oneLine(h.observation.content)}`);
+  const lines = decisions.map(
+    (h) =>
+      `- [${h.observation.kind}${h.global ? ' 🌐global' : ''}] ${oneLine(h.observation.content)}`,
+  );
   // The bullets are recalled from transcripts (attacker-influenceable), so fence
   // them as DATA, not instructions — same prompt-injection hygiene as the
   // UserPromptSubmit recall block.

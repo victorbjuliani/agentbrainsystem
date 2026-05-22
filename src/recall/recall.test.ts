@@ -89,6 +89,34 @@ describe('Recall — semantic acceptance', () => {
     mem.close();
   });
 
+  it('hybrid recall with includeGlobal surfaces global-brain hits alongside the project (#)', async () => {
+    const mem = await openMemory(config());
+    const a = mem.store.createSession({ externalId: 'a', project: 'ProjA' });
+    const g = mem.store.createSession({ externalId: '__global__', project: '__global__' });
+    await mem.indexer.write({ sessionId: a, kind: 'note', content: 'ProjA: deploy on fridays' });
+    await mem.indexer.write({
+      sessionId: g,
+      kind: 'decision',
+      content: 'Global rule: always write tests first',
+    });
+
+    // Scoped to ProjA WITHOUT includeGlobal → the global decision must not surface.
+    const scoped = await mem.recall.recall('always write tests first', {
+      limit: 5,
+      project: 'ProjA',
+    });
+    expect(scoped.some((h) => h.observation.content.includes('always write tests'))).toBe(false);
+
+    // Scoped to ProjA WITH includeGlobal → the global decision surfaces.
+    const withGlobal = await mem.recall.recall('always write tests first', {
+      limit: 5,
+      project: 'ProjA',
+      includeGlobal: true,
+    });
+    expect(withGlobal.some((h) => h.observation.content.includes('always write tests'))).toBe(true);
+    mem.close();
+  });
+
   it('matches on keyword overlap even when phrasing differs', async () => {
     const mem = await openMemory(config());
     await seed(mem);

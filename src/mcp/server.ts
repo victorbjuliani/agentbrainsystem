@@ -90,7 +90,14 @@ export function createMcpServer(memory: Memory): McpServer {
           sessionId: process.env.CLAUDE_CODE_SESSION_ID,
           cwd: process.cwd(),
         });
-      const hits = await memory.recall.recall(query, { limit, project: scopeProject });
+      // includeGlobal: the curated cross-project global brain is recalled alongside
+      // the project (no-op when already store-wide). Keeps the MCP pull path in sync
+      // with the per-prompt hook injection.
+      const hits = await memory.recall.recall(query, {
+        limit,
+        project: scopeProject,
+        includeGlobal: true,
+      });
       return jsonContent(
         hits.map((h) => ({
           id: h.observation.id,
