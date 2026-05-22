@@ -3,7 +3,8 @@
 > Documento canônico de identidade visual. Lido por `frontend-design`, `frontend-auditor`, `vercel:shadcn`.
 > Atualizar via `design-discovery` em modo REFRESH quando references mudarem.
 
-**Última atualização:** 2026-05-21 (#35/#43: `lesson`/`decision` deixam de ser reservados — pills habilitam quando presentes, nós fixados em view via `mergePinnedConsolidated`; busca server-side por FTS (`mode:'search'`) os alcança store-wide, substituindo o highlight client-side; escopo da UI revisado para refletir o write-path de delete gated, ADR-0007)
+**Última atualização:** 2026-05-22 (P0/P1 chrome: a UI abre na **constelação store-wide com similaridade ON** (não na sessão recente, que renderizava quase vazia); o toggle "top 200" virou um **segmented control "sessão · tudo"** (o cap 200 é interno, nunca exposto); pills de tipo ausentes ficam **escondidas** (não esmaecidas) e o clique **isola** o tipo (re-clique restaura, modifier = aditivo); o **inspector ancora abaixo** da barra de busca/tema para não cobri-la; linha de status em cor neutra, não amber)
+**Atualizações anteriores:** 2026-05-21 (#35/#43: `lesson`/`decision` deixam de ser reservados — pills habilitam quando presentes, nós fixados em view via `mergePinnedConsolidated`; busca server-side por FTS (`mode:'search'`) os alcança store-wide, substituindo o highlight client-side; escopo da UI revisado para refletir o write-path de delete gated, ADR-0007)
 **Modo de captura:** initial + refresh parcial (§4/§11)
 **Status do recon:** completo (Obsidian, Observable, Neo4j Bloom — tokens computados extraídos via agent-browser)
 **Escopo primário:** issue #11 — UI localhost de grafo interativo (read-only) da memória do agente.
@@ -272,8 +273,9 @@ Spec específica do grafo — o que `frontend-design` constrói e `frontend-audi
 - Full-bleed; zoom/pan livres.
 
 ### Overlays / chrome (mínimos, flutuantes)
-- **Inspector de nó** (ao selecionar): painel lateral compact, surface `--neutral-800` (dark) com hairline luminoso e `--glow-md`. Mostra metadados crus em mono.
-- **Filtros por tipo:** pills (full radius) coloridas pela taxonomia, canto superior; toggle on/off de tipos.
+- **Escopo (segmented "sessão · tudo"):** dois botões `aria-pressed` num `.segmented`, canto superior esquerdo. "tudo" = constelação store-wide (`topN`, **default de abertura** com similaridade ON); "sessão" = a sessão em foco (clique num hub) ou a mais recente. O cap de 200 nós é interno (`scope.ts` `TOP_N`) — nunca exposto na chrome. Substitui o antigo botão "top 200".
+- **Inspector de nó** (ao selecionar): painel lateral compact, surface `--neutral-800` (dark) com hairline luminoso e `--glow-md`. Mostra metadados crus em mono. **Ancora abaixo da barra de busca/tema** (offset `--topbar-h`) para nunca cobri-la.
+- **Filtros por tipo:** pills (full radius) coloridas pela taxonomia, canto inferior esquerdo. Tipos **ausentes do payload ficam escondidos** (não esmaecidos — sem pills mortas). Clique **isola** o tipo (mostra só ele); re-clique no isolado **restaura** todos os presentes; clique com modificador (cmd/ctrl/shift) é o toggle **aditivo** on/off. A lente de tipos reseta para "todos os presentes" a cada carga de escopo. Set-math pura em `src/ui/client/visible-types.ts`.
 - **Search/recall:** input mono que dispara uma busca **server-side store-wide** (FTS, `mode:'search'`) — alcança nós fora da janela de recência/escopo e renderiza só os matches (#35). Sem hit, mostra estado "nenhum resultado" distinto do "memory is empty".
 - **Theme toggle** dark/light.
 - Controles flutuam sobre o canvas com leve `backdrop-blur` — nunca uma top-bar opaca que come o canvas.

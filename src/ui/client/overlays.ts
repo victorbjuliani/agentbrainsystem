@@ -3,10 +3,13 @@
  * top-bar that eats the canvas — they float with backdrop-blur over the graph.
  *
  * Pieces:
- *   - Type-filter pills (colored by taxonomy; dimmed when absent from the payload).
+ *   - Type-filter pills (colored by taxonomy; hidden when absent from the payload).
+ *     A click isolates a type; clicking it again restores all; modifier-click is the
+ *     additive on/off toggle. The set-math lives in the pure `visible-types` module.
  *   - Search input (mono) driving a store-wide server search (#35).
- *   - Scope controls: store-wide project picker / topN toggle + similarity toggle.
- *     (A graph-node click focuses a single session — there is no session dropdown.)
+ *   - Scope controls: store-wide project picker + "sessão · tudo" segmented control
+ *     + similarity toggle. (A graph-node click focuses a single session — there is
+ *     no session dropdown.)
  *   - Inspector (on select): compact mono metadata panel, glow-md surface.
  *   - Theme toggle (dark/light).
  *   - Truncation banner ("showing N of M") when a cap clipped the graph.
@@ -15,12 +18,14 @@
  * visible focus ring from app.css. No business logic lives here — callbacks bubble
  * intent up to main.ts (the container).
  */
-import type { GraphData, GraphMeta, GraphNode, NodeType } from '../graph-types.js';
+import type { GraphData, GraphMeta, NodeType } from '../graph-types.js';
 import { TAXONOMY } from './palette.js';
 import type { ScopeMode, Theme, ViewNode } from './types.js';
+import { nextVisibleTypes, presentTypes } from './visible-types.js';
 
 export interface OverlayCallbacks {
-  onToggleType(type: NodeType, enabled: boolean): void;
+  /** The full target visible-type set after a pill interaction (isolate/restore/toggle). */
+  onSetVisibleTypes(types: NodeType[]): void;
   onSearch(query: string): void;
   /** "Delete the N matching" affordance on the search box (ADR-0007 write path). */
   onSearchDelete(): void;
@@ -78,11 +83,41 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
     class: 'control select',
     'aria-label': 'Escopo: projeto a exibir',
   });
-  const topNBtn = el(
+  // Scope segmented control: "sessão" (the focused/most-recent session) vs "tudo"
+  // (the store-wide constellation = topN mode). Replaces the old "top 200" button —
+  // the 200 cap is an implementation detail, never surfaced (DESIGN §11). Two
+  // aria-pressed buttons (same pattern as the pills), no radiogroup, so there is no
+  // roving-tabindex contract to honor.
+  const scopeSessionBtn = el(
     'button',
-    { type: 'button', class: 'control toggle', 'aria-pressed': 'false' },
-    ['top 200'],
+    {
+      type: 'button',
+      class: 'seg-btn',
+      'aria-pressed': 'false',
+      'aria-label': 'Escopo: só a sessão em foco',
+    },
+    ['sessão'],
   );
+  const scopeAllBtn = el(
+    'button',
+    {
+      type: 'button',
+      class: 'seg-btn',
+      'aria-pressed': 'true',
+      'aria-label': 'Escopo: toda a memória (constelação)',
+    },
+    ['tudo'],
+  );
+  const scopeSeg = el(
+    'div',
+    { class: 'segmented', role: 'group', 'aria-label': 'Escopo do grafo' },
+    [scopeSessionBtn, scopeAllBtn],
+  );
+  /** Reflect the current `mode` onto the two segmented buttons. */
+  function syncScopeButtons(): void {
+    scopeSessionBtn.setAttribute('aria-pressed', String(mode === 'session'));
+    scopeAllBtn.setAttribute('aria-pressed', String(mode === 'topN'));
+  }
   const simBtn = el(
     'button',
     {
@@ -94,13 +129,20 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
     ['similaridade'],
   );
 
-  let mode: ScopeMode = 'session';
-  let similarity = false;
+  // Defaults match the container's opening scope (main.ts): the store-wide
+  // constellation with similarity edges. syncFromData reconciles both to the
+  // server's resolved truth after the first fetch.
+  let mode: ScopeMode = 'topN';
+  let similarity = true;
   let project: string | undefined;
   // The session a graph-node click focused (session mode). It lives here, kept in
   // step with the server's resolved scope by syncFromData, so toggling similarity
   // or exiting/entering scope never silently drops a focused session.
   let focusedSessionId: number | undefined;
+  // Pill lens mirrors, kept in step with the container by syncFromData. `present` is
+  // the types in the current payload; `visible` is the active subset the pills show.
+  let presentMirror = new Set<NodeType>();
+  let visibleMirror = new Set<NodeType>();
 
   function emitScope(): void {
     // A scope change exits search (#35): clear the box so it never shows a stale
@@ -127,18 +169,21 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
     project = projectSelect.value || undefined;
     mode = 'topN';
     focusedSessionId = undefined;
-    topNBtn.setAttribute('aria-pressed', 'true');
+    syncScopeButtons();
     emitScope();
   });
-  topNBtn.addEventListener('click', () => {
-    // Toggle off the VISIBLE button state, not the internal `mode` — a search
-    // unpresses the button via syncFromData while leaving `mode` stale, so reading
-    // `mode` here would mis-toggle (topN→session) when exiting search (#42 P2).
-    const pressed = topNBtn.getAttribute('aria-pressed') === 'true';
-    mode = pressed ? 'session' : 'topN';
-    // Untoggling topN drops to the default (most-recent) session view, not a stale focus.
-    if (mode === 'session') focusedSessionId = undefined;
-    topNBtn.setAttribute('aria-pressed', String(mode === 'topN'));
+  scopeAllBtn.addEventListener('click', () => {
+    if (mode === 'topN') return; // already on the constellation
+    mode = 'topN';
+    syncScopeButtons();
+    emitScope();
+  });
+  scopeSessionBtn.addEventListener('click', () => {
+    // "sessão" drops to the focused session, or the most-recent one (server default)
+    // when nothing is focused — never a stale topN-era focus.
+    mode = 'session';
+    focusedSessionId = undefined;
+    syncScopeButtons();
     emitScope();
   });
   simBtn.addEventListener('click', () => {
@@ -155,7 +200,7 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
       el('span', { class: 'brand-name' }, ['agentbrainsystem']),
       el('span', { class: 'brand-sub' }, ['memory graph']),
     ]),
-    el('div', { class: 'scope-row' }, [projectSelect, topNBtn, simBtn]),
+    el('div', { class: 'scope-row' }, [projectSelect, scopeSeg, simBtn]),
     truncBanner,
   ]);
 
@@ -227,10 +272,15 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
       },
       [swatch, el('span', { class: 'pill-label' }, [meta.label])],
     );
-    pill.addEventListener('click', () => {
-      const next = pill.getAttribute('aria-pressed') !== 'true';
-      pill.setAttribute('aria-pressed', String(next));
-      cb.onToggleType(meta.type, next);
+    pill.addEventListener('click', (ev) => {
+      // Plain click ISOLATES this type; clicking it again RESTORES all present.
+      // Modifier (cmd/ctrl/shift) keeps the additive on/off toggle for combining
+      // a few types. The pure module owns the set-math (and the never-empty guard).
+      const additive = ev.metaKey || ev.ctrlKey || ev.shiftKey;
+      visibleMirror = nextVisibleTypes(visibleMirror, meta.type, presentMirror, additive);
+      for (const [type, p] of pillMap)
+        p.setAttribute('aria-pressed', String(visibleMirror.has(type)));
+      cb.onSetVisibleTypes([...visibleMirror]);
     });
     pillMap.set(meta.type, pill as HTMLButtonElement);
     return pill;
@@ -337,6 +387,7 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
       if (data.scope.mode !== 'search') mode = data.scope.mode;
       focusedSessionId = data.scope.sessionId;
       project = data.scope.project;
+      similarity = data.scope.similarity;
 
       // Project picker — store-wide options from meta.projects (not the rendered
       // window). Lead with "todos os projetos" (clears the filter).
@@ -350,17 +401,21 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
         projectSelect.append(opt);
       }
 
-      // Reflect resolved scope onto the toggles.
-      topNBtn.setAttribute('aria-pressed', String(data.scope.mode === 'topN'));
+      // Reflect resolved scope onto the controls. In `search` mode the segmented
+      // retains its last non-search selection (mode is left untouched above), so it
+      // never shows a phantom "neither" state while a search payload is on screen.
+      syncScopeButtons();
       simBtn.setAttribute('aria-pressed', String(data.scope.similarity));
 
-      // Pills: enable only types present in this payload (DESIGN §4 — tool is conditional).
-      const present = new Set<NodeType>(data.nodes.map((n: GraphNode) => n.type));
+      // Pills: a load resets the type lens to everything PRESENT in this payload
+      // (mirrors the container's reset in main.ts `load`). Absent types are hidden
+      // outright (#43 — no perpetually-dimmed dead pills), not just dimmed.
+      presentMirror = presentTypes(data.nodes);
+      visibleMirror = new Set(presentMirror);
       for (const [type, pill] of pillMap) {
-        const has = present.has(type);
-        pill.classList.toggle('pill-absent', !has);
-        if (!has) pill.title = 'nenhum nó deste tipo no escopo atual';
-        else pill.removeAttribute('title');
+        const has = presentMirror.has(type);
+        pill.hidden = !has;
+        pill.setAttribute('aria-pressed', String(has));
       }
 
       // Truncation banner.

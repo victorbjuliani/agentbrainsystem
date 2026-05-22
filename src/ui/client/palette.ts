@@ -9,9 +9,9 @@ import type { NodeType } from '../graph-types.js';
 import type { TypeMeta } from './types.js';
 
 /**
- * Taxonomy in render/legend order. Every type is conditional: a pill is active
- * when the current payload holds nodes of that type and dims (`pill-absent`) when
- * it does not (see overlays `syncFromData`). `lesson`/`decision` are populated by
+ * Taxonomy in render/legend order. Every type is conditional: a pill shows when
+ * the current payload holds nodes of that type and is hidden outright when it does
+ * not (see overlays `syncFromData`). `lesson`/`decision` are populated by
  * `consolidate` (#12) and surface here once present (#35).
  */
 export const TAXONOMY: readonly TypeMeta[] = [

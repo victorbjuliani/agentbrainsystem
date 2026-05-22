@@ -43,6 +43,25 @@ export type Theme = 'dark' | 'light';
 /** Scope mode the UI currently requests (mirrors GraphScope['mode']). */
 export type ScopeMode = 'session' | 'topN';
 
+/**
+ * The scope the client currently asks the server to render. Lives here (not in
+ * main.ts) so the pure `scopeToQuery` projection (scope.ts) is testable without
+ * pulling the DOM/CSS-bound container module.
+ */
+export interface ScopeState {
+  mode: ScopeMode;
+  sessionId?: number;
+  similarity: boolean;
+  /** Store-wide project filter (topN mode only, #62-B). Undefined = all projects. */
+  project?: string;
+  /**
+   * Active store-wide search (#35). When set, it drives an authoritative server
+   * fetch (FTS) that reaches obs OUTSIDE the topN/session window, so it takes
+   * precedence over `mode`/`sessionId` in the query string.
+   */
+  search?: string;
+}
+
 /** Taxonomy entry for legend / filter pills (DESIGN §4 / §11). */
 export interface TypeMeta {
   type: NodeType;
