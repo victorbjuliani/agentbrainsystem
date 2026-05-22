@@ -1,38 +1,50 @@
-# agentbrainsystem — landing page
+<div align="center">
 
-This branch (`gh-pages`) **is** the live marketing site, served by GitHub Pages at
-**https://victorbjuliani.github.io/agentbrainsystem/**.
+<img src="assets/og-image.png" alt="agentbrainsystem — persistent memory for AI coding agents" width="760" />
 
-It is a **static site — no build step.** The files here are the source *and* the deploy.
-Edit them directly and push to update; GitHub Pages rebuilds in ~30–60s.
+<h3>Your AI coding agent has amnesia. Cure it in one command.</h3>
 
-## Files
+<p>
+<b>agentbrainsystem</b> is persistent memory for AI coding agents — it captures every Claude Code
+session and recalls what matters next time, so you stop re-explaining the same context every day.
+<b>100% local, $0, offline.</b> Your code never leaves your machine.
+</p>
 
-| File | Purpose |
-| --- | --- |
-| `index.html` | The page. English content is inline (source of truth for SEO / no-JS). |
-| `styles.css` | Design tokens mirror `docs/DESIGN.md` on `main` (violet `#8B5CF6`, deep `#0A0810`, glow as elevation). |
-| `app.js` | Client-side i18n (EN ⇄ PT-BR via `navigator.language` + toggle, `textContent` only — no `innerHTML`) and scroll reveal. |
-| `assets/` | Creature `.webp`, favicon set, `og-image.png` (1200×630), self-hosted fonts (Space Grotesk / Inter / JetBrains Mono). |
-| `robots.txt`, `sitemap.xml`, `.nojekyll` | SEO + Pages config. |
+<p>
+<a href="https://victorbjuliani.github.io/agentbrainsystem/"><img src="https://img.shields.io/badge/▶_visit_the_site-8B5CF6?style=for-the-badge" alt="Visit the site" /></a>
+<a href="https://github.com/victorbjuliani/agentbrainsystem"><img src="https://img.shields.io/badge/★_star_on_github-1A1825?style=for-the-badge&logo=github" alt="Star on GitHub" /></a>
+</p>
 
-## Preview locally
+</div>
 
-```bash
-python3 -m http.server 7799   # then open http://localhost:7799
-```
+---
 
-## i18n
+## What it does
 
-English lives inline in `index.html`; `app.js` holds the **PT-BR transcreation** (not a literal
-translation). To add a string: add a `data-i18n="key"` element in `index.html` (English text) and the
-matching `key` in the `pt` dictionary in `app.js`.
+- 🧠 **Recall that actually works** — hybrid semantic + keyword search returns only what's relevant to the task in front of you. `~4 ms p95` on the per-prompt hot path.
+- 🤫 **Set it once, forget it forever** — captures each session when it ends, feeds the right context back at the next start. One command, then it's invisible.
+- 🔒 **Your code never leaves your laptop** — 100% local and offline. No cloud, no account, no API keys, no telemetry. `$0`.
+- 🩹 **Verifiable, self-healing memory** — facts anchored to real code (`file:line@commit`), labeled ✓verified / ~claimed / ⚠stale, re-anchoring when code moves.
+- 🗂️ **Project-scoped** — memory from one project never leaks into another.
+- 🕸️ **Visual memory graph** — explore the agent's memory as a living graph in your browser (`abs ui`).
 
-## Notes
+## Get started
 
-- **Analytics:** GoatCounter (privacy-first, no cookies) — `agentbrainsystem.goatcounter.com`.
-- **SEO:** title/meta/canonical, Open Graph + Twitter cards, JSON-LD (`SoftwareApplication`), robots, sitemap.
-- **Brand:** bioluminescent jellyfish mascot; palette and tokens follow `docs/DESIGN.md` on `main`.
-- During development the working copy lived in `.worktrees/site/` on `main` (gitignored); this branch is the canonical copy.
+Full install, docs, and the source live in the main repository:
+
+**→ https://github.com/victorbjuliani/agentbrainsystem**
+
+The interactive site (this branch) lives at **https://victorbjuliani.github.io/agentbrainsystem/**.
+
+---
+
+<sub>
+
+**For maintainers** · This `gh-pages` branch *is* the static landing site (no build step) — edit
+`index.html` / `styles.css` / `app.js` and push; GitHub Pages rebuilds in ~30–60 s. English is the
+source of truth in `index.html`; `app.js` holds the PT-BR transcreation. Analytics: GoatCounter
+(privacy-first, no cookies). Brand tokens follow `docs/DESIGN.md` on `main`.
+
+</sub>
 
 MIT © 2026 Victor B. Juliani

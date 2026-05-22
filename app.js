@@ -25,7 +25,7 @@
     "feat.lead": "A cada sessão, ele recomeça do zero. O agentbrainsystem lembra — captura cada uma e faz recall do que importa, sem esforço.",
     "feat.1.h": "Recall que funciona de verdade",
     "feat.1.p": "Busca híbrida (semântica + keyword) devolve apenas o que é relevante para a tarefa atual — sem ruído.",
-    "feat.1.s": "recall em ~280 ms",
+    "feat.1.s": "recall em ~4 ms · p95",
     "feat.2.h": "Configure uma vez. Esqueça para sempre.",
     "feat.2.p": "Captura cada sessão ao terminar e devolve o contexto certo no próximo início. Um comando — depois fica invisível.",
     "feat.2.s": "$0 · sem LLM · hands-free",
