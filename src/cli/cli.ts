@@ -9,13 +9,21 @@
  */
 import { spawn } from 'node:child_process';
 import { platform } from 'node:os';
+import { basename } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { loadConfig } from '../config.js';
 import { consolidate } from '../consolidate/index.js';
 import { type DeleteSelector, executeIds, previewSelector } from '../delete/index.js';
 import { exportStore, importStore } from '../export/index.js';
 import { dispatchHook, installHooks } from '../hooks/index.js';
-import { defaultClaudeProjectsDir, ingestClaudeProjects } from '../ingest/index.js';
+import {
+  defaultClaudeProjectsDir,
+  ingestClaudeProjects,
+  readBinding,
+  type SessionBinding,
+  sanitizeProjectName,
+  writeBinding,
+} from '../ingest/index.js';
 import { createLlmProvider } from '../llm/index.js';
 import { startStdio } from '../mcp/index.js';
 import { openMemory } from '../memory.js';
@@ -25,6 +33,7 @@ import {
   generateOptimizations,
   type OptimizeCandidate,
 } from '../optimize/index.js';
+import { projectSlug } from '../optimize/targets.js';
 import { startUiServer } from '../ui/index.js';
 import { VERSION } from '../version.js';
 
@@ -63,6 +72,14 @@ Commands:
                         --search "q" [--limit N] (FTS keyword recall, no embedding).
                         Default is preview-only — nothing is deleted without --apply.
                         With --apply: per-id [y/N] confirmation (or --yes to skip prompts).
+  project [opts]        Set/confirm/skip the CURRENT session's project (deterministic;
+                        writes a decision binding applied at the next ingest). No args:
+                        show resolved session, auto slug, existing projects + suggestions.
+                        Exactly one action: --set "<name>" (link existing or create new),
+                        --cwd (accept the cwd-derived slug), --skip (exclude this session).
+                        Session id: CLAUDE_CODE_SESSION_ID, or --session <id> to override.
+                        --skip hard-deletes already-stored observations → requires --yes.
+                        --json for machine-readable output.
 
 Options:
   -h, --help            Show this help.
@@ -534,6 +551,176 @@ export async function cmdForget(args: string[]): Promise<void> {
   }
 }
 
+/**
+ * Resolve the current Claude Code session id for `abs project`. Authoritative
+ * source is `CLAUDE_CODE_SESSION_ID` (Claude Code sets it for the running
+ * session); an explicit `--session <id>` overrides it. There is deliberately NO
+ * "latest transcript" fallback — dispatched subagents write their own transcripts
+ * into the same project dir, so newest-by-mtime is often the wrong session.
+ */
+export function resolveSessionId(args: string[]): { id: string; source: 'flag' | 'env' } | null {
+  const explicit = optionValue(args, '--session');
+  if (explicit !== undefined && !explicit.startsWith('-')) return { id: explicit, source: 'flag' };
+  const env = process.env.CLAUDE_CODE_SESSION_ID;
+  if (env !== undefined && env.length > 0) return { id: env, source: 'env' };
+  return null;
+}
+
+export type ProjectAction =
+  | { kind: 'status' }
+  | { kind: 'set'; name: string }
+  | { kind: 'cwd' }
+  | { kind: 'skip' };
+
+/** Parse the single action from the flags. Exactly one of --set/--cwd/--skip (or status). */
+export function parseProjectAction(args: string[]): ProjectAction | { error: string } {
+  const actions: ProjectAction[] = [];
+  if (args.includes('--set')) {
+    const name = optionValue(args, '--set');
+    if (name === undefined || name.startsWith('-')) {
+      return { error: '--set requires a project name (e.g. --set "My Project")' };
+    }
+    actions.push({ kind: 'set', name });
+  }
+  if (args.includes('--cwd')) actions.push({ kind: 'cwd' });
+  if (args.includes('--skip')) actions.push({ kind: 'skip' });
+  if (actions.length > 1) return { error: 'choose exactly one of --set <name> | --cwd | --skip' };
+  return actions[0] ?? { kind: 'status' };
+}
+
+function describeBinding(b: SessionBinding): string {
+  return b.action === 'skip' ? 'skip (this session is excluded)' : `set → '${b.project}'`;
+}
+
+/**
+ * `abs project` — deterministically set/confirm/skip the current session's project
+ * (#51). The escape hatch that does not depend on Claude asking: it writes the
+ * decision binding (#50) keyed by the resolved session id, applied at the next
+ * ingest. `--skip` hard-deletes any already-stored observations for the session,
+ * so that destructive path is gated behind `--yes` (ADR-0008).
+ */
+export async function cmdProject(args: string[]): Promise<void> {
+  const json = args.includes('--json');
+  const action = parseProjectAction(args);
+  if ('error' in action) {
+    err(`error: ${action.error}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  const resolved = resolveSessionId(args);
+  if (resolved === null) {
+    err('error: no current session id — run inside a Claude Code session or pass --session <id>');
+    process.exitCode = 1;
+    return;
+  }
+  const sid = resolved.id;
+  const cwd = process.cwd();
+  const autoSlug = projectSlug(cwd);
+
+  const memory = await openMemory(loadConfig(), { ensure: false });
+  try {
+    if (action.kind === 'status') {
+      const existing = memory.store.listProjects();
+      const binding = readBinding(memory.store, sid);
+      const session = memory.store.getSessionByExternalId(sid);
+      if (json) {
+        out(
+          JSON.stringify(
+            {
+              session: sid,
+              sessionSource: resolved.source,
+              cwd,
+              autoProject: autoSlug,
+              suggestedName: basename(cwd),
+              storedProject: session?.project ?? null,
+              binding: binding ?? null,
+              existingProjects: existing,
+            },
+            null,
+            2,
+          ),
+        );
+        return;
+      }
+      out(`session:        ${sid} (${resolved.source})`);
+      out(`cwd:            ${cwd}`);
+      out(`auto project:   ${autoSlug}`);
+      out(`stored project: ${session?.project ?? '(not ingested yet)'}`);
+      out(
+        `binding:        ${binding ? describeBinding(binding) : '(none — auto-derivation applies)'}`,
+      );
+      out(`suggested name: ${basename(cwd)}`);
+      if (existing.length > 0) {
+        out('existing projects:');
+        for (const p of existing) out(`  ${p}`);
+      } else {
+        out('existing projects: (none)');
+      }
+      out('actions:');
+      out(`  --cwd                accept the auto project slug above (${autoSlug})`);
+      out(
+        `  --set "<name>"       link/create a label, e.g. --set "${basename(cwd)}" (the suggested name)`,
+      );
+      out('  --skip               exclude this session (--yes to also delete already-stored obs)');
+      out('  (add --session <id> when running outside a Claude Code session)');
+      return;
+    }
+
+    if (action.kind === 'set' || action.kind === 'cwd') {
+      const rawName = action.kind === 'cwd' ? autoSlug : action.name;
+      const clean = sanitizeProjectName(rawName);
+      if (clean === null) {
+        err(`error: '${rawName}' is not a usable project name after sanitizing`);
+        process.exitCode = 1;
+        return;
+      }
+      const existed = memory.store.listProjects().includes(clean);
+      writeBinding(memory.store, sid, { action: 'set', project: clean });
+      const note = existed ? 'existing' : 'new';
+      if (json) {
+        out(JSON.stringify({ session: sid, action: 'set', project: clean, kind: note }));
+      } else {
+        out(`bound session ${sid} → project '${clean}' (${note}). Applies on next ingest.`);
+      }
+      return;
+    }
+
+    // skip — gate the hard delete of any already-stored observations behind --yes.
+    const existing = memory.store.getSessionByExternalId(sid);
+    const storedCount = existing
+      ? previewSelector(memory, { bySession: existing.id }).ids.length
+      : 0;
+    if (storedCount > 0 && !args.includes('--yes')) {
+      if (json) {
+        out(
+          JSON.stringify({
+            session: sid,
+            action: 'skip',
+            wouldDelete: storedCount,
+            applied: false,
+          }),
+        );
+      } else {
+        out(
+          `skip would HARD-DELETE ${storedCount} stored observation(s) for session ${sid} (IRREVERSIBLE).`,
+        );
+        out('export first (abs export); re-run with --yes to confirm skip + delete.');
+      }
+      return; // nothing written without confirmation
+    }
+    writeBinding(memory.store, sid, { action: 'skip' });
+    if (json) {
+      out(JSON.stringify({ session: sid, action: 'skip', deleted: storedCount, applied: true }));
+    } else {
+      const tail = storedCount > 0 ? ` Deleted ${storedCount} stored observation(s).` : '';
+      out(`session ${sid} marked skip — not stored.${tail}`);
+    }
+  } finally {
+    memory.close();
+  }
+}
+
 /** Read the value following a `--flag` token. */
 function optionValue(args: string[], flag: string): string | undefined {
   const i = args.indexOf(flag);
@@ -581,6 +768,8 @@ async function main(): Promise<void> {
       return cmdOptimize(rest);
     case 'forget':
       return cmdForget(rest);
+    case 'project':
+      return cmdProject(rest);
     default:
       err(`unknown command '${command}'\n`);
       err(USAGE);
