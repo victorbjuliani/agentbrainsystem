@@ -6,7 +6,7 @@
  *
  * All against an isolated temp HOME/ABS_HOME; the real store is never touched.
  */
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { abs, type E2EHome, FIXTURES_PROJECTS, makeHome, mcpClient, parseJson } from './harness.js';
@@ -194,11 +194,68 @@ describe('G — install-hooks + abs hook (non-fatal, always exit 0)', () => {
 
   it('user-prompt-submit injects FTS recall when the prompt matches stored memory', async () => {
     await abs(['ingest', '--dir', FIXTURES_PROJECTS], { env: h.env });
+    // Global scope: this asserts the recall-injection mechanism, not project scoping
+    // — the payload's session/cwd intentionally do not match the fixture's project
+    // (project-scoped isolation is covered by scenario K).
     const res = await abs(['hook', 'user-prompt-submit'], {
-      env: h.env,
+      env: { ...h.env, ABS_RECALL_SCOPE: 'global' },
       input: payload({ hook_event_name: 'UserPromptSubmit', prompt: 'when is staging reset' }),
     });
     expect(res.code).toBe(0);
     expect(res.stdout).toContain('additionalContext');
+  });
+});
+
+describe('K — cross-project isolation (#47)', () => {
+  /** Build a two-project transcript tree under the temp HOME and ingest it. */
+  function seedTwoProjects(): { projectsDir: string } {
+    const root = join(h.home, 'twoproj');
+    const a = join(root, 'projA');
+    const b = join(root, 'projB');
+    mkdirSync(a, { recursive: true });
+    mkdirSync(b, { recursive: true });
+    writeFileSync(
+      join(a, 'sessA.jsonl'),
+      `${JSON.stringify({ type: 'user', sessionId: 'sessA', cwd: '/work/projA', message: { role: 'user', content: 'In project A the refund window is 30 days.' } })}\n`,
+    );
+    writeFileSync(
+      join(b, 'sessB.jsonl'),
+      `${JSON.stringify({ type: 'user', sessionId: 'sessB', cwd: '/work/projB', message: { role: 'user', content: 'In project B the kubernetes ingress uses nginx with TLS on 443.' } })}\n`,
+    );
+    return { projectsDir: root };
+  }
+
+  it('a project-A session does not recall project-B memory under project scope', async () => {
+    const { projectsDir } = seedTwoProjects();
+    await abs(['ingest', '--dir', projectsDir], { env: h.env });
+
+    // Project-A session (externalId sessA → stored project "projA") asks a query
+    // that only matches project B's content. Under the default project scope it
+    // must recall NOTHING from project B.
+    const scoped = await abs(['hook', 'user-prompt-submit'], {
+      env: h.env, // ABS_RECALL_SCOPE defaults to 'project'
+      input: JSON.stringify({
+        session_id: 'sessA',
+        cwd: '/work/projA',
+        hook_event_name: 'UserPromptSubmit',
+        prompt: 'kubernetes ingress nginx TLS',
+      }),
+    });
+    expect(scoped.code).toBe(0);
+    expect(scoped.stdout).not.toContain('kubernetes');
+    expect(scoped.stdout).not.toContain('TLS on 443');
+
+    // Under global scope the same query DOES surface project B's memory.
+    const global = await abs(['hook', 'user-prompt-submit'], {
+      env: { ...h.env, ABS_RECALL_SCOPE: 'global' },
+      input: JSON.stringify({
+        session_id: 'sessA',
+        cwd: '/work/projA',
+        hook_event_name: 'UserPromptSubmit',
+        prompt: 'kubernetes ingress nginx TLS',
+      }),
+    });
+    expect(global.code).toBe(0);
+    expect(global.stdout).toContain('kubernetes');
   });
 });

@@ -65,11 +65,29 @@ describe('handleUserPromptSubmit', () => {
   it('injects recalled memory in the UserPromptSubmit envelope', async () => {
     const line = await handleUserPromptSubmit(
       { prompt: 'how do I squash commits?' },
-      { recall: async () => [hit(1, 'lesson', 'Use git rebase --interactive to squash commits.')] },
+      {
+        recall: async () => ({
+          hits: [hit(1, 'lesson', 'Use git rebase --interactive to squash commits.')],
+        }),
+      },
     );
     const parsed = JSON.parse(line as string);
     expect(parsed.hookSpecificOutput.hookEventName).toBe('UserPromptSubmit');
     expect(parsed.hookSpecificOutput.additionalContext).toContain('git rebase');
+  });
+
+  it('names the scoped project in the injected header (#47)', async () => {
+    const line = await handleUserPromptSubmit(
+      { prompt: 'how do I squash commits?' },
+      {
+        recall: async () => ({
+          hits: [hit(1, 'lesson', 'Use git rebase --interactive to squash commits.')],
+          project: 'MyProject',
+        }),
+      },
+    );
+    const ctx = JSON.parse(line as string).hookSpecificOutput.additionalContext as string;
+    expect(ctx).toContain('project "MyProject"');
   });
 
   it('returns undefined when there is no prompt', async () => {
@@ -79,7 +97,7 @@ describe('handleUserPromptSubmit', () => {
       {
         recall: async (p) => {
           calls.push(p);
-          return [];
+          return { hits: [] };
         },
       },
     );
@@ -90,7 +108,7 @@ describe('handleUserPromptSubmit', () => {
   it('returns undefined when recall finds nothing', async () => {
     const line = await handleUserPromptSubmit(
       { prompt: 'unmatched query' },
-      { recall: async () => [] },
+      { recall: async () => ({ hits: [] }) },
     );
     expect(line).toBeUndefined();
   });

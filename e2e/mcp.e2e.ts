@@ -58,7 +58,7 @@ describe('B — persistence across a process restart', () => {
 });
 
 describe('D — MCP tool contract', () => {
-  it('exposes exactly the 7 documented tools', async () => {
+  it('exposes exactly the 8 documented tools', async () => {
     client = await mcpClient(h.env);
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([
@@ -69,6 +69,7 @@ describe('D — MCP tool contract', () => {
       'optimize',
       'recall',
       'remember',
+      'set_session_project',
     ]);
   });
 

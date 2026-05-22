@@ -17,6 +17,7 @@ function config(): AppConfig {
     dataDir: dir,
     dbPath: join(dir, 'memory.db'),
     embedding: { provider: 'local', model: 'Xenova/all-MiniLM-L6-v2', dimensions: 384 },
+    recallScope: 'global',
   };
 }
 
@@ -149,6 +150,37 @@ describe('MCP server', () => {
       }),
     ) as Array<{ id: number; content: string }>;
     expect(hits.some((h) => h.content.includes('Fridays'))).toBe(true);
+  });
+
+  it('recall honors an explicit project arg — no cross-project leak (#47)', async () => {
+    // Seed two named projects with distinct content + vectors.
+    for (const [ext, project, content] of [
+      ['px', 'ProjX', 'ProjX: the refund window is 30 days.'],
+      ['py', 'ProjY', 'ProjY: kubernetes ingress uses nginx with TLS.'],
+    ] as const) {
+      const sid = mem.store.createSession({ externalId: ext, project });
+      const obs = mem.store.createObservation({ sessionId: sid, kind: 'note', content });
+      mem.store.indexFts(obs, content);
+      const [vec] = await mem.provider.embed([content]);
+      mem.store.upsertVector(obs, vec as number[]);
+    }
+    const client = await connectedClient();
+
+    const x = parse(
+      await client.callTool({
+        name: 'recall',
+        arguments: { query: 'kubernetes ingress nginx tls', limit: 5, project: 'ProjX' },
+      }),
+    ) as Array<{ content: string }>;
+    expect(x.some((h) => h.content.includes('kubernetes'))).toBe(false); // ProjY content excluded
+
+    const y = parse(
+      await client.callTool({
+        name: 'recall',
+        arguments: { query: 'kubernetes ingress nginx tls', limit: 5, project: 'ProjY' },
+      }),
+    ) as Array<{ content: string }>;
+    expect(y.some((h) => h.content.includes('kubernetes'))).toBe(true);
   });
 
   it('optimize generates candidates and apply writes one to disk (CLAUDE.md path)', async () => {

@@ -568,4 +568,67 @@ describe('MemoryStore', () => {
       expect(store.listMetaKeys('')).toEqual(['a', 'b']);
     });
   });
+
+  describe('project-scoped recall queries (#47)', () => {
+    /** Seed two projects sharing identical content; return their observation ids. */
+    function seedTwoProjects(): { a: number; b: number } {
+      const sa = store.createSession({ externalId: 'sa', project: 'ProjA' });
+      const sb = store.createSession({ externalId: 'sb', project: 'ProjB' });
+      const sn = store.createSession({ externalId: 'sn' }); // NULL project
+      const a = store.createObservation({
+        sessionId: sa,
+        kind: 'user',
+        content: 'kubernetes ingress nginx',
+      });
+      const b = store.createObservation({
+        sessionId: sb,
+        kind: 'user',
+        content: 'kubernetes ingress nginx',
+      });
+      const n = store.createObservation({
+        sessionId: sn,
+        kind: 'user',
+        content: 'kubernetes ingress nginx',
+      });
+      for (const id of [a, b, n]) {
+        store.indexFts(id, 'kubernetes ingress nginx');
+        store.upsertVector(id, unitVector(id));
+      }
+      return { a, b };
+    }
+
+    it('searchFts with a project returns only that project (no leak); no project → all', () => {
+      const { a, b } = seedTwoProjects();
+      const scoped = store.searchFts('"kubernetes"', 10, 'ProjA').map((h) => h.id);
+      expect(scoped).toEqual([a]);
+      const wide = store
+        .searchFts('"kubernetes"', 10)
+        .map((h) => h.id)
+        .sort((x, y) => x - y);
+      expect(wide).toContain(a);
+      expect(wide).toContain(b);
+      expect(wide.length).toBe(3); // ProjA + ProjB + NULL-project
+    });
+
+    it('searchFts scoped excludes NULL-project observations', () => {
+      seedTwoProjects();
+      const scoped = store.searchFts('"kubernetes"', 10, 'ProjB');
+      // exactly ProjB's row — never the NULL-project one
+      expect(scoped.length).toBe(1);
+    });
+
+    it('knn with a project returns only that project (no leak)', () => {
+      const { a } = seedTwoProjects();
+      const scoped = store.knn(unitVector(a), 10, 'ProjA').map((h) => h.id);
+      expect(scoped).toEqual([a]);
+      const wide = store.knn(unitVector(a), 10).map((h) => h.id);
+      expect(wide.length).toBe(3);
+    });
+
+    it('a project with no observations returns nothing (strict isolation, no fallback)', () => {
+      seedTwoProjects();
+      expect(store.searchFts('"kubernetes"', 10, 'Nonexistent')).toEqual([]);
+      expect(store.knn(unitVector(1), 10, 'Nonexistent')).toEqual([]);
+    });
+  });
 });
