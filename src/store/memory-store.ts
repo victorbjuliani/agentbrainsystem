@@ -265,6 +265,19 @@ export class MemoryStore {
   }
 
   /**
+   * Distinct non-NULL project labels currently in use, sorted. Drives the
+   * `abs project` picker (#51) — "existing projects" the user can link to. A
+   * row whose project IS NULL (auto-derivation never ran / cleared) is excluded;
+   * the literal string `'null'` is a real label and IS included.
+   */
+  listProjects(): string[] {
+    const rows = this.conn()
+      .prepare('SELECT DISTINCT project FROM sessions WHERE project IS NOT NULL ORDER BY project')
+      .all() as Array<{ project: string }>;
+    return rows.map((r) => r.project);
+  }
+
+  /**
    * Sessions ordered by their latest observation activity (MAX(observations.
    * created_at)), most-active first. This is "most recently ACTIVE" — distinct
    * from `sessions.created_at`, which is ingest wall-clock and would make
