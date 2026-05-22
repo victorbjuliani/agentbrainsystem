@@ -25,6 +25,8 @@ No cloud, no account, no API keys.
 <img src="https://img.shields.io/badge/storage-embedded%20SQLite-5EEAD4?style=for-the-badge&labelColor=0A0810" alt="embedded SQLite" />
 </p>
 
+<img src="docs/assets/demo.gif" alt="A new Claude Code session asks about a hosted vector DB; agentbrainsystem's hook injects the past decision to use sqlite-vec — local-first" width="760" />
+
 <sub>
 <a href="#why">Why</a> ·
 <a href="#install">Install</a> ·
