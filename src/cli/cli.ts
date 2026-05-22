@@ -16,6 +16,7 @@ import { loadConfig } from '../config.js';
 import { consolidate } from '../consolidate/index.js';
 import { type DeleteSelector, executeIds, previewSelector } from '../delete/index.js';
 import { exportStore, importStore } from '../export/index.js';
+import { GLOBAL_PROJECT, getOrCreateGlobalSession } from '../global.js';
 import { dispatchHook, installHooks } from '../hooks/index.js';
 import {
   defaultClaudeProjectsDir,
@@ -34,7 +35,6 @@ import {
   generateOptimizations,
   type OptimizeCandidate,
 } from '../optimize/index.js';
-import { GLOBAL_PROJECT, getOrCreateGlobalSession } from '../global.js';
 import { projectSlug } from '../optimize/targets.js';
 import { startUiServer } from '../ui/index.js';
 import { VERSION } from '../version.js';

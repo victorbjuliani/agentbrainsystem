@@ -61,6 +61,7 @@ describe('MCP server', () => {
       'forget_preview',
       'memory_status',
       'optimize',
+      'promote',
       'recall',
       'remember',
       'set_session_project',
