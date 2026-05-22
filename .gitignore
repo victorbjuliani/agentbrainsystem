@@ -12,6 +12,7 @@ node_modules/
 dist/
 build/
 *.tsbuildinfo
+*.tgz
 .npm/
 .pnpm-store/
 coverage/
