@@ -87,6 +87,10 @@ Commands:
                         Session id: CLAUDE_CODE_SESSION_ID, or --session <id> to override.
                         --skip hard-deletes already-stored observations → requires --yes.
                         --json for machine-readable output.
+  remember "<text>" --global [--kind K]
+                        Add a memory to the cross-project GLOBAL brain (recalled in
+                        every project). --kind decision|lesson|note (default note).
+  promote <id>          Move an existing memory into the global brain.
 
 Options:
   -h, --help            Show this help.
@@ -802,6 +806,32 @@ export async function cmdProject(args: string[]): Promise<void> {
   }
 }
 
+/** `abs remember "<text>" --global [--kind K]` — author a global-brain memory. */
+export async function cmdRemember(args: string[]): Promise<void> {
+  const json = args.includes('--json');
+  const text = positional(args);
+  if (!text) {
+    err('error: remember requires text, e.g. `abs remember "..." --global`');
+    process.exitCode = 1;
+    return;
+  }
+  if (!args.includes('--global')) {
+    err('error: `abs remember` currently writes only to the global brain — pass --global');
+    process.exitCode = 1;
+    return;
+  }
+  const kind = optionValue(args, '--kind') ?? 'note';
+  const memory = await openMemory(loadConfig(), { ensure: false });
+  try {
+    const sessionId = getOrCreateGlobalSession(memory.store);
+    const id = await memory.indexer.write({ sessionId, kind, content: text });
+    if (json) out(JSON.stringify({ id, scope: 'global', kind, applied: true }));
+    else out(`remembered to the global brain (id ${id}, ${kind}).`);
+  } finally {
+    memory.close();
+  }
+}
+
 /** `abs promote <observationId>` — move a project memory into the global brain. */
 export async function cmdPromote(args: string[]): Promise<void> {
   const json = args.includes('--json');
@@ -881,6 +911,8 @@ async function main(): Promise<void> {
       return cmdProject(rest);
     case 'promote':
       return cmdPromote(rest);
+    case 'remember':
+      return cmdRemember(rest);
     default:
       err(`unknown command '${command}'\n`);
       err(USAGE);
