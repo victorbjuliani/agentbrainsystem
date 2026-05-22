@@ -264,9 +264,16 @@ describe('resolveSessionId — env vs --session, no mtime fallback', () => {
     expect(resolveSessionId([])).toBeNull();
   });
 
-  it('ignores a --session whose value is itself a flag, falling through to env', () => {
+  it('ERRORS on a --session with a flag-shaped value — never falls back to env (Codex P1)', () => {
+    // A typo like `abs project --skip --session --yes` must not silently retarget
+    // the ambient session for a destructive --skip.
     process.env.CLAUDE_CODE_SESSION_ID = 'env-id';
-    expect(resolveSessionId(['--session', '--json'])).toEqual({ id: 'env-id', source: 'env' });
+    expect(resolveSessionId(['--session', '--json'])).toEqual({
+      error: expect.stringContaining('--session requires'),
+    });
+    expect(resolveSessionId(['--skip', '--session', '--yes'])).toEqual({
+      error: expect.stringContaining('--session requires'),
+    });
   });
 });
 
@@ -395,5 +402,29 @@ describe('cmdProject — set / cwd / skip / status (hermetic, tmp ABS_HOME)', ()
     await cmdProject(['--set', 'x', '--json']);
     expect(outLines.join('')).toContain('no current session id');
     expect(process.exitCode).toBe(1);
+  });
+
+  it('errors on a flag-shaped --session value instead of retargeting (Codex P1)', async () => {
+    process.env.CLAUDE_CODE_SESSION_ID = 'ambient';
+    await cmdProject(['--skip', '--session', '--yes']);
+    expect(outLines.join('')).toContain('--session requires');
+    expect(process.exitCode).toBe(1);
+    delete process.env.CLAUDE_CODE_SESSION_ID;
+  });
+
+  it('--set applies immediately to an already-ingested session row (Codex P2)', async () => {
+    // Simulate a fully-ingested session whose file will never grow again.
+    const mem = await openMemory(loadConfig(), { ensure: false });
+    mem.store.createSession({ externalId: 'sess-ingested', project: 'old-slug' });
+    mem.close();
+
+    await cmdProject(['--session', 'sess-ingested', '--set', 'Renamed', '--json']);
+    const o = JSON.parse(outLines.join(''));
+    expect(o).toMatchObject({ action: 'set', project: 'Renamed' });
+
+    const mem2 = await openMemory(loadConfig(), { ensure: false });
+    // The stored row is updated NOW, not left under the old project awaiting a re-ingest.
+    expect(mem2.store.getSessionByExternalId('sess-ingested')?.project).toBe('Renamed');
+    mem2.close();
   });
 });

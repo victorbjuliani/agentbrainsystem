@@ -806,8 +806,12 @@ export class MemoryStore {
    * even after ingest already created the row with the cwd-derived slug (Risk #2).
    * Returns the row id. Deliberately separate from `createSession` so that
    * signature (high blast-radius) stays untouched.
+   *
+   * `meta` is carried only on the CREATE-on-miss path, so a binding that fires
+   * before the first ingest still stores the `cwd` hint the normal create path
+   * would have (Codex review on #50) — it never overwrites an existing row's meta.
    */
-  setSessionProject(externalId: string, project: string): number {
+  setSessionProject(externalId: string, project: string, meta?: Record<string, unknown>): number {
     const existing = this.getSessionByExternalId(externalId);
     if (existing) {
       this.conn()
@@ -815,7 +819,7 @@ export class MemoryStore {
         .run(project, externalId);
       return existing.id;
     }
-    return this.createSession({ externalId, project });
+    return this.createSession(meta ? { externalId, project, meta } : { externalId, project });
   }
 
   // -------------------------------------------------------------------- counts
