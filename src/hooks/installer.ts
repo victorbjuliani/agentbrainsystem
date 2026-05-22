@@ -232,3 +232,95 @@ export function installHooks(options: InstallOptions = {}): InstallResult {
 
   return { settingsPath, backupPath, added, alreadyPresent };
 }
+
+export interface UninstallOptions {
+  /** Override settings.json path (tests). Defaults to ~/.claude/settings.json. */
+  settingsPath?: string;
+  /**
+   * The command Claude Code runs for each hook — the exact string `install` wrote.
+   * Defaults to `abs hook` (eventArg appended). Override to match a non-default
+   * install (e.g. an absolute binary path) so the right entries are removed.
+   */
+  baseCommand?: string;
+  /** Restrict removal to a subset of events. Defaults to the whole registry. */
+  events?: readonly HookEvent[];
+}
+
+export interface UninstallResult {
+  settingsPath: string;
+  backupPath: string | null;
+  /** Events whose hook was found and removed this run. */
+  removed: HookEvent[];
+  /** Events whose hook was not present (nothing to remove). */
+  notPresent: HookEvent[];
+}
+
+/**
+ * The inverse of {@link installHooks}: remove this project's hooks from settings.json
+ * with the same safety contract (symlink-refusing, backup-first, atomic, never
+ * clobbering unrelated keys). Identifies our hook by its exact `command` string, so:
+ *   - Other tools' hooks SHARING a matcher group with ours are preserved — we drop
+ *     only our command from the group's `hooks` array, never the whole group.
+ *   - A matcher group left empty *because it held only our hook* is dropped; an
+ *     unrelated group (or a pre-existing empty one) is left verbatim.
+ *   - An event whose groups all disappear loses its key; if `hooks` empties entirely,
+ *     the top-level `hooks` key is removed too.
+ * Writes only when at least one hook was removed. A missing settings.json is fine
+ * (nothing to remove); a corrupt one throws rather than being silently overwritten.
+ */
+export function uninstallHooks(options: UninstallOptions = {}): UninstallResult {
+  const settingsPath = options.settingsPath ?? defaultSettingsPath();
+  const baseCommand = options.baseCommand ?? 'abs hook';
+  const events = options.events ?? HOOK_REGISTRY.map((s) => s.event);
+  const specs = HOOK_REGISTRY.filter((s) => events.includes(s.event));
+
+  // Refuse a symlinked settings.json BEFORE reading or mutating — never follow it.
+  assertNotSymlink(settingsPath);
+
+  const settings = readSettings(settingsPath);
+  const removed: HookEvent[] = [];
+  const notPresent: HookEvent[] = [];
+
+  const hooks: Record<string, HookMatcherGroup[]> = { ...(settings.hooks ?? {}) };
+
+  for (const spec of specs) {
+    const command = `${baseCommand} ${spec.eventArg}`;
+    const groups = hooks[spec.event];
+    if (!groups) {
+      notPresent.push(spec.event);
+      continue;
+    }
+
+    let found = false;
+    const nextGroups: HookMatcherGroup[] = [];
+    for (const g of groups) {
+      if (!g.hooks.some((h) => h.command === command)) {
+        nextGroups.push(g); // not ours — preserve verbatim
+        continue;
+      }
+      found = true;
+      const keptHooks = g.hooks.filter((h) => h.command !== command);
+      // Keep the group only if other hooks remain; an ours-only group disappears.
+      if (keptHooks.length > 0) nextGroups.push({ ...g, hooks: keptHooks });
+    }
+
+    if (!found) {
+      notPresent.push(spec.event);
+      continue;
+    }
+    removed.push(spec.event);
+    if (nextGroups.length > 0) hooks[spec.event] = nextGroups;
+    else delete hooks[spec.event];
+  }
+
+  let backupPath: string | null = null;
+  if (removed.length > 0) {
+    backupPath = backupSettings(settingsPath);
+    const next: ClaudeSettings = { ...settings, hooks };
+    // Don't leave an empty `hooks: {}` behind once we've removed our last entry.
+    if (Object.keys(hooks).length === 0) delete (next as ClaudeSettings).hooks;
+    atomicWriteFile(settingsPath, `${JSON.stringify(next, null, 2)}\n`);
+  }
+
+  return { settingsPath, backupPath, removed, notPresent };
+}

@@ -10,7 +10,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { installHooks } from './installer.js';
+import { installHooks, uninstallHooks } from './installer.js';
 
 let dir: string;
 let settingsPath: string;
@@ -151,5 +151,154 @@ describe('installHooks', () => {
     // Idempotent re-run adds nothing.
     const second = installHooks({ settingsPath });
     expect(second.added).toEqual([]);
+  });
+});
+
+describe('uninstallHooks', () => {
+  it('round-trips: removes exactly what install added, leaving no hooks key behind', () => {
+    installHooks({ settingsPath });
+    const result = uninstallHooks({ settingsPath });
+    expect(result.removed.sort()).toEqual([
+      'PreToolUse',
+      'SessionEnd',
+      'SessionStart',
+      'UserPromptSubmit',
+    ]);
+    expect(result.notPresent).toEqual([]);
+    expect(result.backupPath).not.toBeNull(); // a prior file existed → backed up
+
+    // Every abs event key is gone (groups were ours-only), and so is the empty hooks map.
+    const s = read();
+    expect(s.hooks).toBeUndefined();
+  });
+
+  it("preserves another tool's hook sharing our matcher group (removes only ours)", () => {
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        hooks: {
+          SessionEnd: [
+            {
+              matcher: '',
+              hooks: [
+                { type: 'command', command: 'other-tool.sh' },
+                { type: 'command', command: 'abs hook session-end', timeout: 30 },
+              ],
+            },
+          ],
+        },
+      }),
+      'utf8',
+    );
+    const result = uninstallHooks({ settingsPath });
+    expect(result.removed).toEqual(['SessionEnd']);
+
+    const s = read() as {
+      hooks: { SessionEnd: Array<{ matcher: string; hooks: Array<{ command: string }> }> };
+    };
+    const commands = s.hooks.SessionEnd.flatMap((g) => g.hooks.map((h) => h.command));
+    expect(commands).toEqual(['other-tool.sh']); // ours gone, theirs kept
+    expect(s.hooks.SessionEnd).toHaveLength(1); // the shared group survives
+  });
+
+  it('drops a now-empty matcher group but keeps other groups under the same event', () => {
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        hooks: {
+          PreToolUse: [
+            { matcher: 'Bash', hooks: [{ type: 'command', command: 'audit.sh' }] },
+            {
+              matcher: 'Edit|Write',
+              hooks: [{ type: 'command', command: 'abs hook pre-tool-use' }],
+            },
+          ],
+        },
+      }),
+      'utf8',
+    );
+    uninstallHooks({ settingsPath });
+    const s = read() as {
+      hooks: { PreToolUse: Array<{ matcher: string; hooks: Array<{ command: string }> }> };
+    };
+    // The ours-only Edit|Write group is gone; the unrelated Bash group remains.
+    expect(s.hooks.PreToolUse).toHaveLength(1);
+    expect(s.hooks.PreToolUse[0]?.matcher).toBe('Bash');
+  });
+
+  it('reports notPresent and writes nothing when our hooks are absent', () => {
+    writeFileSync(settingsPath, JSON.stringify({ permissions: { allow: ['Bash'] } }), 'utf8');
+    const result = uninstallHooks({ settingsPath });
+    expect(result.removed).toEqual([]);
+    expect(result.notPresent.sort()).toEqual([
+      'PreToolUse',
+      'SessionEnd',
+      'SessionStart',
+      'UserPromptSubmit',
+    ]);
+    expect(result.backupPath).toBeNull(); // nothing removed → no backup, no write
+    // No backup file created.
+    expect(readdirSync(dir).filter((f) => f.endsWith('.bak'))).toEqual([]);
+    // Unrelated keys untouched.
+    expect(read()).toEqual({ permissions: { allow: ['Bash'] } });
+  });
+
+  it('tolerates a missing settings.json (nothing to remove, no throw)', () => {
+    const result = uninstallHooks({ settingsPath });
+    expect(result.removed).toEqual([]);
+    expect(result.notPresent).toHaveLength(4);
+    expect(result.backupPath).toBeNull();
+  });
+
+  it('backs up before mutating and never clobbers unrelated keys', () => {
+    installHooks({ settingsPath });
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        ...read(),
+        permissions: { allow: ['Bash'] },
+        statusLine: { type: 'x' },
+      }),
+      'utf8',
+    );
+    const result = uninstallHooks({ settingsPath });
+    expect(result.backupPath).not.toBeNull();
+    const s = read();
+    expect(s.permissions).toEqual({ allow: ['Bash'] });
+    expect(s.statusLine).toEqual({ type: 'x' });
+  });
+
+  it('refuses to mutate a corrupt settings.json', () => {
+    writeFileSync(settingsPath, '{ not valid json', 'utf8');
+    expect(() => uninstallHooks({ settingsPath })).toThrow(/not valid JSON/);
+  });
+
+  it('refuses to write through a symlinked settings.json (does not follow it)', () => {
+    const realTarget = join(dir, 'real-target.json');
+    writeFileSync(
+      realTarget,
+      JSON.stringify({
+        hooks: {
+          SessionEnd: [
+            { matcher: '', hooks: [{ type: 'command', command: 'abs hook session-end' }] },
+          ],
+        },
+      }),
+      'utf8',
+    );
+    symlinkSync(realTarget, settingsPath);
+    expect(() => uninstallHooks({ settingsPath })).toThrow(/symlink/i);
+    // The link's destination still has the hook (not removed through the link).
+    const dest = JSON.parse(readFileSync(realTarget, 'utf8')) as {
+      hooks: { SessionEnd: unknown[] };
+    };
+    expect(dest.hooks.SessionEnd).toHaveLength(1);
+    expect(lstatSync(settingsPath).isSymbolicLink()).toBe(true);
+  });
+
+  it('writes atomically (no leftover temp file)', () => {
+    installHooks({ settingsPath });
+    uninstallHooks({ settingsPath });
+    expect(readdirSync(dir).filter((f) => f.includes('abs-settings-tmp'))).toEqual([]);
   });
 });

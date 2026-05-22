@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildClaudeMcpAddArgs,
+  buildClaudeMcpRemoveArgs,
   MCP_SERVER_NAME,
   manualMcpCommand,
+  manualMcpRemoveCommand,
   type RunFn,
   type RunResult,
   registerMcpServer,
+  unregisterMcpServer,
 } from './setup.js';
 
 const CLI = '/abs/path/dist/cli/cli.js';
@@ -93,5 +96,67 @@ describe('registerMcpServer — idempotent, non-fatal', () => {
       [`claude ${buildClaudeMcpAddArgs(CLI).join(' ')}`]: ok(),
     });
     expect((await registerMcpServer(CLI, run)).status).toBe('registered');
+  });
+});
+
+describe('unregister core — argv + manual command', () => {
+  it('builds the claude mcp remove argv (no cli path needed)', () => {
+    expect(buildClaudeMcpRemoveArgs()).toEqual(['mcp', 'remove', MCP_SERVER_NAME]);
+  });
+
+  it('formats a copy-pasteable manual remove command', () => {
+    expect(manualMcpRemoveCommand()).toBe(`claude mcp remove ${MCP_SERVER_NAME}`);
+  });
+});
+
+describe('unregisterMcpServer — idempotent, non-fatal', () => {
+  it('returns no-claude when the claude CLI cannot be spawned', async () => {
+    const run = scriptedRun({ 'claude --version': new Error('ENOENT') });
+    const res = await unregisterMcpServer(run);
+    expect(res).toEqual({ status: 'no-claude', manualCommand: manualMcpRemoveCommand() });
+  });
+
+  it('returns no-claude when `claude --version` exits non-zero', async () => {
+    const run = scriptedRun({ 'claude --version': { code: 127, stdout: '', stderr: '' } });
+    expect((await unregisterMcpServer(run)).status).toBe('no-claude');
+  });
+
+  it('returns not-registered when the server is absent from `claude mcp list`', async () => {
+    const run = scriptedRun({
+      'claude --version': ok('1.2.3'),
+      'claude mcp list': ok('other: cmd\n'),
+    });
+    expect((await unregisterMcpServer(run)).status).toBe('not-registered');
+  });
+
+  it('removes when present and `claude mcp remove` succeeds', async () => {
+    const run = scriptedRun({
+      'claude --version': ok('1.2.3'),
+      'claude mcp list': ok(`${MCP_SERVER_NAME}: node /x start\n`),
+      [`claude ${buildClaudeMcpRemoveArgs().join(' ')}`]: ok('Removed MCP server agentbrainsystem'),
+    });
+    expect((await unregisterMcpServer(run)).status).toBe('removed');
+  });
+
+  it('surfaces the captured message when `claude mcp remove` fails', async () => {
+    const run = scriptedRun({
+      'claude --version': ok('1.2.3'),
+      'claude mcp list': ok(`${MCP_SERVER_NAME}: node /x start\n`),
+      [`claude ${buildClaudeMcpRemoveArgs().join(' ')}`]: { code: 1, stdout: '', stderr: 'boom' },
+    });
+    expect(await unregisterMcpServer(run)).toEqual({
+      status: 'error',
+      message: 'boom',
+      manualCommand: manualMcpRemoveCommand(),
+    });
+  });
+
+  it('still attempts the remove when `claude mcp list` itself fails', async () => {
+    const run = scriptedRun({
+      'claude --version': ok('1.2.3'),
+      'claude mcp list': new Error('list crashed'),
+      [`claude ${buildClaudeMcpRemoveArgs().join(' ')}`]: ok(),
+    });
+    expect((await unregisterMcpServer(run)).status).toBe('removed');
   });
 });
