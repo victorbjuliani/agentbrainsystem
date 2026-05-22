@@ -7,6 +7,7 @@
  * Indexer (#5) is what makes the result survive a restart.
  */
 import type { EmbeddingProvider } from '../embedding/index.js';
+import { GLOBAL_PROJECT } from '../global.js';
 import type { AnchorState, MemoryStore, Observation } from '../store/index.js';
 import { DEFAULT_RRF_K, reciprocalRankFusion } from './rrf.js';
 
@@ -42,6 +43,8 @@ export interface RecallHit {
    * `annotateFreshness` only when a current branch is supplied.
    */
   crossBranch?: boolean;
+  /** True when this hit comes from the cross-project global brain (#). */
+  global?: boolean;
 }
 
 export interface RecallFtsOptions {
@@ -49,6 +52,8 @@ export interface RecallFtsOptions {
   limit?: number;
   /** Restrict to observations filed under this project (#47). Undefined → store-wide. */
   project?: string;
+  /** Also include the global brain (`__global__`) alongside the project (#). */
+  includeGlobal?: boolean;
 }
 
 /**
@@ -131,12 +136,17 @@ export class Recall {
     const ftsExpr = toFtsQuery(query);
     if (ftsExpr === null) return [];
 
-    const matches = this.store.searchFts(ftsExpr, limit, options.project);
+    const matches = this.store.searchFts(ftsExpr, limit, options.project, options.includeGlobal);
     const hits: RecallHit[] = [];
     for (const m of matches) {
       const observation = this.store.getObservation(m.id);
       if (!observation) continue; // index drifted ahead of rows — skip defensively
-      hits.push({ observation, score: -m.distance, ftsRank: m.distance });
+      hits.push({
+        observation,
+        score: -m.distance,
+        ftsRank: m.distance,
+        global: m.project === GLOBAL_PROJECT,
+      });
     }
     return hits;
   }
