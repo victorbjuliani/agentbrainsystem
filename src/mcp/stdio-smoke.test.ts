@@ -28,7 +28,9 @@ describe('MCP stdio packaging', () => {
     const transport = new StdioClientTransport({
       command: 'npx',
       args: ['tsx', resolve('src/cli/cli.ts'), 'start'],
-      env: { ...process.env, ABS_HOME: dir },
+      // Store-wide recall: the smoke seeds via `remember` (NULL-project) and recalls
+      // it back; the default project scope would filter that out.
+      env: { ...process.env, ABS_HOME: dir, ABS_RECALL_SCOPE: 'global' },
     });
     client = new Client({ name: 'smoke', version: '0.0.0' });
     await client.connect(transport);

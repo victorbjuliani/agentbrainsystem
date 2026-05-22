@@ -32,7 +32,11 @@ interface ForgetPreview {
 let h: E2EHome;
 let client: Client | undefined;
 beforeEach(() => {
-  h = makeHome();
+  // These scenarios exercise the recall/remember/forget contract, not project
+  // scoping (covered by cli.e2e scenario K) — recall store-wide so fixture/
+  // remembered content (whose project differs from the server's cwd slug, or is
+  // NULL) is retrievable.
+  h = makeHome({ ABS_RECALL_SCOPE: 'global' });
 });
 afterEach(async () => {
   await client?.close();

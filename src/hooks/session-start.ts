@@ -116,7 +116,11 @@ export function renderPicker(
       'existing one, use a new name, accept the auto-derived one, or SKIP (do not store ' +
       'this session). Then record their choice by calling the `set_session_project` MCP ' +
       `tool with session="${sessionId}" and either action="set" + project="<name>" or ` +
-      'action="skip". If the user does not care, prefer the auto-derived project. Ask once.',
+      'action="skip". If the user does not care, prefer the auto-derived project. Ask once. ' +
+      'Note: if you choose action="skip" and the tool returns applied=false with a ' +
+      'wouldDelete count, the session already has stored memory — relay that count to the ' +
+      'user and, only if they confirm the deletion, call set_session_project again with ' +
+      'action="skip" and confirmDelete=true.',
   );
   return lines.join('\n');
 }

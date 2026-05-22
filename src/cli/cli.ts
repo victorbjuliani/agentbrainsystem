@@ -551,16 +551,29 @@ export async function cmdForget(args: string[]): Promise<void> {
   }
 }
 
+/** Outcome of resolving the session id: a resolved id, an input error, or none. */
+export type SessionResolution = { id: string; source: 'flag' | 'env' } | { error: string } | null;
+
 /**
  * Resolve the current Claude Code session id for `abs project`. Authoritative
  * source is `CLAUDE_CODE_SESSION_ID` (Claude Code sets it for the running
  * session); an explicit `--session <id>` overrides it. There is deliberately NO
  * "latest transcript" fallback — dispatched subagents write their own transcripts
  * into the same project dir, so newest-by-mtime is often the wrong session.
+ *
+ * A `--session` flag with a missing/flag-shaped value is an ERROR, not a silent
+ * fall-back to the env (Codex review on #51): falling through could apply a
+ * destructive `--skip` to the ambient session after a typo like
+ * `abs project --skip --session --yes`.
  */
-export function resolveSessionId(args: string[]): { id: string; source: 'flag' | 'env' } | null {
-  const explicit = optionValue(args, '--session');
-  if (explicit !== undefined && !explicit.startsWith('-')) return { id: explicit, source: 'flag' };
+export function resolveSessionId(args: string[]): SessionResolution {
+  if (args.includes('--session')) {
+    const explicit = optionValue(args, '--session');
+    if (explicit === undefined || explicit.startsWith('-')) {
+      return { error: '--session requires a session id value' };
+    }
+    return { id: explicit, source: 'flag' };
+  }
   const env = process.env.CLAUDE_CODE_SESSION_ID;
   if (env !== undefined && env.length > 0) return { id: env, source: 'env' };
   return null;
@@ -611,6 +624,11 @@ export async function cmdProject(args: string[]): Promise<void> {
   const resolved = resolveSessionId(args);
   if (resolved === null) {
     err('error: no current session id — run inside a Claude Code session or pass --session <id>');
+    process.exitCode = 1;
+    return;
+  }
+  if ('error' in resolved) {
+    err(`error: ${resolved.error}`);
     process.exitCode = 1;
     return;
   }
@@ -677,6 +695,13 @@ export async function cmdProject(args: string[]): Promise<void> {
       }
       const existed = memory.store.listProjects().includes(clean);
       writeBinding(memory.store, sid, { action: 'set', project: clean });
+      // Apply NOW to an already-stored session: if the transcript is fully ingested
+      // (cursor at EOF) it may never be re-ingested, so the binding alone would
+      // leave the row under its old project (Codex review on #51). The binding
+      // still persists for any future lines / not-yet-ingested sessions.
+      if (memory.store.getSessionByExternalId(sid)) {
+        memory.store.setSessionProject(sid, clean);
+      }
       const note = existed ? 'existing' : 'new';
       if (json) {
         out(JSON.stringify({ session: sid, action: 'set', project: clean, kind: note }));
