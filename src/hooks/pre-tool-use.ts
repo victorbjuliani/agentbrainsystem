@@ -28,7 +28,6 @@ import { basename } from 'node:path';
 import { loadConfig } from '../config.js';
 import { createGroundTruthProvider } from '../ground-truth/index.js';
 import { extractToolAnchors, type ToolAnchorSeed } from '../ingest/claude-jsonl.js';
-import { readBinding } from '../ingest/index.js';
 import { type Memory, openMemory } from '../memory.js';
 import { resolveRecallProject } from '../recall/index.js';
 import { buildPreToolUseOutput, type HookPayload } from './payload.js';
@@ -48,56 +47,6 @@ const RECALL_POOL = 20;
 /** Guard mode from the environment. Default `warn`; `block` is opt-in. */
 function guardMode(): 'warn' | 'block' {
   return process.env.ABS_GUARD_MODE === 'block' ? 'block' : 'warn';
-}
-
-/** The MCP tool that records the project decision — never gated (it clears the gate). */
-const SETTLE_TOOL = 'set_session_project';
-
-/** Project gate is ON by default; `ABS_PROJECT_GATE=off` is the escape hatch. */
-function projectGateEnabled(): boolean {
-  return process.env.ABS_PROJECT_GATE !== 'off';
-}
-
-/**
- * Project gate (#52, hard): until the CURRENT session records a project decision
- * (a `set`/`skip` binding written by the `set_session_project` MCP tool), DENY
- * every tool — so nothing is acted on, then later ingested, under an unchosen
- * project. This is the hard guarantee the SessionStart picker (a soft, ignorable
- * injected instruction) cannot provide on its own. Two carve-outs keep it usable:
- *   - the `set_session_project` tool itself is never gated (the only way to clear
- *     it — gating it would deadlock the session);
- *   - no session id → no decision can be keyed → allow (fail-safe).
- * Fail-open on any store/config error (ADR-0004): a broken store must never wedge
- * the session. The decision check mirrors the picker's suppression (binding-keyed).
- */
-async function checkProjectGate(
-  payload: HookPayload,
-  deps: PreToolUseDeps,
-): Promise<string | undefined> {
-  if (!projectGateEnabled()) return undefined;
-  const { sessionId, toolName } = payload;
-  if (!sessionId) return undefined;
-  if (toolName?.includes(SETTLE_TOOL)) return undefined;
-
-  let memory: Memory;
-  try {
-    memory = deps.memory ?? (await openMemory(loadConfig(), { ensure: false }));
-  } catch {
-    return undefined; // config/store init failed → allow silently
-  }
-  try {
-    if (readBinding(memory.store, sessionId) !== null) return undefined; // decided
-    const reason =
-      'agentbrainsystem: this session has no project yet. Before running any tool, ask the ' +
-      'user which project this session belongs to, then call the `set_session_project` MCP ' +
-      `tool with session="${sessionId}" and action="set" + project="<name>" (or action="skip" ` +
-      'to keep this session out of memory). This keeps memory scoped to the right project.';
-    return buildPreToolUseOutput('block', reason) ?? undefined;
-  } catch {
-    return undefined; // fail-open
-  } finally {
-    if (!deps.memory) memory.close();
-  }
 }
 
 /**
@@ -193,14 +142,7 @@ export async function handlePreToolUse(
   deps: PreToolUseDeps = {},
 ): Promise<string | undefined> {
   const { toolName, toolInput } = payload;
-  if (!toolName) return undefined;
-
-  // 0) Project gate (#52, hard) — runs for EVERY tool, before the Edit/Write-only
-  // lenses below, so even a read-only tool is denied until the project is chosen.
-  const gate = await checkProjectGate(payload, deps);
-  if (gate) return gate;
-
-  if (!toolInput) return undefined;
+  if (!toolName || !toolInput) return undefined;
 
   const seeds = extractToolAnchors([{ type: 'tool_use', name: toolName, input: toolInput }]);
   if (seeds.length === 0) return undefined; // not an anchorable Edit/Write on code

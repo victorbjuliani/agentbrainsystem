@@ -1,7 +1,16 @@
-import { describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { RecallHit } from '../recall/index.js';
 import type { Observation } from '../store/index.js';
-import { CHAR_BUDGET, handleUserPromptSubmit, renderRecallBlock } from './user-prompt-submit.js';
+import { MemoryStore } from '../store/index.js';
+import {
+  CHAR_BUDGET,
+  consumeFirstPromptFlag,
+  handleUserPromptSubmit,
+  renderRecallBlock,
+} from './user-prompt-submit.js';
 
 function hit(id: number, kind: string, content: string): RecallHit {
   const observation: Observation = {
@@ -111,5 +120,74 @@ describe('handleUserPromptSubmit', () => {
       { recall: async () => ({ hits: [] }) },
     );
     expect(line).toBeUndefined();
+  });
+
+  it('appends the memory notice on the first prompt (max-effort reminder)', async () => {
+    const line = await handleUserPromptSubmit(
+      { prompt: 'hi', sessionId: 'sess-1', cwd: '/Users/me/Devs/foo' },
+      {
+        recall: async () => ({
+          hits: [hit(1, 'lesson', 'Use git rebase --interactive to squash commits.')],
+          firstPrompt: true,
+        }),
+      },
+    );
+    const ctx = JSON.parse(line as string).hookSpecificOutput.additionalContext as string;
+    expect(ctx).toContain('git rebase'); // recall still present
+    expect(ctx).toContain('saved to local memory'); // notice present
+    expect(ctx).toContain('"foo"'); // names the folder
+  });
+
+  it('does NOT append the notice after the first prompt', async () => {
+    const line = await handleUserPromptSubmit(
+      { prompt: 'hi', sessionId: 'sess-1', cwd: '/Users/me/Devs/foo' },
+      {
+        recall: async () => ({
+          hits: [hit(1, 'lesson', 'Use git rebase --interactive to squash commits.')],
+          firstPrompt: false,
+        }),
+      },
+    );
+    const ctx = JSON.parse(line as string).hookSpecificOutput.additionalContext as string;
+    expect(ctx).toContain('git rebase');
+    expect(ctx).not.toContain('saved to local memory');
+  });
+
+  it('injects the notice even when recall is empty, on the first prompt', async () => {
+    const line = await handleUserPromptSubmit(
+      { prompt: 'hi', sessionId: 'sess-1', cwd: '/Users/me/Devs/foo' },
+      { recall: async () => ({ hits: [], firstPrompt: true }) },
+    );
+    const ctx = JSON.parse(line as string).hookSpecificOutput.additionalContext as string;
+    expect(ctx).toContain('"foo"');
+  });
+});
+
+describe('consumeFirstPromptFlag', () => {
+  let dir: string;
+  let store: MemoryStore;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'abs-notice-'));
+    store = new MemoryStore({ dbPath: join(dir, 'm.db'), dimensions: 8 }).open();
+  });
+  afterEach(() => {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('returns true the first time for a session, then false', () => {
+    expect(consumeFirstPromptFlag(store, 'sX')).toBe(true);
+    expect(consumeFirstPromptFlag(store, 'sX')).toBe(false);
+    expect(consumeFirstPromptFlag(store, 'sX')).toBe(false);
+  });
+
+  it('keys per session (a different session is still first)', () => {
+    expect(consumeFirstPromptFlag(store, 'sX')).toBe(true);
+    expect(consumeFirstPromptFlag(store, 'sY')).toBe(true);
+  });
+
+  it('returns false without a session id (nothing to key on)', () => {
+    expect(consumeFirstPromptFlag(store, undefined)).toBe(false);
   });
 });

@@ -28,7 +28,9 @@ import {
   type RecallHit,
   resolveRecallProject,
 } from '../recall/index.js';
+import type { MemoryStore } from '../store/index.js';
 import { buildContextOutput, type HookPayload } from './payload.js';
+import { renderNotice } from './session-start.js';
 
 /** Max hits pulled from FTS before dedupe/budget trimming. */
 export const TOP_K = 8;
@@ -42,6 +44,25 @@ export interface ScopedRecall {
   hits: RecallHit[];
   /** The project recall was scoped to, or undefined for store-wide (#47). */
   project?: string;
+  /** True only on the session's first prompt — drives the max-effort memory notice (#52). */
+  firstPrompt?: boolean;
+}
+
+/** kv_meta key prefix marking that the memory notice was already shown for a session. */
+const NOTICE_FLAG_PREFIX = 'notice-shown:';
+
+/**
+ * Return true exactly once per session (the first prompt), marking the session as
+ * notified so the memory notice is reinforced on the first prompt but never spammed
+ * after. No session id → false (nothing to key the flag on). One tiny kv_meta write
+ * on the first prompt only; reads are free on every later prompt.
+ */
+export function consumeFirstPromptFlag(store: MemoryStore, sessionId: string | undefined): boolean {
+  if (!sessionId) return false;
+  const key = `${NOTICE_FLAG_PREFIX}${sessionId}`;
+  if (store.getMeta(key) !== null) return false;
+  store.setMeta(key, '1');
+  return true;
 }
 
 export interface UserPromptSubmitDeps {
@@ -140,7 +161,9 @@ async function recallFromStore(prompt: string, payload: HookPayload): Promise<Sc
     // Label each hit with its (now-healed) ground-truth freshness; demote stale;
     // flag facts verified on another branch (FR-C1).
     const annotated = annotateFreshness(memory.store, hits, currentBranch(process.cwd()));
-    return { hits: annotated, project };
+    // Reinforce the memory notice on the session's first prompt (#52, max-effort).
+    const firstPrompt = consumeFirstPromptFlag(memory.store, payload.sessionId);
+    return { hits: annotated, project, firstPrompt };
   } finally {
     memory.close();
   }
@@ -157,9 +180,13 @@ export async function handleUserPromptSubmit(
   const prompt = payload.prompt?.trim();
   if (!prompt) return undefined; // no prompt to recall against — nothing to do
 
-  const { hits, project } = deps.recall
+  const { hits, project, firstPrompt } = deps.recall
     ? await deps.recall(prompt, payload)
     : await recallFromStore(prompt, payload);
-  const block = renderRecallBlock(hits, fenceHeader(project));
-  return buildContextOutput('UserPromptSubmit', block) ?? undefined;
+  const recallBlock = renderRecallBlock(hits, fenceHeader(project));
+  // Max-effort memory notice: on the first prompt, reinforce the SessionStart notice
+  // right next to the prompt (where the model is least likely to miss it). #52.
+  const noticeBlock = firstPrompt ? renderNotice(payload.sessionId ?? '', payload.cwd) : '';
+  const combined = [recallBlock, noticeBlock].filter((b) => b.length > 0).join('\n\n');
+  return buildContextOutput('UserPromptSubmit', combined) ?? undefined;
 }

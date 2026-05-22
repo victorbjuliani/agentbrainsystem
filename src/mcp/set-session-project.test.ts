@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { loadConfig } from '../config.js';
-import { readBinding } from '../ingest/index.js';
+import { readBinding, writeBinding } from '../ingest/index.js';
 import { type Memory, openMemory } from '../memory.js';
 import { setSessionProjectAction } from './server.js';
 
@@ -33,49 +33,39 @@ describe('setSessionProjectAction (#52)', () => {
 
   describe('session resolution', () => {
     it('errors when neither session arg nor env is present', () => {
-      const r = setSessionProjectAction(memory, { action: 'set', project: 'X' });
+      const r = setSessionProjectAction(memory, { action: 'skip' });
       expect(r.error).toContain('no session id');
     });
 
     it('falls back to CLAUDE_CODE_SESSION_ID', () => {
       process.env.CLAUDE_CODE_SESSION_ID = 'env-sess';
-      const r = setSessionProjectAction(memory, { action: 'set', project: 'X' });
+      const r = setSessionProjectAction(memory, { action: 'skip' });
       expect(r).toMatchObject({ session: 'env-sess', applied: true });
     });
 
     it('prefers the explicit session arg over env', () => {
       process.env.CLAUDE_CODE_SESSION_ID = 'env-sess';
-      const r = setSessionProjectAction(memory, {
-        action: 'set',
-        project: 'X',
-        session: 'arg-sess',
-      });
+      const r = setSessionProjectAction(memory, { action: 'skip', session: 'arg-sess' });
       expect(r.session).toBe('arg-sess');
     });
   });
 
-  describe('set', () => {
-    it('writes a sanitized binding and reports kind=new', () => {
-      const r = setSessionProjectAction(memory, { action: 'set', project: 'a/b', session: 's1' });
-      expect(r).toMatchObject({ action: 'set', project: 'a-b', kind: 'new', applied: true });
-      expect(readBinding(memory.store, 's1')).toMatchObject({ action: 'set', project: 'a-b' });
-    });
-
-    it('reports kind=existing when the project already exists', () => {
-      memory.store.createSession({ externalId: 'other', project: 'Alpha' });
-      const r = setSessionProjectAction(memory, { action: 'set', project: 'Alpha', session: 's1' });
-      expect(r.kind).toBe('existing');
-    });
-
-    it('errors for a missing project name', () => {
-      const r = setSessionProjectAction(memory, { action: 'set', session: 's1' });
-      expect(r.error).toContain('requires a `project`');
-    });
-
-    it('errors for a name that sanitizes to nothing', () => {
-      const r = setSessionProjectAction(memory, { action: 'set', project: '   ', session: 's1' });
-      expect(r.error).toContain('not a usable project name');
+  describe('include (no custom name — the project is always the folder)', () => {
+    it('clears a prior skip binding so the session is stored again', () => {
+      writeBinding(memory.store, 's1', { action: 'skip' });
+      const r = setSessionProjectAction(memory, { action: 'include', session: 's1' });
+      expect(r).toMatchObject({ action: 'include', cleared: true, applied: true });
       expect(readBinding(memory.store, 's1')).toBeNull();
+    });
+
+    it('is a no-op (cleared=false) when there was no binding', () => {
+      const r = setSessionProjectAction(memory, { action: 'include', session: 's1' });
+      expect(r).toMatchObject({ action: 'include', cleared: false, applied: true });
+    });
+
+    it('never records a project label (the folder is the project)', () => {
+      const r = setSessionProjectAction(memory, { action: 'include', session: 's1' });
+      expect(r.project).toBeUndefined();
     });
   });
 
