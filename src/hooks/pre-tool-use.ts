@@ -151,8 +151,16 @@ export async function handlePreToolUse(
   const dup = checkDuplication(payload, seeds);
   if (dup) return buildPreToolUseOutput(guardMode(), dup) ?? undefined;
 
-  // 2) Decision surfacing (memory) — warn-only. Fail-open on any error.
-  const memory = deps.memory ?? (await openMemory(loadConfig(), { ensure: false }));
+  // 2) Decision surfacing (memory) — warn-only, fail-open on ANY error including
+  // store/config init (e.g. a hosted embedding provider selected without its API
+  // key would make loadConfig/openMemory throw). Init is inside the try so the
+  // function honors its own fail-open contract rather than relying on the runner.
+  let memory: Memory;
+  try {
+    memory = deps.memory ?? (await openMemory(loadConfig(), { ensure: false }));
+  } catch {
+    return undefined; // config/store init failed → allow silently
+  }
   try {
     const note = surfaceDecisions(memory, seeds, payload);
     return note ? (buildPreToolUseOutput('warn', note) ?? undefined) : undefined;
