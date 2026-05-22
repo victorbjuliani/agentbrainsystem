@@ -25,6 +25,7 @@ import {
   readBinding,
   type SessionBinding,
   sanitizeProjectName,
+  surveyClaudeProjects,
   writeBinding,
 } from '../ingest/index.js';
 import { createLlmProvider } from '../llm/index.js';
@@ -60,7 +61,12 @@ Commands:
                         hard-deleted — IRREVERSIBLE; export first; --yes skips the
                         prompt). Prints the final 'npm uninstall -g' to run yourself.
   start                 Run the MCP server over stdio (what Claude Code spawns).
-  ingest [--dir PATH]   Ingest Claude Code JSONL transcripts (default: ~/.claude/projects).
+  ingest [opts]         Explicit, opt-in historical ingest of past Claude Code
+                        transcripts (auto-ingest at SessionEnd covers only the current
+                        session). Preview-only by default — lists projects + how much
+                        is new, writes nothing. To ingest, pass --apply WITH a selector:
+                        --all (every project) or --project <slug> (repeatable). Refuses
+                        --apply without a selector. --dir PATH overrides the root.
   status                Show real health: db path, schema, counts, index staleness.
   export <path>         Export the whole store to a portable artifact.
   import <path>         Import an artifact. Options: --mode replace|merge (default merge).
@@ -125,11 +131,62 @@ async function cmdStart(): Promise<void> {
   await startStdio();
 }
 
-async function cmdIngest(args: string[]): Promise<void> {
+/**
+ * `abs ingest` — EXPLICIT, opt-in historical ingest (#62). Auto-ingest at SessionEnd
+ * is scoped to the current session; pulling the machine's past transcripts is this
+ * deliberate command. Preview by default (lists projects + how much is new, writes
+ * nothing); `--apply` ingests but REQUIRES a selector (`--all` or `--project`), so a
+ * full back-fill is never accidental. `--project <slug>` is repeatable. `--dir PATH`
+ * overrides the projects root (tests).
+ */
+export async function cmdIngest(args: string[]): Promise<void> {
   const dir = optionValue(args, '--dir');
+  const all = args.includes('--all');
+  const apply = args.includes('--apply');
+  const projects = optionValues(args, '--project');
+  const base = dir ? { projectsDir: dir } : {};
+
+  if (!apply) {
+    // Preview: survey on-disk transcripts by project. Read-only ⇒ ensure:false so we
+    // never load the embedding model just to list what's available.
+    const memory = await openMemory(loadConfig(), { ensure: false });
+    try {
+      const survey = await surveyClaudeProjects(memory, {
+        ...base,
+        ...(projects.length ? { projects } : {}),
+      });
+      if (survey.length === 0) {
+        out('no transcripts found.');
+        return;
+      }
+      out('ingest preview — transcripts on disk by project (nothing written):');
+      for (const p of survey) {
+        out(`  ${p.project}  ·  ${p.newTranscripts} new / ${p.transcripts} total`);
+      }
+      out('');
+      out('Historical ingest is opt-in. To ingest, re-run with --apply and a selector:');
+      out('  abs ingest --apply --all                  # every project');
+      out('  abs ingest --apply --project <slug> ...    # only these projects');
+    } finally {
+      memory.close();
+    }
+    return;
+  }
+
+  // Apply requires an explicit selector so a full ingest is never accidental.
+  if (!all && projects.length === 0) {
+    err('refusing to ingest without a selector — pass --all or --project <slug> (repeatable).');
+    err('(run `abs ingest` with no --apply to preview what is available.)');
+    process.exitCode = 1;
+    return;
+  }
+
   const memory = await openMemory();
   try {
-    const result = await ingestClaudeProjects(memory, dir ? { projectsDir: dir } : {});
+    const result = await ingestClaudeProjects(memory, {
+      ...base,
+      ...(all ? {} : { projects }),
+    });
     out(JSON.stringify(result, null, 2));
   } finally {
     memory.close();
@@ -974,6 +1031,15 @@ export async function cmdPromote(args: string[]): Promise<void> {
 function optionValue(args: string[], flag: string): string | undefined {
   const i = args.indexOf(flag);
   return i >= 0 ? args[i + 1] : undefined;
+}
+
+/** All values of a repeatable flag, e.g. `--project a --project b` → ['a','b']. */
+function optionValues(args: string[], flag: string): string[] {
+  const values: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === flag && args[i + 1] !== undefined) values.push(args[i + 1] as string);
+  }
+  return values;
 }
 
 /** First non-flag token. */
