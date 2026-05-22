@@ -208,4 +208,21 @@ describe('PreToolUse decision surfacing (#48 Phase A)', () => {
     );
     expect(out).toBeUndefined();
   });
+
+  it('fails open (no throw) when store/config init fails — e.g. invalid env (Codex P2)', async () => {
+    // No injected memory → the handler must build one from config; an invalid
+    // ABS_EMBED_PROVIDER makes loadConfig throw. The guard must degrade silently,
+    // not reject (its fail-open contract covers init, not just recall).
+    process.env.ABS_EMBED_PROVIDER = 'not-a-real-provider';
+    try {
+      const out = await handlePreToolUse({
+        cwd: '/work/p',
+        toolName: 'Write',
+        toolInput: { file_path: '/work/p/vitest.config.ts', content: 'x' },
+      });
+      expect(out).toBeUndefined();
+    } finally {
+      delete process.env.ABS_EMBED_PROVIDER;
+    }
+  });
 });
