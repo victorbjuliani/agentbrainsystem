@@ -15,7 +15,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { loadConfig } from '../config.js';
 import { __clearDeleteCacheForTests } from '../delete/delete.js';
 import { type Memory, openMemory } from '../memory.js';
-import { cmdForget, parseForgetSelector, parseIds } from './cli.js';
+import {
+  cmdForget,
+  cmdProject,
+  parseForgetSelector,
+  parseIds,
+  parseProjectAction,
+  resolveSessionId,
+} from './cli.js';
 
 describe('parseIds — --ids validation', () => {
   it('parses a comma list into positive ids', () => {
@@ -193,5 +200,200 @@ describe('cmdForget — preview default + apply path (hermetic, tmp ABS_HOME)', 
     await cmdForget(['--session', '99999', '--apply', '--yes']);
     const text = outLines.join('');
     expect(text).toContain('nothing to delete');
+  });
+});
+
+describe('parseProjectAction — exactly one action', () => {
+  it('defaults to status with no flags', () => {
+    expect(parseProjectAction([])).toEqual({ kind: 'status' });
+    expect(parseProjectAction(['--json'])).toEqual({ kind: 'status' });
+  });
+
+  it('parses --set <name>', () => {
+    expect(parseProjectAction(['--set', 'My Project'])).toEqual({
+      kind: 'set',
+      name: 'My Project',
+    });
+  });
+
+  it('parses --cwd and --skip', () => {
+    expect(parseProjectAction(['--cwd'])).toEqual({ kind: 'cwd' });
+    expect(parseProjectAction(['--skip'])).toEqual({ kind: 'skip' });
+  });
+
+  it('rejects --set without a value (or a flag-looking value)', () => {
+    expect(parseProjectAction(['--set'])).toEqual({
+      error: expect.stringContaining('--set requires'),
+    });
+    expect(parseProjectAction(['--set', '--session'])).toEqual({
+      error: expect.stringContaining('--set requires'),
+    });
+  });
+
+  it('rejects more than one action', () => {
+    expect(parseProjectAction(['--cwd', '--skip'])).toEqual({
+      error: expect.stringContaining('exactly one'),
+    });
+    expect(parseProjectAction(['--set', 'x', '--skip'])).toEqual({
+      error: expect.stringContaining('exactly one'),
+    });
+  });
+});
+
+describe('resolveSessionId — env vs --session, no mtime fallback', () => {
+  // The suite runs inside a real Claude Code session, so the ambient env var
+  // would leak in — clear it and set it explicitly per test.
+  beforeEach(() => {
+    delete process.env.CLAUDE_CODE_SESSION_ID;
+  });
+  afterEach(() => {
+    delete process.env.CLAUDE_CODE_SESSION_ID;
+  });
+
+  it('prefers an explicit --session', () => {
+    process.env.CLAUDE_CODE_SESSION_ID = 'env-id';
+    expect(resolveSessionId(['--session', 'flag-id'])).toEqual({ id: 'flag-id', source: 'flag' });
+  });
+
+  it('falls back to CLAUDE_CODE_SESSION_ID', () => {
+    process.env.CLAUDE_CODE_SESSION_ID = 'env-id';
+    expect(resolveSessionId([])).toEqual({ id: 'env-id', source: 'env' });
+  });
+
+  it('returns null when neither is present (no transcript guessing)', () => {
+    expect(resolveSessionId([])).toBeNull();
+  });
+
+  it('ignores a --session whose value is itself a flag, falling through to env', () => {
+    process.env.CLAUDE_CODE_SESSION_ID = 'env-id';
+    expect(resolveSessionId(['--session', '--json'])).toEqual({ id: 'env-id', source: 'env' });
+  });
+});
+
+describe('cmdProject — set / cwd / skip / status (hermetic, tmp ABS_HOME)', () => {
+  let dir: string;
+  let outLines: string[];
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'abs-cli-project-'));
+    process.env.ABS_HOME = dir;
+    process.env.ABS_EMBED_DIM = '8';
+    outLines = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk: string | Uint8Array) => {
+      outLines.push(String(chunk));
+      return true;
+    });
+    vi.spyOn(process.stderr, 'write').mockImplementation((chunk: string | Uint8Array) => {
+      outLines.push(String(chunk));
+      return true;
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete process.env.ABS_HOME;
+    delete process.env.ABS_EMBED_DIM;
+    process.exitCode = 0;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('--set writes a set binding and reports (new)', async () => {
+    await cmdProject(['--session', 'sess-A', '--set', 'My Feature', '--json']);
+    const o = JSON.parse(outLines.join(''));
+    expect(o).toMatchObject({
+      session: 'sess-A',
+      action: 'set',
+      project: 'My Feature',
+      kind: 'new',
+    });
+
+    const mem = await openMemory(loadConfig(), { ensure: false });
+    expect(mem.store.getMeta('session-project:sess-A')).toContain('"project":"My Feature"');
+    mem.close();
+  });
+
+  it('--set sanitizes the name and surfaces an error for an unusable name', async () => {
+    // whitespace/control-only → sanitizes to null → no binding, actionable error
+    await cmdProject(['--session', 'sess-A', '--set', '  \t ', '--json']);
+    expect(outLines.join('')).toContain('not a usable project name');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('--set collapses path separators into an inert label (no traversal)', async () => {
+    await cmdProject(['--session', 'sess-A', '--set', '../../etc', '--json']);
+    const o = JSON.parse(outLines.join(''));
+    expect(o.project).toBe('..-..-etc');
+  });
+
+  it('--cwd binds the cwd-derived slug', async () => {
+    await cmdProject(['--session', 'sess-B', '--cwd', '--json']);
+    const o = JSON.parse(outLines.join(''));
+    expect(o.action).toBe('set');
+    expect(o.project).toBe(process.cwd().split('/').join('-'));
+  });
+
+  it('--skip with no stored observations writes the binding directly', async () => {
+    await cmdProject(['--session', 'sess-C', '--skip', '--json']);
+    const o = JSON.parse(outLines.join(''));
+    expect(o).toMatchObject({ action: 'skip', applied: true, deleted: 0 });
+
+    const mem = await openMemory(loadConfig(), { ensure: false });
+    expect(mem.store.getMeta('session-project:sess-C')).toContain('"action":"skip"');
+    mem.close();
+  });
+
+  it('--skip with stored observations requires --yes (preview-only without it)', async () => {
+    // seed a session with an observation, then mark it skip without --yes
+    const mem = await openMemory(loadConfig(), { ensure: false });
+    const sid = mem.store.createSession({ externalId: 'sess-D', project: 'auto' });
+    mem.store.createObservation({ sessionId: sid, kind: 'user', content: 'hi' });
+    mem.close();
+
+    await cmdProject(['--session', 'sess-D', '--skip', '--json']);
+    const o = JSON.parse(outLines.join(''));
+    expect(o).toMatchObject({ action: 'skip', wouldDelete: 1, applied: false });
+
+    // nothing written / deleted
+    const mem2 = await openMemory(loadConfig(), { ensure: false });
+    expect(mem2.store.getSessionByExternalId('sess-D')).not.toBeNull();
+    expect(mem2.store.getMeta('session-project:sess-D')).toBeNull();
+    mem2.close();
+  });
+
+  it('--skip --yes hard-deletes the stored session and writes the binding', async () => {
+    const mem = await openMemory(loadConfig(), { ensure: false });
+    const sid = mem.store.createSession({ externalId: 'sess-E', project: 'auto' });
+    mem.store.createObservation({ sessionId: sid, kind: 'user', content: 'hi' });
+    mem.close();
+
+    await cmdProject(['--session', 'sess-E', '--skip', '--yes', '--json']);
+    const o = JSON.parse(outLines.join(''));
+    expect(o).toMatchObject({ action: 'skip', applied: true, deleted: 1 });
+
+    const mem2 = await openMemory(loadConfig(), { ensure: false });
+    expect(mem2.store.getSessionByExternalId('sess-E')).toBeNull();
+    expect(mem2.store.getMeta('session-project:sess-E')).toContain('"action":"skip"');
+    mem2.close();
+  });
+
+  it('status (no action) lists existing projects + the cwd suggestion as JSON', async () => {
+    const mem = await openMemory(loadConfig(), { ensure: false });
+    mem.store.createSession({ externalId: 's-x', project: 'Alpha' });
+    mem.store.createSession({ externalId: 's-y', project: 'Beta' });
+    mem.close();
+
+    await cmdProject(['--session', 'sess-F', '--json']);
+    const o = JSON.parse(outLines.join(''));
+    expect(o.session).toBe('sess-F');
+    expect(o.existingProjects).toEqual(['Alpha', 'Beta']);
+    expect(o.suggestedName).toBe(process.cwd().split('/').pop());
+    expect(o.binding).toBeNull();
+  });
+
+  it('errors with no resolvable session id', async () => {
+    delete process.env.CLAUDE_CODE_SESSION_ID;
+    await cmdProject(['--set', 'x', '--json']);
+    expect(outLines.join('')).toContain('no current session id');
+    expect(process.exitCode).toBe(1);
   });
 });

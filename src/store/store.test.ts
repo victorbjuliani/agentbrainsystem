@@ -522,6 +522,27 @@ describe('MemoryStore', () => {
     });
   });
 
+  describe('listProjects (#51)', () => {
+    it('returns distinct non-NULL projects, sorted', () => {
+      store.createSession({ externalId: 's1', project: 'Beta' });
+      store.createSession({ externalId: 's2', project: 'Alpha' });
+      store.createSession({ externalId: 's3', project: 'Beta' }); // dup
+      store.createSession({ externalId: 's4' }); // NULL project — excluded
+      expect(store.listProjects()).toEqual(['Alpha', 'Beta']);
+    });
+
+    it('includes the literal string "null" (a real label, distinct from SQL NULL)', () => {
+      store.createSession({ externalId: 's1', project: 'null' });
+      store.createSession({ externalId: 's2' }); // SQL NULL
+      expect(store.listProjects()).toEqual(['null']);
+    });
+
+    it('returns an empty array when no sessions have a project', () => {
+      store.createSession({ externalId: 's1' });
+      expect(store.listProjects()).toEqual([]);
+    });
+  });
+
   describe('deleteMeta / listMetaKeys (#50)', () => {
     it('deleteMeta removes a key and is a no-op when absent', () => {
       store.setMeta('k1', 'v1');

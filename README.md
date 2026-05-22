@@ -55,8 +55,20 @@ abs consolidate [--session N] [--dry-run] [--force]   # distill a session into d
 abs install-hooks         # register the Claude Code memory hooks (auto-ingest + context injection) — opt-in, idempotent, backup-first
 abs optimize [selector] [--apply] [--yes]   # turn distilled memory into evidence-backed CLAUDE.md / auto-memory diffs (preview → approve → apply)
 abs forget [selector] [--apply] [--yes]   # selectively hard-delete memories — IRREVERSIBLE, export first
+abs project [--set NAME | --cwd | --skip] [--session ID] [--yes] [--json]   # set/confirm/skip the current session's project
 abs --help | --version
 ```
+
+`abs project` records an intentional project for the **current** Claude Code session
+instead of the silent cwd-slug default — the deterministic escape hatch that does not
+depend on the agent asking. With no action it prints the resolved session, the auto slug,
+existing projects, and suggestions. `--set "NAME"` links an existing project or creates a
+new one (sanitized); `--cwd` accepts the cwd-derived slug; `--skip` excludes the session
+from memory. The session id comes from `CLAUDE_CODE_SESSION_ID` (or `--session ID` to
+override). The decision is applied at the next ingest. `--skip` hard-deletes any
+already-stored observations for the session, so that path requires `--yes`. Note the
+suggestion is the slug for *this exact* cwd — a symlinked or worktree path produces its
+own slug.
 
 `abs hook <event>` (event ∈ `session-end | session-start | user-prompt-submit`) is the
 internal entry point the registered hooks invoke — it is non-fatal/timeout-bounded and
