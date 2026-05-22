@@ -1,22 +1,30 @@
 /**
- * SessionStart hook handler (#16) — baseline context injection + staleness flag.
+ * SessionStart hook handler (#16 baseline + #52 project picker).
  *
  * When a Claude Code session starts, Claude Code runs this with the payload on
- * stdin. We inject a small baseline block ($0, no LLM, no embedding) so the agent
- * begins each session aware that a persistent memory exists and how fresh it is:
+ * stdin. We inject two $0/offline blocks (no LLM, no embedding):
  *
- *   - store stats (sessions / observations) — proof the memory is populated;
- *   - a pending-optimization staleness flag ("N optimizations pending") computed
- *     from a kv_meta cursor (`optimize:cursorObsId`) counting observations added
- *     since the last optimization. The flag only COUNTS — it never runs the
- *     optimizer (that is #21).
+ *   1. Baseline (#16): store stats (sessions / observations) + a pending-
+ *      optimization staleness flag, so the agent begins each session aware a
+ *      persistent memory exists and how fresh it is. The flag only COUNTS.
+ *
+ *   2. Project picker (#52, F5): hooks can't prompt, so we inject an IMPERATIVE
+ *      instruction telling Claude to ask the user which project this session
+ *      belongs to (existing / new name / skip) and record it via the
+ *      `set_session_project` MCP tool. Soft (we can't force Claude — the CLI
+ *      `abs project` is the hard guarantee, #51). Suppressed once a decision
+ *      binding already exists for the session (idempotent on resume), or when
+ *      the payload carries no session id (fail-safe — no fulfillable instruction).
  *
  * Opened with `ensure:false`: SessionStart must NOT trigger an index rebuild or a
  * model cold-load on the interactive critical path (same discipline as the UI #11
  * and ADR-0005). On any failure the runner swallows it (ADR-0004) and the session
- * starts with no injected baseline — never blocked.
+ * starts with no injection — never blocked.
  */
+import { basename } from 'node:path';
+import { readBinding } from '../ingest/index.js';
 import { openMemory } from '../memory.js';
+import { projectSlug } from '../optimize/targets.js';
 import { buildContextOutput, type HookPayload } from './payload.js';
 import { evaluateStaleness, OPTIMIZE_CURSOR_KEY } from './staleness.js';
 
@@ -25,6 +33,10 @@ export interface SessionStartFacts {
   observations: number;
   pending: number;
   flagged: boolean;
+  /** Existing project labels (#52 picker). Undefined when not gathered. */
+  projects?: string[];
+  /** Whether a session→project binding already exists for this session (#52). */
+  hasBinding?: boolean;
 }
 
 export interface SessionStartDeps {
@@ -32,8 +44,11 @@ export interface SessionStartDeps {
   gatherFacts?: () => Promise<SessionStartFacts>;
 }
 
-/** Read store stats + staleness without mutating or loading any model. */
-async function gatherFactsFromStore(): Promise<SessionStartFacts> {
+/**
+ * Read store stats + staleness (+ picker facts when a `sessionId` is given) without
+ * mutating or loading any model. One `ensure:false` open serves both blocks.
+ */
+async function gatherFactsFromStore(sessionId?: string): Promise<SessionStartFacts> {
   const memory = await openMemory(undefined, { ensure: false });
   try {
     const counts = memory.store.counts();
@@ -42,7 +57,17 @@ async function gatherFactsFromStore(): Promise<SessionStartFacts> {
       cursorRaw ? Number.parseInt(cursorRaw, 10) || 0 : 0,
     );
     const { flagged } = evaluateStaleness(cursorRaw, pending);
-    return { sessions: counts.sessions, observations: counts.observations, pending, flagged };
+    const facts: SessionStartFacts = {
+      sessions: counts.sessions,
+      observations: counts.observations,
+      pending,
+      flagged,
+    };
+    if (sessionId) {
+      facts.projects = memory.store.listProjects();
+      facts.hasBinding = readBinding(memory.store, sessionId) !== null;
+    }
+    return facts;
   } finally {
     memory.close();
   }
@@ -65,14 +90,60 @@ export function renderBaseline(facts: SessionStartFacts): string {
 }
 
 /**
+ * Render the project-picker block (#52, F5). An imperative instruction for Claude
+ * to ask the user which project this session belongs to and record it via the
+ * `set_session_project` MCP tool (passing the explicit session id so the tool
+ * never has to guess). Renders independently of the baseline so it fires even on
+ * a brand-new (empty) store. Returns '' when there's no usable session id.
+ */
+export function renderPicker(
+  sessionId: string,
+  cwd: string | undefined,
+  projects: string[],
+): string {
+  if (!sessionId) return '';
+  const lines = ['agentbrainsystem — choose this session’s project (memory hygiene).'];
+  if (cwd) {
+    lines.push(`This session’s working dir: ${cwd}`);
+    lines.push(`  • accept the auto-derived project: "${projectSlug(cwd)}"`);
+    lines.push(`  • or a clean new label, suggested: "${basename(cwd)}"`);
+  }
+  if (projects.length > 0) {
+    lines.push(`Existing projects you can link to: ${projects.map((p) => `"${p}"`).join(', ')}`);
+  }
+  lines.push(
+    'ACTION REQUIRED: ask the user which project this session belongs to — link an ' +
+      'existing one, use a new name, accept the auto-derived one, or SKIP (do not store ' +
+      'this session). Then record their choice by calling the `set_session_project` MCP ' +
+      `tool with session="${sessionId}" and either action="set" + project="<name>" or ` +
+      'action="skip". If the user does not care, prefer the auto-derived project. Ask once.',
+  );
+  return lines.join('\n');
+}
+
+/**
  * Build the SessionStart context line (or undefined when there's nothing to inject).
- * Throws on failure — the runner swallows it.
+ * Concatenates the baseline (#16) and the project picker (#52) into one injection
+ * (the runner emits a single stdout line). Throws on failure — the runner swallows it.
  */
 export async function handleSessionStart(
-  _payload: HookPayload,
+  payload: HookPayload,
   deps: SessionStartDeps = {},
 ): Promise<string | undefined> {
-  const facts = deps.gatherFacts ? await deps.gatherFacts() : await gatherFactsFromStore();
-  const block = renderBaseline(facts);
-  return buildContextOutput('SessionStart', block) ?? undefined;
+  const facts = deps.gatherFacts
+    ? await deps.gatherFacts()
+    : await gatherFactsFromStore(payload.sessionId);
+
+  const blocks: string[] = [];
+  const baseline = renderBaseline(facts);
+  if (baseline) blocks.push(baseline);
+
+  // Picker: only when we have a session id to key the decision on AND no binding
+  // already records a choice (idempotent on resume / re-injection).
+  if (payload.sessionId && facts.hasBinding === false) {
+    const picker = renderPicker(payload.sessionId, payload.cwd, facts.projects ?? []);
+    if (picker) blocks.push(picker);
+  }
+
+  return buildContextOutput('SessionStart', blocks.join('\n\n')) ?? undefined;
 }
