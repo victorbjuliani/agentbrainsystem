@@ -123,7 +123,9 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
     {
       type: 'button',
       class: 'control toggle',
-      'aria-pressed': 'false',
+      // Default scope opens with similarity ON — reflect that on first paint so the
+      // control state isn't inverted for sighted/AT users before the first sync.
+      'aria-pressed': 'true',
       'aria-label': 'Alternar arestas de similaridade',
     },
     ['similaridade'],
@@ -179,10 +181,11 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
     emitScope();
   });
   scopeSessionBtn.addEventListener('click', () => {
-    // "sessão" drops to the focused session, or the most-recent one (server default)
-    // when nothing is focused — never a stale topN-era focus.
+    // "sessão" shows the focused session if one is held, else the most-recent (server
+    // default). It must be idempotent: re-clicking it while a session is focused keeps
+    // that session — we do NOT clear `focusedSessionId` here. Going to "tudo" already
+    // drops the focus (topN payloads carry no sessionId, so syncFromData clears it).
     mode = 'session';
-    focusedSessionId = undefined;
     syncScopeButtons();
     emitScope();
   });

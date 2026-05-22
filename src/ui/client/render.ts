@@ -15,14 +15,9 @@ import type { ViewEdge, ViewGraph, ViewNode } from './types.js';
 
 const REDUCED_MOTION = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-/**
- * Map sizeDriver to a world radius with a gentle sqrt curve — sessions read a touch
- * larger as hubs, but no giant outliers (DESIGN §11). Exported so main.ts derives
- * the same radius when projecting the wire payload (one source of truth).
- */
-export function radiusFor(type: NodeType, sizeDriver: number): number {
-  const base = type === 'session' ? 5 : 3;
-  return base + Math.sqrt(Math.max(0, sizeDriver)) * 1.6;
+/** Is the light theme active? Read live so a theme toggle re-routes the paint. */
+function isLightTheme(): boolean {
+  return document.documentElement.dataset.theme === 'light';
 }
 
 /** Stable per-node id (force-graph may pass the resolved object or the raw id). */
@@ -106,9 +101,12 @@ export function createRenderer(mount: HTMLElement, cb: RendererCallbacks): Rende
     const inSynapse = focusNode !== null && neighbourIds.has(node.id);
     const isFocus = focusNode !== null && node.id === focusNode.id;
 
-    // Dimming: synapse (§9 #3) dims non-neighbours ~40%.
+    const light = isLightTheme();
+
+    // Dimming: synapse (§9 #3) dims non-neighbours. The floor is theme-aware: on the
+    // pale light canvas a 0.22 core nearly vanishes, so light holds a higher floor.
     let dim = 1;
-    if (focusNode) dim = inSynapse ? 1 : 0.4;
+    if (focusNode) dim = inSynapse ? 1 : light ? 0.35 : 0.22;
 
     // Breathing (§9 #2): subtle scale+opacity loop, desync per node, gated by RM.
     let breath = 1;
@@ -120,31 +118,61 @@ export function createRenderer(mount: HTMLElement, cb: RendererCallbacks): Rende
     }
 
     const r = node.radius * breath;
-
-    // Glow halo as elevation (DESIGN §8). Emphasis when focused/in-synapse; ambient otherwise.
     const emphasised = isFocus || inSynapse;
-    const haloAlpha = (emphasised ? 0.55 : 0.28 + breathGlow * 0.12) * dim;
-    const haloR = r * (emphasised ? 3.4 : 2.4);
-    const grad = ctx.createRadialGradient(
-      node.x ?? 0,
-      node.y ?? 0,
-      r * 0.4,
-      node.x ?? 0,
-      node.y ?? 0,
-      haloR,
-    );
-    grad.addColorStop(0, withAlpha(color, haloAlpha));
-    grad.addColorStop(1, withAlpha(color, 0));
-    ctx.beginPath();
-    ctx.fillStyle = grad;
-    ctx.arc(node.x ?? 0, node.y ?? 0, haloR, 0, Math.PI * 2);
-    ctx.fill();
+    const cx = node.x ?? 0;
+    const cy = node.y ?? 0;
 
-    // Core disc.
+    // Elevation (DESIGN §8): GLOW on dark, SHADOW on light.
+    if (light) {
+      // Soft dark shadow under the node = elevation on the pale canvas (a luminous
+      // halo would just wash out). Emphasis additionally gets a low-alpha accent
+      // bloom + (below) an accent rim, so the synapse still "lights up" with color.
+      const shadowR = r * 1.9;
+      const shadow = ctx.createRadialGradient(cx, cy, r * 0.6, cx, cy, shadowR);
+      shadow.addColorStop(0, withAlpha('#14101b', 0.18 * dim));
+      shadow.addColorStop(1, withAlpha('#14101b', 0));
+      ctx.beginPath();
+      ctx.fillStyle = shadow;
+      ctx.arc(cx, cy, shadowR, 0, Math.PI * 2);
+      ctx.fill();
+      if (emphasised) {
+        const bloomR = r * 2.6;
+        const bloom = ctx.createRadialGradient(cx, cy, r * 0.4, cx, cy, bloomR);
+        bloom.addColorStop(0, withAlpha(color, 0.4 * dim));
+        bloom.addColorStop(1, withAlpha(color, 0));
+        ctx.beginPath();
+        ctx.fillStyle = bloom;
+        ctx.arc(cx, cy, bloomR, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    } else {
+      // Glow halo as elevation. Emphasis (focus/in-synapse) burns brighter + wider.
+      const haloAlpha = (emphasised ? 0.65 : 0.28 + breathGlow * 0.12) * dim;
+      const haloR = r * (emphasised ? 3.8 : 2.4);
+      const grad = ctx.createRadialGradient(cx, cy, r * 0.4, cx, cy, haloR);
+      grad.addColorStop(0, withAlpha(color, haloAlpha));
+      grad.addColorStop(1, withAlpha(color, 0));
+      ctx.beginPath();
+      ctx.fillStyle = grad;
+      ctx.arc(cx, cy, haloR, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Core disc — on light, stays fully saturated/opaque (only dimmed by synapse) so
+    // the type color reads against the shadow rather than a washed-out halo.
     ctx.beginPath();
     ctx.fillStyle = withAlpha(color, dim);
-    ctx.arc(node.x ?? 0, node.y ?? 0, r, 0, Math.PI * 2);
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
     ctx.fill();
+
+    // Accent rim on emphasised light nodes — reinforces the "lit" cue in color.
+    if (light && emphasised && !isFocus) {
+      ctx.beginPath();
+      ctx.strokeStyle = withAlpha(color, 0.9 * dim);
+      ctx.lineWidth = 1 / scale;
+      ctx.arc(cx, cy, r + 0.75 / scale, 0, Math.PI * 2);
+      ctx.stroke();
+    }
 
     // Bright rim on the focused node — reads as "selected".
     if (isFocus) {

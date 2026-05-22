@@ -3,7 +3,8 @@
 > Documento canônico de identidade visual. Lido por `frontend-design`, `frontend-auditor`, `vercel:shadcn`.
 > Atualizar via `design-discovery` em modo REFRESH quando references mudarem.
 
-**Última atualização:** 2026-05-22 (P0/P1 chrome: a UI abre na **constelação store-wide com similaridade ON** (não na sessão recente, que renderizava quase vazia); o toggle "top 200" virou um **segmented control "sessão · tudo"** (o cap 200 é interno, nunca exposto); pills de tipo ausentes ficam **escondidas** (não esmaecidas) e o clique **isola** o tipo (re-clique restaura, modifier = aditivo); o **inspector ancora abaixo** da barra de busca/tema para não cobri-la; linha de status em cor neutra, não amber)
+**Última atualização:** 2026-05-22 (P2 refino visual: a elevação dos nós no canvas implementa §8 — **glow no dark, sombra no light** (light = disco saturado + sombra escura difusa, não halo lavado; emphasis no light ganha bloom accent + rim p/ o "acender" manter cor); **hierarquia de tamanho** real (`node-size.ts` `radiusFor`: session base 5 / `lesson`·`decision` base 8 sized-by-class / leaves base 2.6 com spread maior, curva sqrt sem outliers gigantes); **sinapse mais forte** (dim de não-vizinhos 0.22 dark / 0.35 light; halo emphasised dark mais intenso); accents `lesson`/`decision` escurecidos no light; segmento/toggle ativos usam `violet-700` no light — antes `violet-300` lavava no branco)
+**Atualização P0/P1 (2026-05-22):** a UI abre na **constelação store-wide com similaridade ON** (não na sessão recente, que renderizava quase vazia); o toggle "top 200" virou um **segmented control "sessão · tudo"** (o cap 200 é interno, nunca exposto); pills de tipo ausentes ficam **escondidas** (não esmaecidas) e o clique **isola** o tipo (re-clique restaura, modifier = aditivo); o **inspector ancora abaixo** da barra de busca/tema para não cobri-la; linha de status em cor neutra, não amber
 **Atualizações anteriores:** 2026-05-21 (#35/#43: `lesson`/`decision` deixam de ser reservados — pills habilitam quando presentes, nós fixados em view via `mergePinnedConsolidated`; busca server-side por FTS (`mode:'search'`) os alcança store-wide, substituindo o highlight client-side; escopo da UI revisado para refletir o write-path de delete gated, ADR-0007)
 **Modo de captura:** initial + refresh parcial (§4/§11)
 **Status do recon:** completo (Obsidian, Observable, Neo4j Bloom — tokens computados extraídos via agent-browser)
@@ -186,6 +187,8 @@ No dark a elevação é **luz emitida**, não sombra (sombra não lê sobre `#0A
 --shadow-md:  0 4px 12px -2px rgba(20,16,27,0.10);
 --shadow-lg:  0 12px 32px -6px rgba(20,16,27,0.14);
 ```
+
+> **Nós do canvas seguem a mesma regra** (não dá `box-shadow` no canvas, então `render.ts` pinta à mão): no dark, um halo radial de glow na cor do nó; no light, uma sombra escura difusa (`#14101b` baixa-alpha) sob um core saturado opaco. No light, um nó em emphasis (focus/sinapse) ainda ganha um bloom accent de baixa-alpha + rim na cor — o "acender" do §9 #3 nunca perde a cor.
 
 ### Focus ring
 ```css
