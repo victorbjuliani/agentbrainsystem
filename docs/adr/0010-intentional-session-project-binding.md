@@ -70,8 +70,15 @@ whenever ingest next runs (at-least-once, riding the existing byte-cursor).
 - **No migration, no `createSession` change** → reversible and low-risk; a partial deploy
   is safe because absence of a binding is the current behavior.
 - This ADR delivers F2 (binding + store method) and F3 (decision-aware ingest). The
-  interactive picker (#52) and CLI `abs project` (#51) are the human-facing writers that
-  build on `writeBinding`; project-scoped recall (#47) is the downstream consumer.
+  CLI `abs project` (#51) and the interactive picker + `set_session_project` MCP tool
+  (#52) are the human-facing writers that build on `writeBinding`; project-scoped recall
+  (#47) is the downstream consumer.
+- **Destructive `skip` is gated at every writer, not just the core.** `writeBinding(skip)`
+  itself hard-deletes an already-stored session (cascade), so each writer puts a confirmation
+  in front of it: the CLI requires `--yes` and the MCP tool requires `confirmDelete=true`
+  (both surface a `wouldDelete` count first). This keeps the destructive primitive
+  unreachable without explicit confirmation even though the agent (not a human directly)
+  invokes the MCP tool — consistent with ADR-0008's preview→confirm→delete invariant.
 
 ## Alternatives rejected
 

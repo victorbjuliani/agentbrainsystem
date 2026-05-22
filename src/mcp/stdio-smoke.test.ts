@@ -42,6 +42,7 @@ describe('MCP stdio packaging', () => {
       'optimize',
       'recall',
       'remember',
+      'set_session_project',
     ]);
 
     await client.callTool({
@@ -55,5 +56,18 @@ describe('MCP stdio packaging', () => {
     })) as { content: Array<{ type: string; text: string }> };
     const hits = JSON.parse(res.content[0]?.text ?? '[]') as Array<{ content: string }>;
     expect(hits.some((h) => h.content.includes('staging database'))).toBe(true);
+
+    // set_session_project (#52) over the real stdio transport: a set binding round-trips.
+    const setRes = (await client.callTool({
+      name: 'set_session_project',
+      arguments: { action: 'set', project: 'Smoke', session: 'smoke-sess' },
+    })) as { content: Array<{ type: string; text: string }> };
+    const setOut = JSON.parse(setRes.content[0]?.text ?? '{}') as Record<string, unknown>;
+    expect(setOut).toMatchObject({
+      session: 'smoke-sess',
+      action: 'set',
+      project: 'Smoke',
+      applied: true,
+    });
   });
 });
