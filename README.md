@@ -10,10 +10,11 @@ Existing agent-memory tools capture data but often fail at the part that matters
 
 - **Reliable recall** — semantic search over past coding sessions that actually returns relevant results.
 - **Live capture & injection** — Claude Code hooks auto-ingest each session ($0, no LLM) and inject relevant memory back at session start / per prompt (FTS-first, no cold-load), hands-free.
+- **Project-scoped by default** — recall and injection are isolated to the current session's project, so memory from project B never leaks into project A (`ABS_RECALL_SCOPE=global` opts back into store-wide recall).
 - **Distilled lessons** — optional LLM consolidation of raw session noise into durable insights/decisions.
 - **Optimization loop** — turn that distilled memory into evidence-backed, gated edits to your project's `CLAUDE.md` and Claude Code auto-memory (preview → approve → apply; never automatic).
 - **Selective delete** — prune wrong/stale/sensitive memories by id, session, project, or search, across CLI, MCP, and the UI (preview → confirm; hard-delete, export first).
-- **Verifiable, self-healing memory** — facts edited via Edit/Write are anchored to real code (`file:line@commit`) through the code-review-graph; recall labels each as ✓verified / ~claimed / ⚠stale, anchors self-heal when code moves (rename re-anchors, removal goes stale), and a PreToolUse guard warns in-loop before you duplicate code that already exists. Fail-open and offline-safe (`docs/adr/0009-verifiable-memory-anchoring.md`).
+- **Verifiable, self-healing memory** — facts edited via Edit/Write are anchored to real code (`file:line@commit`) through the code-review-graph; recall labels each as ✓verified / ~claimed / ⚠stale, anchors self-heal when code moves (rename re-anchors, removal goes stale), and a PreToolUse guard warns in-loop before you duplicate code that already exists — and surfaces recorded decisions/lessons touching the file you're editing (#48, warn-only). Fail-open and offline-safe (`docs/adr/0009-verifiable-memory-anchoring.md`).
 - **Portable memory** — export and import the whole memory store as a portable artifact (no lock-in, survives machine/project moves).
 - **Visual graph UI** — a localhost interface to explore the agent's memory as an interactive graph.
 
@@ -146,7 +147,8 @@ Then ingest your history (`abs ingest`) and Claude Code can call the MCP tools:
 `recall`, `remember`, `memory_status`, `optimize`/`apply` (gated memory edits), and
 `forget_preview`/`forget` (selective hard-delete — `forget_preview` resolves what a
 delete would remove and mints a single-use handle, read-only; `forget` consumes that
-handle to delete exactly the previewed set, and is IRREVERSIBLE). Configure a hosted
+handle to delete exactly the previewed set, and is IRREVERSIBLE), and `set_session_project`
+(record the current session's project — `action=set|skip`; #52). Configure a hosted
 embedder if you prefer (`ABS_EMBED_PROVIDER=gemini|voyage` with the matching API key) —
 local stays the default.
 
@@ -159,6 +161,7 @@ local stays the default.
 | `ABS_EMBED_MODEL` | `Xenova/all-MiniLM-L6-v2` | model id for the provider |
 | `ABS_EMBED_DIM` | per provider (local 384, gemini 768, voyage 1024) | vector width; only set to override |
 | `ABS_RECALL_SCOPE` | `project` | recall/injection isolation: `project` (only the current session's project) \| `global` (store-wide) |
+| `ABS_GUARD_MODE` | `warn` | PreToolUse guard: `warn` (surface only) \| `block` (blocks code duplication; decision surfacing stays warn-only) |
 | `ABS_LLM_BASE_URL` | _(unset → consolidation off)_ | OpenAI-compatible chat endpoint for `abs consolidate`, e.g. `http://localhost:11434/v1` |
 | `ABS_LLM_MODEL` | _(required when base set)_ | chat model id, e.g. `llama3.1` |
 | `ABS_LLM_API_KEY` | _(optional)_ | bearer token for hosted endpoints; local backends need none |
@@ -182,6 +185,7 @@ See also:
 - `docs/adr/0007-ui-write-path-security.md` — UI write-path security (CSRF/Origin, handle confirmation)
 - `docs/adr/0008-hard-delete-safety.md` — hard-delete safety (preview→pin→execute, no-undo)
 - `docs/adr/0009-verifiable-memory-anchoring.md` — verifiable memory (code-grounded anchors, self-healing, PreToolUse guard)
+- `docs/adr/0010-intentional-session-project-binding.md` — intentional session→project binding (decision-aware ingest feeding project-scoped recall)
 - `docs/DESIGN.md` — visual identity for the graph UI
 - `docs/export-format.md` — the export artifact format
 - [GitHub Issues](https://github.com/victorbjuliani/agentbrainsystem/issues) — requirements and roadmap (source of truth)
