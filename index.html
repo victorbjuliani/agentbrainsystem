@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agentbrainsystem — local-first memory for AI coding agents</title>
+<meta name="description" content="Give your AI coding agent persistent memory that runs 100% locally. $0, offline, open source. Reliable recall across sessions — your code never leaves your machine.">
+<meta name="theme-color" content="#0A0810">
+<link rel="canonical" href="https://victorbjuliani.github.io/agentbrainsystem/">
+
+<!-- favicons -->
+<link rel="icon" href="assets/favicon.ico" sizes="any">
+<link rel="icon" type="image/png" sizes="96x96" href="assets/favicon-96x96.png">
+<link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+<link rel="manifest" href="assets/site.webmanifest">
+
+<!-- Open Graph / Twitter -->
+<meta property="og:type" content="website">
+<meta property="og:title" content="agentbrainsystem — local-first memory for AI coding agents">
+<meta property="og:description" content="Persistent memory for AI coding agents. Reliable recall across sessions. $0, offline, open source.">
+<meta property="og:image" content="https://victorbjuliani.github.io/agentbrainsystem/assets/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:url" content="https://victorbjuliani.github.io/agentbrainsystem/">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="agentbrainsystem — local-first memory for AI coding agents">
+<meta name="twitter:description" content="Persistent memory for AI coding agents. $0, offline, open source.">
+<meta name="twitter:image" content="https://victorbjuliani.github.io/agentbrainsystem/assets/og-image.png">
+
+<link rel="preload" as="font" href="assets/fonts/SpaceGrotesk.ttf" type="font/ttf" crossorigin>
+<link rel="stylesheet" href="styles.css">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "agentbrainsystem",
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "macOS, Windows, Linux",
+  "description": "Local-first persistent memory for AI coding agents. Reliable semantic recall across Claude Code sessions — $0, offline, open source.",
+  "url": "https://victorbjuliani.github.io/agentbrainsystem/",
+  "codeRepository": "https://github.com/victorbjuliani/agentbrainsystem",
+  "license": "https://github.com/victorbjuliani/agentbrainsystem/blob/main/LICENSE",
+  "isAccessibleForFree": true,
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+}
+</script>
+</head>
+<body>
+<a class="skip-link" href="#main" data-i18n="skip">Skip to content</a>
+
+<!-- ===================== NAV ===================== -->
+<header class="nav">
+  <div class="wrap nav__inner">
+    <a class="brand" href="#" aria-label="agentbrainsystem home">
+      <img src="assets/creature-sm.webp" width="30" height="30" alt="">
+      <b translate="no">agentbrainsystem</b>
+    </a>
+    <nav class="nav__links" aria-label="Primary">
+      <a href="#features" data-i18n="nav.features">Features</a>
+      <a href="#how" data-i18n="nav.how">How it works</a>
+      <a href="#faq" data-i18n="nav.faq">FAQ</a>
+    </nav>
+    <div class="langtoggle" role="group" aria-label="Language">
+      <button type="button" data-lang="en" aria-pressed="true">EN</button>
+      <button type="button" data-lang="pt" aria-pressed="false">PT</button>
+    </div>
+    <a class="btn btn-primary" href="https://github.com/victorbjuliani/agentbrainsystem" target="_blank" rel="noopener">
+      <span class="star">★</span><span data-i18n="cta.star">Star on GitHub</span>
+    </a>
+  </div>
+</header>
+
+<main id="main">
+
+<!-- ===================== HERO ===================== -->
+<section class="hero">
+  <div class="wrap hero__grid">
+    <div class="hero__copy">
+      <p class="eyebrow" data-i18n="hero.eyebrow">Local-first · $0 · Offline · Open source</p>
+      <h1><span data-i18n="hero.h1a">Your AI coding agent has amnesia.</span> <span class="hl" data-i18n="hero.h1b">Cure it in one command.</span></h1>
+      <p class="lead" data-i18n="hero.sub">Persistent memory for your AI coding agent. It remembers every session — so you stop re-explaining the same context, every day. Local, free, private.</p>
+      <div class="hero__cta">
+        <a class="btn btn-primary" href="https://github.com/victorbjuliani/agentbrainsystem" target="_blank" rel="noopener">
+          <span class="star">★</span><span data-i18n="cta.star">Star on GitHub</span>
+        </a>
+        <a class="btn btn-ghost" href="#how" data-i18n="cta.how">See how it works</a>
+      </div>
+      <p class="hero__note" data-i18n="hero.note">Works on macOS, Windows & Linux. Node ≥ 22.</p>
+    </div>
+
+    <div class="creature">
+      <img src="assets/creature.webp" width="460" height="460"
+           alt="A glowing bioluminescent jellyfish shaped like a brain — the agentbrainsystem mascot"
+           fetchpriority="high">
+    </div>
+  </div>
+</section>
+
+<!-- ===================== FEATURES (3 heroes) ===================== -->
+<section id="features">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <p class="eyebrow" data-i18n="feat.eyebrow">Why it exists</p>
+      <h2 data-i18n="feat.h">Stop being your agent's memory.</h2>
+      <p class="lead" data-i18n="feat.lead">Every session, it starts from zero. agentbrainsystem remembers — captures each one, recalls what matters, hands-free.</p>
+    </div>
+    <div class="features-3">
+      <article class="feat reveal">
+        <div class="ic" aria-hidden="true">◎</div>
+        <h3 data-i18n="feat.1.h">Recall that actually works</h3>
+        <p data-i18n="feat.1.p">Hybrid semantic + keyword search returns only what's relevant to the task in front of you — not a pile of noise.</p>
+        <p class="stat" data-i18n="feat.1.s">~280 ms warm recall</p>
+      </article>
+      <article class="feat reveal">
+        <div class="ic" aria-hidden="true">⟳</div>
+        <h3 data-i18n="feat.2.h">Set it once. Forget it forever.</h3>
+        <p data-i18n="feat.2.p">Captures each session when it ends and feeds the right context back at the next start. One command — then it's invisible.</p>
+        <p class="stat" data-i18n="feat.2.s">$0 · no LLM · hands-free</p>
+      </article>
+      <article class="feat reveal">
+        <div class="ic" aria-hidden="true">⬡</div>
+        <h3 data-i18n="feat.3.h">Your code never leaves your laptop</h3>
+        <p data-i18n="feat.3.p">100% local and offline. No cloud, no account, no API keys, no telemetry. The model downloads once, then runs offline.</p>
+        <p class="stat" data-i18n="feat.3.s">offline · private · $0</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== HOW IT WORKS (3 steps) ===================== -->
+<section id="how">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <p class="eyebrow" data-i18n="how.eyebrow">How it works</p>
+      <h2 data-i18n="how.h">Three steps. Zero effort.</h2>
+    </div>
+    <ol class="steps reveal">
+      <li class="step">
+        <span class="step__n" aria-hidden="true">01</span>
+        <h3 data-i18n="how.1.h">Capture</h3>
+        <p data-i18n="how.1.p">Hooks auto-ingest every Claude Code session when it ends — $0, no LLM.</p>
+        <p class="tech" translate="no">JSONL · hooks</p>
+      </li>
+      <li class="step">
+        <span class="step__n" aria-hidden="true">02</span>
+        <h3 data-i18n="how.2.h">Store</h3>
+        <p data-i18n="how.2.p">Embedded locally on your machine, fully offline. Nothing is uploaded.</p>
+        <p class="tech" translate="no">SQLite · sqlite-vec · FTS5</p>
+      </li>
+      <li class="step">
+        <span class="step__n" aria-hidden="true">03</span>
+        <h3 data-i18n="how.3.h">Recall</h3>
+        <p data-i18n="how.3.p">Hybrid semantic + keyword search surfaces relevant memory — at session start and on every prompt, as you work.</p>
+        <p class="tech" translate="no">per-prompt · MCP recall</p>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<!-- ===================== MORE (spec-sheet panel) ===================== -->
+<section>
+  <div class="wrap">
+    <div class="section-head reveal">
+      <p class="eyebrow" data-i18n="more.eyebrow">More than recall</p>
+      <h2 data-i18n="more.h">Careful by design.</h2>
+    </div>
+    <div class="more-panel reveal">
+      <div class="more-item"><span class="dot" aria-hidden="true"></span><span data-i18n="more.1">Project-scoped recall</span></div>
+      <div class="more-item"><span class="dot" aria-hidden="true"></span><span data-i18n="more.2">Contradiction-aware</span></div>
+      <div class="more-item"><span class="dot" aria-hidden="true"></span><span data-i18n="more.3">Self-healing facts</span></div>
+      <div class="more-item"><span class="dot" aria-hidden="true"></span><span data-i18n="more.4">Suggested CLAUDE.md edits</span></div>
+      <div class="more-item"><span class="dot" aria-hidden="true"></span><span data-i18n="more.5">Export &amp; import</span></div>
+      <div class="more-item"><span class="dot" aria-hidden="true"></span><span data-i18n="more.6">Distilled lessons</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== GRAPH UI ===================== -->
+<section id="ui">
+  <div class="wrap graph-sec">
+    <div class="section-head reveal" style="margin:0">
+      <p class="eyebrow" data-i18n="graph.eyebrow">abs ui</p>
+      <h2 data-i18n="graph.h">Watch your agent's brain take shape.</h2>
+      <p data-i18n="graph.p">An interactive graph in your browser: every session a hub, wired to the memories it spawned, color-coded by type. Pan, inspect, search, prune.</p>
+    </div>
+    <div class="graph-window reveal" aria-hidden="true">
+      <div class="gw-bar"><i></i><i></i><i></i><span translate="no">abs ui · memory graph</span></div>
+      <div class="gw-canvas">
+        <svg viewBox="0 0 400 267" role="img">
+          <defs>
+            <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+              <feGaussianBlur stdDeviation="2.6" result="b"/>
+              <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+            </filter>
+          </defs>
+          <g stroke-linecap="round">
+            <line class="gedge" x1="200" y1="135" x2="110" y2="65"/>
+            <line class="gedge" x1="200" y1="135" x2="300" y2="72"/>
+            <line class="gedge" x1="200" y1="135" x2="120" y2="210"/>
+            <line class="gedge" x1="200" y1="135" x2="305" y2="195"/>
+            <line class="gedge" x1="200" y1="135" x2="72" y2="140"/>
+            <line class="gedge" x1="110" y1="65" x2="62" y2="38"/>
+            <line class="gedge" x1="300" y1="72" x2="348" y2="46"/>
+            <line class="gedge" x1="120" y1="210" x2="74" y2="240"/>
+            <line class="gedge" x1="305" y1="195" x2="352" y2="226"/>
+            <line class="gedge" x1="300" y1="72" x2="338" y2="125"/>
+          </g>
+          <g filter="url(#glow)">
+            <circle class="gnode" cx="200" cy="135" r="19" fill="#8B5CF6"/>
+            <circle class="gnode" cx="110" cy="65"  r="9"  fill="#22D3EE"/>
+            <circle class="gnode" cx="300" cy="72"  r="11" fill="#A78BFA"/>
+            <circle class="gnode" cx="120" cy="210" r="8"  fill="#22D3EE"/>
+            <circle class="gnode" cx="305" cy="195" r="13" fill="#FBBF24"/>
+            <circle class="gnode" cx="72"  cy="140" r="7"  fill="#5EEAD4"/>
+            <circle class="gnode" cx="62"  cy="38"  r="6"  fill="#A78BFA"/>
+            <circle class="gnode" cx="348" cy="46"  r="7"  fill="#F0ABFC"/>
+            <circle class="gnode" cx="74"  cy="240" r="6"  fill="#22D3EE"/>
+            <circle class="gnode" cx="352" cy="226" r="9"  fill="#A78BFA"/>
+            <circle class="gnode" cx="338" cy="125" r="6"  fill="#5EEAD4"/>
+          </g>
+        </svg>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== FAQ (4) ===================== -->
+<section id="faq">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <p class="eyebrow" data-i18n="faq.eyebrow">FAQ</p>
+      <h2 data-i18n="faq.h">The honest answers.</h2>
+    </div>
+    <div class="faq">
+      <details class="reveal"><summary data-i18n="faq.1.q">Does it send my code anywhere?</summary><div class="ans" data-i18n="faq.1.a">No. Everything runs locally and offline. No network calls, no telemetry, no account.</div></details>
+      <details class="reveal"><summary data-i18n="faq.2.q">Does it cost anything?</summary><div class="ans" data-i18n="faq.2.a">No — $0 by default. Local embeddings, no API keys. Optionally plug in any OpenAI-compatible LLM (local Ollama or hosted) for deeper consolidation — opt-in, off by default.</div></details>
+      <details class="reveal"><summary data-i18n="faq.3.q">Which agents does it work with?</summary><div class="ans" data-i18n="faq.3.a">Built for Claude Code via MCP, with hands-free session capture and context injection through hooks.</div></details>
+      <details class="reveal"><summary data-i18n="faq.4.q">Is it open source?</summary><div class="ans" data-i18n="faq.4.a">Fully — on GitHub. Star it, fork it, read every line.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== FINAL CTA ===================== -->
+<section class="final">
+  <div class="wrap">
+    <h2 class="reveal" data-i18n="final.h">Cure your agent's amnesia.</h2>
+    <div class="cta reveal">
+      <a class="btn btn-primary" href="https://github.com/victorbjuliani/agentbrainsystem" target="_blank" rel="noopener">
+        <span class="star">★</span><span data-i18n="cta.star">Star on GitHub</span>
+      </a>
+      <a class="btn btn-ghost" href="https://github.com/victorbjuliani/agentbrainsystem#getting-started" target="_blank" rel="noopener" data-i18n="cta.get">Get started</a>
+    </div>
+    <p class="tags reveal" data-i18n="final.tags">LOCAL-FIRST · $0 · OFFLINE · OPEN SOURCE</p>
+  </div>
+</section>
+
+</main>
+
+<footer class="footer">
+  <div class="wrap footer__inner">
+    <span translate="no">agentbrainsystem</span>
+    <a href="https://github.com/victorbjuliani/agentbrainsystem" target="_blank" rel="noopener">GitHub</a>
+    <a href="https://github.com/victorbjuliani/agentbrainsystem/issues" target="_blank" rel="noopener" data-i18n="footer.issues">Issues & roadmap</a>
+    <span class="right" data-i18n="footer.built">Built local-first. Your memory, your machine.</span>
+  </div>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>
