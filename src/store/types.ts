@@ -92,6 +92,8 @@ export interface ListObservationsOptions {
 export interface KnnHit {
   id: number;
   distance: number;
+  /** Project of the hit's session. Populated by `searchFts`; `knn` leaves it undefined. */
+  project?: string | null;
 }
 
 /** Real row counts across the relational + index tables. */
