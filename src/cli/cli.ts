@@ -34,6 +34,7 @@ import {
   generateOptimizations,
   type OptimizeCandidate,
 } from '../optimize/index.js';
+import { getOrCreateGlobalSession } from '../global.js';
 import { projectSlug } from '../optimize/targets.js';
 import { startUiServer } from '../ui/index.js';
 import { VERSION } from '../version.js';
@@ -801,6 +802,32 @@ export async function cmdProject(args: string[]): Promise<void> {
   }
 }
 
+/** `abs promote <observationId>` — move a project memory into the global brain. */
+export async function cmdPromote(args: string[]): Promise<void> {
+  const json = args.includes('--json');
+  const idArg = positional(args);
+  const id = idArg ? Number.parseInt(idArg, 10) : Number.NaN;
+  if (!Number.isInteger(id)) {
+    err('error: promote requires an observation id, e.g. `abs promote 42`');
+    process.exitCode = 1;
+    return;
+  }
+  const memory = await openMemory(loadConfig(), { ensure: false });
+  try {
+    if (!memory.store.getObservation(id)) {
+      err(`error: no observation with id ${id}`);
+      process.exitCode = 1;
+      return;
+    }
+    const globalSession = getOrCreateGlobalSession(memory.store);
+    memory.store.moveObservationToSession(id, globalSession);
+    if (json) out(JSON.stringify({ id, scope: 'global', applied: true }));
+    else out(`promoted observation ${id} to the global brain.`);
+  } finally {
+    memory.close();
+  }
+}
+
 /** Read the value following a `--flag` token. */
 function optionValue(args: string[], flag: string): string | undefined {
   const i = args.indexOf(flag);
@@ -852,6 +879,8 @@ async function main(): Promise<void> {
       return cmdForget(rest);
     case 'project':
       return cmdProject(rest);
+    case 'promote':
+      return cmdPromote(rest);
     default:
       err(`unknown command '${command}'\n`);
       err(USAGE);

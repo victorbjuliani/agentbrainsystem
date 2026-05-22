@@ -14,10 +14,12 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { loadConfig } from '../config.js';
 import { __clearDeleteCacheForTests } from '../delete/delete.js';
+import { getOrCreateGlobalSession } from '../global.js';
 import { type Memory, openMemory } from '../memory.js';
 import {
   cmdForget,
   cmdProject,
+  cmdPromote,
   parseForgetSelector,
   parseIds,
   parseProjectAction,
@@ -283,6 +285,23 @@ describe('cmdProject — set / cwd / skip / status (hermetic, tmp ABS_HOME)', ()
     delete process.env.ABS_EMBED_DIM;
     process.exitCode = 0;
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('promote moves an observation into the global brain', async () => {
+    const mem = await openMemory(loadConfig(), { ensure: false });
+    const sid = mem.store.createSession({ externalId: 's', project: '-Users-me-Devs-foo' });
+    const id = mem.store.createObservation({ sessionId: sid, kind: 'decision', content: 'monorepo via turborepo' });
+    mem.store.indexFts(id, 'monorepo via turborepo');
+    mem.close();
+
+    await cmdPromote([String(id), '--json']);
+    const o = JSON.parse(outLines.join(''));
+    expect(o).toMatchObject({ id, scope: 'global', applied: true });
+
+    const mem2 = await openMemory(loadConfig(), { ensure: false });
+    const g = mem2.store.getSessionByExternalId('__global__');
+    expect(mem2.store.getObservation(id)?.sessionId).toBe(g?.id);
+    mem2.close();
   });
 
   it('--cwd binds the cwd-derived slug', async () => {

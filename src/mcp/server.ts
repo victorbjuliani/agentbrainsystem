@@ -362,6 +362,24 @@ export function createMcpServer(memory: Memory): McpServer {
     async (args) => jsonContent(setSessionProjectAction(memory, args)),
   );
 
+  // Promote an existing memory into the cross-project global brain (#). Move, not
+  // copy. User-initiated only — never on the agent's own initiative.
+  server.registerTool(
+    'promote',
+    {
+      title: 'Promote a memory to the global brain',
+      description:
+        'Move an existing observation into the cross-project global brain (recalled in every project). Use ONLY when the user explicitly asks to promote/save something globally — never on your own initiative.',
+      inputSchema: { id: z.number().int().describe('Observation id to promote.') },
+    },
+    async ({ id }) => {
+      if (!memory.store.getObservation(id)) return jsonContent({ error: `no observation ${id}` });
+      const g = getOrCreateGlobalSession(memory.store);
+      memory.store.moveObservationToSession(id, g);
+      return jsonContent({ id, scope: 'global', applied: true });
+    },
+  );
+
   return server;
 }
 
