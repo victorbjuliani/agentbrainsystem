@@ -70,7 +70,8 @@
     "final.tags": "LOCAL-FIRST · $0 · OFFLINE · OPEN SOURCE",
 
     "footer.issues": "Issues & roadmap",
-    "footer.built": "Feito local-first. Sua memória, sua máquina."
+    "footer.license": "Licença MIT",
+    "footer.built": "feito local-first"
   };
 
   // ---- capture EN from the DOM (single source of truth) ----
