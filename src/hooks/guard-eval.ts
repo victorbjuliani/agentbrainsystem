@@ -8,8 +8,9 @@
  * 10 benign actions. Below that, the guard stays warn-only (never block).
  */
 
+import type { Memory } from '../memory.js';
 import type { HookPayload } from './payload.js';
-import { handlePreToolUse } from './pre-tool-use.js';
+import { handlePreToolUse, type PreToolUseDeps } from './pre-tool-use.js';
 
 /** One labelled action: a PreToolUse payload and whether the guard SHOULD fire. */
 export interface GuardCase {
@@ -34,25 +35,36 @@ export interface GuardEvalResult {
 }
 
 /** Did the guard fire (any non-undefined decision) for this payload? */
-function fired(payload: HookPayload): boolean {
-  return handlePreToolUse(payload) !== undefined;
+async function fired(payload: HookPayload, deps?: PreToolUseDeps): Promise<boolean> {
+  return (await handlePreToolUse(payload, deps ?? {})) !== undefined;
 }
 
 /**
  * Evaluate the guard over a labelled case set. `tpThreshold` defaults to 0.30
  * and `fpPerActionMax` to 0.1 (under 1 alarm / 10 actions) — the O3 gate.
+ *
+ * The O3 gate measures the BLOCK-eligible duplication lens. Pass an empty/no-
+ * decision `memory` so the warn-only decision-surfacing lens (#48 Phase A) stays
+ * silent and cannot perturb the duplication TP/FP measurement (it never blocks
+ * and so does not need this gate to ship).
  */
-export function evaluateGuard(
+export async function evaluateGuard(
   cases: GuardCase[],
   thresholds: { tpThreshold?: number; fpPerActionMax?: number } = {},
-): GuardEvalResult {
+  deps?: { memory?: Memory },
+): Promise<GuardEvalResult> {
   const tpThreshold = thresholds.tpThreshold ?? 0.3;
   const fpPerActionMax = thresholds.fpPerActionMax ?? 0.1;
 
   const bad = cases.filter((c) => c.shouldFire);
   const benign = cases.filter((c) => !c.shouldFire);
-  const truePositives = bad.filter((c) => fired(c.payload)).length;
-  const falsePositives = benign.filter((c) => fired(c.payload)).length;
+  const evalDeps: PreToolUseDeps = deps?.memory ? { memory: deps.memory } : {};
+  const truePositives = (await Promise.all(bad.map((c) => fired(c.payload, evalDeps)))).filter(
+    Boolean,
+  ).length;
+  const falsePositives = (await Promise.all(benign.map((c) => fired(c.payload, evalDeps)))).filter(
+    Boolean,
+  ).length;
 
   const tpRate = bad.length === 0 ? 0 : truePositives / bad.length;
   const fpPerAction = benign.length === 0 ? 0 : falsePositives / benign.length;

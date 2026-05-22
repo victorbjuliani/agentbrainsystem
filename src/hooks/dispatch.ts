@@ -17,7 +17,7 @@ import { handleUserPromptSubmit } from './user-prompt-submit.js';
 
 /** Map the CLI event arg → its handler. Each handler returns a stdout line or undefined. */
 const HANDLERS: Record<string, (payload: HookPayload) => Promise<string | undefined>> = {
-  'pre-tool-use': (p) => Promise.resolve(handlePreToolUse(p)),
+  'pre-tool-use': (p) => handlePreToolUse(p),
   'session-end': (p) => handleSessionEnd(p),
   'session-start': (p) => handleSessionStart(p),
   'user-prompt-submit': (p) => handleUserPromptSubmit(p),
