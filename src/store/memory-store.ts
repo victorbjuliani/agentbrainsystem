@@ -272,7 +272,9 @@ export class MemoryStore {
    */
   listProjects(): string[] {
     const rows = this.conn()
-      .prepare('SELECT DISTINCT project FROM sessions WHERE project IS NOT NULL ORDER BY project')
+      .prepare(
+        "SELECT DISTINCT project FROM sessions WHERE project IS NOT NULL AND project != '__global__' ORDER BY project",
+      )
       .all() as Array<{ project: string }>;
     return rows.map((r) => r.project);
   }
