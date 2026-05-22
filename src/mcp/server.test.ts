@@ -57,6 +57,7 @@ describe('MCP server', () => {
       'optimize',
       'recall',
       'remember',
+      'set_session_project',
     ]);
   });
 
