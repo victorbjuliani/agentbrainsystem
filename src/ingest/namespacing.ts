@@ -36,10 +36,11 @@ export function isCodexTranscript(absPath: string): boolean {
 
 /** True when the path is a Gemini CLI chat transcript (drives parser + namespace, #68). */
 export function isGeminiTranscript(absPath: string): boolean {
-  return (
-    absPath.includes('/.gemini/tmp/') &&
-    /\/chats\/session-[\dT-]+-[0-9a-f]{8}\.json$/i.test(absPath)
-  );
+  // Shape-based: the `.../chats/session-<ts>-<8hex>.json` filename is the source of
+  // truth, NOT a hard-coded `~/.gemini/tmp/` prefix — that false-negatives when the
+  // Gemini home/config root is relocated and misroutes to the Claude parser (#90b).
+  // toPosixPath also fixes Windows backslash detection (#86).
+  return /\/chats\/session-[\dT-]+-[0-9a-f]{8}\.json$/i.test(toPosixPath(absPath));
 }
 
 /**

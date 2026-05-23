@@ -215,6 +215,31 @@ describe('registerMcpServer — generalized to any CLI binary', () => {
     expect(calls.every((c) => c[0] === 'codex')).toBe(true);
     expect(calls.at(-1)).toEqual(['codex', 'mcp', 'remove', 'agentbrainsystem']);
   });
+
+  it('unregisterMcpServer removes the user-scoped Gemini server with --scope user (#87)', async () => {
+    const calls: string[][] = [];
+    const run = async (cmd: string, args: string[]) => {
+      calls.push([cmd, ...args]);
+      if (args.includes('--version')) return { code: 0, stdout: 'gemini', stderr: '' };
+      if (args.includes('list')) return { code: 0, stdout: 'agentbrainsystem: x', stderr: '' };
+      return { code: 0, stdout: '', stderr: '' };
+    };
+    const res = await unregisterMcpServer(run, {
+      binary: 'gemini',
+      argStyle: 'positional',
+      scope: 'user',
+    });
+    expect(res.status).toBe('removed');
+    // Without the scope the user-scoped server is left behind (project-scope default).
+    expect(calls.at(-1)).toEqual([
+      'gemini',
+      'mcp',
+      'remove',
+      'agentbrainsystem',
+      '--scope',
+      'user',
+    ]);
+  });
 });
 
 describe('unregister core — argv + manual command', () => {

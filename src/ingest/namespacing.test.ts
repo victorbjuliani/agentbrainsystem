@@ -45,6 +45,20 @@ describe('isGeminiTranscript (#68 — leaf classifier)', () => {
   it('rejects a Claude projects path', () => {
     expect(isGeminiTranscript('/Users/x/.claude/projects/p/abc.jsonl')).toBe(false);
   });
+  it('detects a relocated Gemini home (no ~/.gemini/tmp/ prefix) by shape alone (#90b)', () => {
+    expect(
+      isGeminiTranscript(
+        '/srv/xdg-config/gemini/myproj/chats/session-2026-05-23T04-24-78432a44.json',
+      ),
+    ).toBe(true);
+  });
+  it('detects a Windows backslash-separated Gemini path (#86)', () => {
+    expect(
+      isGeminiTranscript(
+        'C:\\Users\\dev\\.gemini\\tmp\\p\\chats\\session-2026-05-23T04-24-78432a44.json',
+      ),
+    ).toBe(true);
+  });
 });
 
 describe('namespacedExternalId (W1)', () => {
