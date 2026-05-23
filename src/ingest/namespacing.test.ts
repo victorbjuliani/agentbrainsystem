@@ -91,6 +91,32 @@ describe('isCopilotTranscript (#69 — leaf classifier)', () => {
   });
 });
 
+describe('isCopilotTranscript (#69 — leaf classifier)', () => {
+  it('detects a Copilot events.jsonl session-state path', () => {
+    expect(isCopilotTranscript(COPILOT_PATH)).toBe(true);
+  });
+  it('rejects a Codex rollout path', () => {
+    expect(
+      isCopilotTranscript(
+        '/Users/x/.codex/sessions/2026/05/23/rollout-2026-05-23T04-24-00-78432a44-385f-41f6-8a71-646d51996f8a.jsonl',
+      ),
+    ).toBe(false);
+  });
+  it('rejects a Gemini chats path', () => {
+    expect(
+      isCopilotTranscript('/Users/x/.gemini/tmp/p/chats/session-2026-05-23T04-24-78432a44.json'),
+    ).toBe(false);
+  });
+  it('rejects a Claude projects path', () => {
+    expect(isCopilotTranscript('/Users/x/.claude/projects/p/abc.jsonl')).toBe(false);
+  });
+  it('rejects a session-state dir whose UUID is malformed', () => {
+    expect(isCopilotTranscript('/Users/x/.copilot/session-state/not-a-uuid/events.jsonl')).toBe(
+      false,
+    );
+  });
+});
+
 describe('namespacedExternalId (W1)', () => {
   it('leaves Claude Code ids bare (migration-safe)', () => {
     expect(namespacedExternalId('claude-code', 'abc-123')).toBe('abc-123');

@@ -54,6 +54,16 @@ export function isCopilotTranscript(absPath: string): boolean {
   );
 }
 
+/** True when the path is a Copilot CLI session transcript (drives parser + namespace, #69). */
+export function isCopilotTranscript(absPath: string): boolean {
+  return (
+    absPath.includes('/.copilot/session-state/') &&
+    /\/session-state\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/events\.jsonl$/i.test(
+      absPath,
+    )
+  );
+}
+
 /**
  * Namespace a harness session id for storage (W1, #67). Claude Code keeps its
  * BARE id (migration-safe: existing rows + bindings written before namespacing
