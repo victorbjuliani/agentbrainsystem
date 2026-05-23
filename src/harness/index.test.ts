@@ -11,6 +11,14 @@ describe('defaultRegistry', () => {
     expect(defaultRegistry().byId('codex')?.displayName).toBe('Codex CLI');
   });
 
+  it('includes the Gemini adapter (#68)', () => {
+    expect(defaultRegistry().byId('gemini')?.displayName).toBe('Gemini CLI');
+  });
+
+  it('registers all three qualifying adapters (#68)', () => {
+    expect(defaultRegistry().all().length).toBe(3);
+  });
+
   it('the Claude adapter carries mcpBinary = claude (C2)', () => {
     expect(defaultRegistry().byId('claude-code')?.mcpBinary).toBe('claude');
   });
