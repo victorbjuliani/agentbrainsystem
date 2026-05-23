@@ -11,7 +11,16 @@
 
 A third change is the **transcript parser**: Codex's rollout JSONL schema is fundamentally different from Claude's (different line `type`s, session id only in the header line **and the rollout FILENAME**, content blocks named `input_text`/`output_text` not `text`). A `codexParseTranscript` variant handles it; the JSONL ingest loop gains a per-format parser seam so Claude's path is untouched. Crucially the Codex sessionId is taken from the **filename UUID** (always present, on every resumed read), NOT from the in-file `session_meta` header — this lets Codex resume from a byte cursor exactly like Claude (no offset-0 re-read every turn), which is mandatory because `Stop` fires PER-TURN, not once per session (W4).
 
-**W1 namespacing — where it really lives:** the real capture path is `Stop` hook → `abs hook session-end` → `dispatch.ts` `HANDLERS['session-end']` → `handleSessionEnd(payload)` → `ingestSingleSession(memory, transcriptPath)`. **No harness id flows through dispatch/handlers**, so threading a `harnessId` param is dead on the real path. Instead the namespace is derived **inside the ingest layer** from the transcript path, reusing the same `isCodexTranscript(absPath)` classifier that Task 5 adds for the parser seam. `namespacedExternalId(harness, rawId)` is applied at the `resolveSession`/binding choke point based on path classification — so the REAL `dispatchHook('session-end')` path namespaces correctly with zero harness-awareness in dispatch or handlers.
+**W1 namespacing — symmetric, derived from the transcript path on EVERY boundary (C-NEW-1):** the session id namespace (`codex:<uuid>` for Codex, bare for Claude) is the store's join key, so it MUST be applied identically on every code path that mints, reads, or binds an external id — capture, recall, AND the skip/include consent flow. The path is the single source of harness truth because `payload.transcriptPath` is present in EVERY hook payload (`payload.ts:56-57` parses it) and the ingest layer already has the absolute path. The classifier is `isCodexTranscript(absPath)` (Task 5) → fed to `harnessForPayload(payload)` (Task 6) → `namespacedExternalId(harness, rawId)`. The boundaries that MUST namespace symmetrically:
+
+1. **Capture** — `Stop`/`SessionEnd` → `handleSessionEnd(payload)` → `ingestSingleSession(memory, transcriptPath)`. **No harness id flows through dispatch/handlers**, so the namespace is derived INSIDE ingest from the path (`isCodexTranscript(absPath)`). Zero `harnessId` param threaded.
+2. **The skip/include consent notice** — `session-start.ts` `renderNotice(sessionId, …)` injects the id the agent is told to pass to `set_session_project`. For Codex this MUST be the `codex:`-prefixed id, or the binding the agent writes will never reconcile with the namespaced id ingest reads (the IRREVERSIBLE-delete consent gate from #52 would silently no-op). So `session-start.ts` namespaces the id via `harnessForPayload(payload)` before BOTH `renderNotice(nsId,…)` and the `readBinding`/`hasBinding` check.
+3. **The binding writer** — `set_session_project` (`mcp/server.ts:444-479`) receives the ALREADY-namespaced `session` value from the notice and writes `writeBinding(store, nsId, …)` → `session-project:codex:<uuid>`, matching the reader. It does NOT re-namespace (single application — verified: it passes `session` straight through). The `CLAUDE_CODE_SESSION_ID` env fallback stays Claude-only (Codex has no env id; the agent supplies the namespaced `session` param).
+4. **Recall scope** — `scope.ts:51,53` `resolveRecallProject` keys `readBinding`/`getSessionByExternalId` by the session id. For Codex this must be the namespaced id so session-scoped recall hits the right stored row (without it, only the cwd fallback at `scope.ts:57` saves recall — degraded, not broken).
+
+**Why the previous revision was wrong:** it claimed `set_session_project` is "Claude-only, stays bare". FALSE — the Codex adapter maps recall to `SessionStart`/`UserPromptSubmit` → `abs hook session-start`/`user-prompt-submit`, and the MCP server runs INSIDE the Codex session (`codex mcp add agentbrainsystem -- node <cli> start`), so the notice + `set_session_project` DO serve Codex. The fix is symmetric namespacing at the payload boundary, NOT descoping skip/include.
+
+**Migration safety:** `namespacedExternalId('claude-code', x) === x` (bare), so Claude's notice text, binding key, and recall lookups stay byte-identical — zero Claude regression, zero migration of existing rows.
 
 **Tech Stack:** Node ≥ 22, TypeScript (ESM), Vitest, Biome, embedded SQLite via `better-sqlite3` (synchronous). TOML parsing/writing uses a hand-rolled minimal serializer scoped to the `[hooks]` table (no new dependency — see Task 3 rationale). Source-of-truth design doc: `docs/superpowers/specs/2026-05-22-multi-harness-support-design.md`. Builds on the Phase-0 adapter framework (`src/harness/`).
 
@@ -108,7 +117,7 @@ Representative lines (real, trimmed):
 | tool calls are `tool_use` blocks with `name`+`input.file_path` | tool calls are separate `response_item` lines `payload.type === 'function_call'`, `name` like `exec_command`/`apply_patch`, args as a **JSON string** in `payload.arguments` | no Edit/Write `tool_use` block exists; anchoring needs a Codex-specific extraction (deferred — see Task 5 scope note) |
 | `obj.cwd` per line | `cwd` only in `session_meta.payload.cwd` | project derivation needs the header |
 
-**Design consequence (revised for W4):** the sessionId comes from the **filename UUID** (`sessionIdFromPath`) — it is on EVERY path, present whether or not the read includes the `session_meta` header. This is what makes byte-cursor streaming possible: a resumed read that starts mid-file (past the header) still knows its sessionId. The `cwd` lives ONLY in the `session_meta` header, so the parser captures it when the header is in the read AND the ingest layer **caches it in `kv_meta`** (keyed by transcript path) so a later header-less resume still derives the project. Prose is extracted from **`response_item.message`** lines (the canonical conversation record); the `event_msg` mirror (`user_message`/`agent_message`) is **skipped** (identical strings — confirmed in the sample) to avoid double-counting.
+**Design consequence (revised for W4):** the sessionId comes from the **filename UUID** (`sessionIdFromPath`) — it is on EVERY path, present whether or not the read includes the `session_meta` header. This is what makes byte-cursor streaming possible: a resumed read that starts mid-file (past the header) still knows its sessionId. The `cwd` lives ONLY in the `session_meta` header, so the parser captures it when the header is in the read AND the ingest layer **caches it in `kv_meta`** (keyed by transcript path) so a later header-less resume still derives the project. Prose is extracted primarily from **`response_item.message`** lines (the canonical conversation record); the `event_msg` mirror (`user_message`/`agent_message`) is **de-duped by normalized text** (identical strings — confirmed in the sample) so a twinned turn is captured ONCE, but an `event_msg`-only turn (no `response_item` twin) is still captured rather than dropped (W-NEW-4 — proven by the multi-turn fixture).
 
 > **W4 — `Stop` fires PER TURN.** If ingest re-parsed the whole file from offset 0 on every `Stop`, and `indexer.write` does NOT dedup (verified: `createObservation` is a plain `INSERT` with no UNIQUE/`ON CONFLICT` — `memory-store.ts:326`), every prior turn would be re-inserted each turn → a **duplicate-observation explosion** linear in turns². The fix is to stream from the persisted byte cursor exactly like Claude (resume, never re-read prior turns). Because the sessionId is from the FILENAME (not the header), a `start > 0` slice is safe — it never needs the header for the id. The header-only `cwd` is recovered from the kv_meta cache. **There is no offset-0 mandate.**
 
@@ -124,10 +133,15 @@ Both harnesses use UUID session ids. Claude's `sessionId` and Codex's `session_m
 
 - **Modify** `src/cli/setup.ts` — generalize `registerMcpServer`/`unregisterMcpServer` to a CLI binary + argv builder (Task 1).
 - **Modify** `src/harness/capabilities/mcp-registrar.ts` — `cliMcpRegistrar` accepts the binary (Task 2).
-- **Create** `src/harness/capabilities/codex-lifecycle-installer.ts` — TOML `[hooks]` installer, proven-idempotent + trust-aware (Task 3); real-config fixture `src/harness/capabilities/__fixtures__/codex/config.toml`; `@iarna/toml` added to **devDependencies** only.
+- **Create** `src/harness/capabilities/codex-lifecycle-installer.ts` — TOML `[hooks]` installer, proven-idempotent + trust-aware (Task 3); real-config fixture `src/harness/capabilities/__fixtures__/codex/config.toml`; `@iarna/toml@^2.2.5` added to **devDependencies** only (test import only, no runtime dep).
 - **Create** `src/ingest/codex-jsonl.ts` — Codex transcript parser, filename-UUID sessionId + returns observed cwd (Task 4) + tool-anchor follow-on (out of scope).
-- **Create** `src/ingest/namespacing.ts` — `namespacedExternalId` helper (Task 6, W1).
-- **Modify** `src/ingest/ingest.ts` — per-format seam: cursor-streamed Codex branch, kv_meta cwd cache, path-derived `codex:` namespace (Task 5, W4/C1). **No `harnessId` param threaded** — the namespace is derived from `isCodexTranscript(absPath)`, because the real `dispatchHook('session-end')` path carries no harness.
+- **Create** `src/ingest/namespacing.ts` — `namespacedExternalId` + `harnessForPayload` helpers (Task 6, W1/C-NEW-1).
+- **Modify** `src/ingest/ingest.ts` — per-format seam: cursor-streamed Codex branch, kv_meta cwd cache, path-derived `codex:` namespace (Task 5, W4/C1). Exports `isCodexTranscript`. **No `harnessId` param threaded** — the namespace is derived from `isCodexTranscript(absPath)`, because the real `dispatchHook('session-end')` path carries no harness.
+- **Modify** `src/ingest/index.ts` — re-export `namespacedExternalId`, `harnessForPayload`, `isCodexTranscript` so the hook + recall + MCP layers import them from the ingest barrel (Task 6/Task 5).
+- **Modify** `src/hooks/session-start.ts` — namespace the notice id + the `hasBinding` lookup via `harnessForPayload(payload)` so Codex's consent notice carries the `codex:`-prefixed id (Task 6b, C-NEW-1).
+- **Modify** `src/hooks/user-prompt-submit.ts` — namespace the first-prompt notice id + the `skip`-guard `readBinding` lookup (Task 6b, C-NEW-1).
+- **Modify** `src/recall/scope.ts` — namespace the id used for `readBinding`/`getSessionByExternalId` so Codex session-scoped recall hits the right row (Task 6b, C-NEW-1).
+- **Modify** `src/mcp/server.ts` — confirm `setSessionProjectAction` passes the (already-namespaced) `session` straight to `writeBinding` with NO re-namespacing (single application). The `CLAUDE_CODE_SESSION_ID` env fallback stays Claude-only (Task 6b verify-only, C-NEW-1).
 - **Create** `src/harness/adapters/codex.ts` — the adapter, `mcpBinary: 'codex'` (Task 7).
 - **Modify** `src/harness/index.ts` — register Codex; **`src/harness/types.ts`** — add `mcpBinary?`; **`src/harness/adapters/claude-code.ts`** — set `mcpBinary: 'claude'`; **`src/cli/cli.ts`** — rewrite `cmdUninstall` to be `--harness`-aware + reorder `cmdSetup` MCP-before-hooks (Task 8, C2/W1-warn).
 - Tests alongside each (`*.test.ts`), plus real fixtures under `src/ingest/__fixtures__/codex/` and `src/harness/capabilities/__fixtures__/codex/`.
@@ -482,10 +496,27 @@ describe('codexLifecycleInstaller', () => {
     }).install();
     expect(report.trustWarning).toBeUndefined();
   });
+
+  // --- W-NEW-2: trust check runs against a REAL cwd row present in the real-config fixture ---
+  it('resolves trust against the real-config fixture using a path that actually exists in it', async () => {
+    const fixture = readFileSync(join(__dirname, '__fixtures__/codex/config.toml'), 'utf8');
+    writeFileSync(configPath, fixture);
+    // Pull the FIRST real [projects."<path>"] row + its trust_level straight from the fixture,
+    // so this asserts against realistic on-disk data, not a synthetic /work/foo.
+    const m = fixture.match(/\[projects\.("[^"]+")\]\s*\n(?:[^\[]*?)trust_level\s*=\s*"(\w+)"/);
+    expect(m).not.toBeNull();                                  // fixture must carry at least one real project row
+    const realCwd = JSON.parse(m![1]) as string;              // the un-escaped absolute path
+    const realTrust = m![2];
+    const report = await codexLifecycleInstaller({
+      configPath, baseCommand: 'abs hook', projectCwd: realCwd,
+    }).install();
+    if (realTrust === 'trusted') expect(report.trustWarning).toBeUndefined();
+    else expect(report.trustWarning).toMatch(/trust/i);
+  });
 });
 ```
 
-- [ ] **Step 1b: Create the real-config fixture (C3).** Copy the live `~/.codex/config.toml` to `src/harness/capabilities/__fixtures__/codex/config.toml`, then stub secrets: replace any `api_key`/`token`/OAuth/credential values with `"REDACTED"`. Keep ALL `[projects.*]`, `[mcp_servers.*]`, `[plugins.*]` tables, the multiline `notify` array, and `trust_level` keys structurally intact (these are exactly the shapes the splice must not disturb). Add `@iarna/toml` to **`devDependencies` only** (`npm i -D @iarna/toml`) — it is imported solely from the test, never from runtime code.
+- [ ] **Step 1b: Create the real-config fixture (C3 + W-NEW-2).** Copy the live `~/.codex/config.toml` to `src/harness/capabilities/__fixtures__/codex/config.toml`, then stub secrets: replace any `api_key`/`token`/OAuth/credential values with `"REDACTED"`. Keep ALL `[projects.*]`, `[mcp_servers.*]`, `[plugins.*]` tables, the multiline `notify` array, and `trust_level` keys structurally intact (these are exactly the shapes the splice must not disturb). **W-NEW-2:** the live config already carries a `[projects."<this-repo-abs-path>"]` table — KEEP that exact path + its real `trust_level` so the trust-warning assertion below runs against REALISTIC data (a path that genuinely exists in the fixture), not only the synthetic `/work/foo`. If the live config lacks a row for this repo, ADD one with the repo's absolute path and `trust_level = "trusted"`, and document the path in the fixture as the realistic trust target. Add `@iarna/toml` to **`devDependencies` only**, **version-pinned**: `npm i -D @iarna/toml@^2.2.5` — dev-only, test import only, NO runtime dependency. It is imported solely from the test (`await import('@iarna/toml')`), never from runtime code.
 
 - [ ] **Step 2: Run** `npx vitest run src/harness/capabilities/codex-lifecycle-installer.test.ts` → FAIL (module not found).
 
@@ -632,11 +663,15 @@ git commit -m "feat(harness): Codex TOML [hooks] lifecycle installer — proven-
 
 **Files:** Create `src/ingest/codex-jsonl.ts` · Test `src/ingest/codex-jsonl.test.ts` · Fixtures `src/ingest/__fixtures__/codex/*.jsonl`
 
-The parser takes the transcript text plus the absolute path and an optional `cwdHint`. The **sessionId is derived from the filename UUID** (`sessionIdFromPath`) so it is known on every read, header or not (W4 — enables cursor streaming). The `session_meta` header, when present in the read, refines the `cwd`; otherwise the `cwdHint` (from the kv_meta cache, supplied by the ingest layer) provides it. Conversation prose is taken from `response_item` `message` lines; `event_msg` mirrors and machine lines are skipped. Reuses `ParsedEntry` from `claude-jsonl.ts` (import — do not duplicate). Tool-anchor extraction from `function_call`/`apply_patch` lines is **out of scope for this task** (see scope note); `toolAnchors` is always `[]` for now, so Codex contributes prose-only observations (still a full capture/recall win; anchoring is a follow-on).
+The parser takes the transcript text plus the absolute path and an optional `cwdHint`. The **sessionId is derived from the filename UUID** (`sessionIdFromPath`) so it is known on every read, header or not (W4 — enables cursor streaming). The `session_meta` header, when present in the read, refines the `cwd`; otherwise the `cwdHint` (from the kv_meta cache, supplied by the ingest layer) provides it. Conversation prose is taken primarily from `response_item` `message` lines; `event_msg` twins are de-duped by normalized text (captured once), an `event_msg`-only turn is still captured (W-NEW-4), and machine lines (`turn_context`/`function_call`/`reasoning`) are skipped. Reuses `ParsedEntry` from `claude-jsonl.ts` (import — do not duplicate). Tool-anchor extraction from `function_call`/`apply_patch` lines is **out of scope for this task** (see scope note); `toolAnchors` is always `[]` for now, so Codex contributes prose-only observations (still a full capture/recall win; anchoring is a follow-on).
 
 > **Returns `{ entries, cwd }`** — the parser also returns the `cwd` it observed in `session_meta` (or undefined), so the ingest layer can WRITE it to the kv_meta cache after a read that included the header. This is the seam that lets a later header-less resume recover the project.
 
 - [ ] **Step 1: Create a real fixture.** Copy ~12 representative lines from a real rollout into `src/ingest/__fixtures__/codex/rollout-sample.jsonl` — at minimum: one `session_meta`, one `response_item`/`message`/`user` (with `input_text`), one `response_item`/`message`/`assistant` (with `output_text`), one `response_item`/`function_call`, one `event_msg`/`user_message`, one `event_msg`/`agent_message`, one `turn_context`. Strip any secrets (auth tokens, full base_instructions text — truncate to a short stub). Keep the structural shapes intact.
+
+- [ ] **Step 1b: Create a MULTI-TURN fixture (W-NEW-4 — resolve the no-double-count claim with data, not prose).** Add `src/ingest/__fixtures__/codex/rollout-multiturn.jsonl` with ≥3 distinct user/assistant turns, where SOME turns have BOTH a `response_item/message` AND its `event_msg` (`user_message`/`agent_message`) twin (the common case), and AT LEAST ONE turn has ONLY an `event_msg` with NO `response_item/message` twin (the edge case where the chosen primary source would otherwise DROP a real turn). This fixture is the evidence for the capture-source decision below — copy real distinct turns from a genuine rollout, secrets stripped.
+
+  > **Capture-source decision (W-NEW-4), resolved by the multi-turn fixture.** Primary source is `response_item/message` (the canonical conversation record). The `event_msg` twin is normally a duplicate of the same text → skipping it avoids double-counting. BUT a turn that has ONLY an `event_msg` (no `response_item/message` twin) would be silently dropped. So the rule is: **emit the `response_item/message` for a turn; fall back to capturing `event_msg` ONLY when that turn has no `response_item/message` twin.** De-dupe is by normalized turn text within the parse, so a twinned `event_msg` never double-counts. The multi-turn fixture asserts BOTH: (a) every twinned turn is captured exactly once (no double-count), AND (b) the event_msg-only turn is still captured (no drop). This replaces the prose-only "skipped to avoid double-counting" claim with a fixture-backed contract.
 
 - [ ] **Step 2: Write the failing test:**
 
@@ -677,6 +712,20 @@ describe('codexParseTranscript', () => {
     expect(roles.every((r) => r === 'user' || r === 'assistant')).toBe(true);
   });
 
+  it('multi-turn: every twinned turn captured ONCE (no double-count) AND an event_msg-only turn is NOT dropped (W-NEW-4)', () => {
+    const multi = readFileSync(join(__dirname, '__fixtures__/codex/rollout-multiturn.jsonl'), 'utf8');
+    const { entries } = codexParseTranscript(multi, REAL_PATH);
+    // (a) No double-count: each distinct turn text appears exactly once.
+    const texts = entries.map((e) => e.text.replace(/\s+/g, ' ').trim().toLowerCase());
+    expect(new Set(texts).size).toBe(texts.length);
+    // (b) Every distinct user + assistant turn in the fixture is represented (≥3 turns).
+    expect(entries.filter((e) => e.role === 'user').length).toBeGreaterThanOrEqual(2);
+    expect(entries.filter((e) => e.role === 'assistant').length).toBeGreaterThanOrEqual(1);
+    // (c) The event_msg-ONLY turn (no response_item/message twin) is still captured — its
+    //     unique marker text from the fixture must be present.
+    expect(texts.some((t) => t.includes('event-only turn'))).toBe(true); // adjust to the fixture's marker
+  });
+
   it('groups by FILENAME UUID even on a header-less slice; uses cwdHint for project (W4 resume)', () => {
     // Simulate a cursor-resumed slice: drop the session_meta header line entirely.
     const noMeta = fixture.split('\n').filter((l) => !l.includes('"session_meta"')).join('\n');
@@ -715,9 +764,11 @@ describe('codexParseTranscript', () => {
  * `session_meta` line (and the filename UUID). Conversation prose is carried by
  * `response_item` lines with `payload.type === "message"` and content blocks of
  * type `input_text` (user) / `output_text` (assistant). The `event_msg`
- * `user_message`/`agent_message` lines mirror the same text and are SKIPPED to
- * avoid double-counting. Tool calls are separate `function_call` lines (anchoring
- * from them is a follow-on; this parser emits prose only).
+ * `user_message`/`agent_message` lines normally mirror the same text and are
+ * de-duped by normalized text (captured once); a turn that exists ONLY as an
+ * `event_msg` (no `response_item` twin) is still captured rather than dropped
+ * (W-NEW-4). Tool calls are separate `function_call` lines (anchoring from them
+ * is a follow-on; this parser emits prose only).
  */
 import { type ParsedEntry } from './claude-jsonl.js';
 
@@ -785,9 +836,25 @@ export function codexParseTranscript(
   cwdHint?: string,
 ): CodexParseResult {
   const entries: ParsedEntry[] = [];
+  const seen = new Set<string>(); // normalized "role text" already captured — de-dup event_msg twins (W-NEW-4)
   const sessionId = sessionIdFromPath(absPath); // FILENAME-derived id (W4)
   let cwd = cwdHint;
   let headerCwd: string | undefined;
+
+  /** Emit a turn unless its normalized text was already captured (de-dup twins; W-NEW-4 no-double-count). */
+  const push = (role: 'user' | 'assistant', text: string, timestamp: string | undefined): void => {
+    const key = `${role} ${text.replace(/\s+/g, ' ').trim().toLowerCase()}`;
+    if (seen.has(key)) return; // a response_item already captured this turn
+    seen.add(key);
+    entries.push({
+      sessionId: sessionId as string,
+      role,
+      text,
+      toolAnchors: [],
+      ...(cwd ? { cwd } : {}),
+      ...(timestamp ? { timestamp } : {}),
+    });
+  };
 
   for (const raw of text.split('\n')) {
     const line = raw.trim();
@@ -803,21 +870,32 @@ export function codexParseTranscript(
       cwd = headerCwd ?? cwd;
       continue; // session_meta.id is NOT used for grouping — the filename UUID is canonical (W4)
     }
-    if (type !== 'response_item' || !payload) continue;       // skip event_msg/turn_context/etc
-    if (payload.type !== 'message') continue;                  // skip function_call/reasoning/etc
-    const role = asString(payload.role);
-    if (role !== 'user' && role !== 'assistant') continue;     // skip 'developer' system turns
     if (!sessionId) continue;                                  // cannot group without an id (no UUID in filename)
-    const textOut = extractContent(payload.content);
-    if (textOut.length === 0) continue;                        // tool-only / empty
-    entries.push({
-      sessionId,
-      role,
-      text: textOut,
-      toolAnchors: [],
-      ...(cwd ? { cwd } : {}),
-      timestamp: asString(obj.timestamp),
-    });
+
+    // --- Primary source: response_item/message (W-NEW-4) ---
+    if (type === 'response_item' && payload && payload.type === 'message') {
+      const role = asString(payload.role);
+      if (role !== 'user' && role !== 'assistant') continue;   // skip 'developer' system turns
+      const textOut = extractContent(payload.content);
+      if (textOut.length === 0) continue;                      // tool-only / empty
+      push(role, textOut, asString(obj.timestamp));            // marks the normalized text as seen
+      continue;
+    }
+
+    // --- Fallback source: event_msg with NO response_item/message twin (W-NEW-4) ---
+    // user_message/agent_message normally MIRROR a response_item/message (same text) and
+    // are de-duped by normalized text below; but a turn that exists ONLY as an event_msg
+    // (no response_item twin) would otherwise be DROPPED, so capture it here too.
+    if (type === 'event_msg' && payload) {
+      const evt = asString(payload.type);
+      const role = evt === 'user_message' ? 'user' : evt === 'agent_message' ? 'assistant' : undefined;
+      if (!role) continue;                                     // skip non-message event_msg types
+      const textOut = clean(asString(payload.message) ?? '');
+      if (textOut.length === 0) continue;
+      push(role, textOut, asString(obj.timestamp));            // de-dup guard inside push() drops twins
+      continue;
+    }
+    // everything else (turn_context, function_call, reasoning, …) is skipped
   }
   return { entries, cwd: headerCwd };
 }
@@ -888,6 +966,28 @@ it('the REAL dispatch path (handleSessionEnd) namespaces a Codex transcript code
 
 > The `handleSessionEnd(payload, { ingest })` injection seam already exists (`session-end.test.ts` uses it). This test proves the namespace flows on the REAL path with ZERO harness-awareness in dispatch/handlers — the whole point of C1.
 
+Add a per-line cursor-resume regression (W4/W-NEW-3 — proves cursor streaming, no whole-slice buffer, no re-insert):
+
+```typescript
+it('a second Stop on a GROWN Codex rollout appends only new turns — no re-insert of prior turns (W4)', async () => {
+  const memory = newMemory();
+  const codexPath = join(dir, '.codex/sessions/2026/05/14/rollout-2026-05-14T08-56-53-019e2658-c8b0-7230-9b59-c3646fbf0c7b.jsonl');
+  mkdirSync(dirname(codexPath), { recursive: true });
+  // Turn 1: header + one user/assistant message pair.
+  writeFileSync(codexPath, [TURN1_META, TURN1_USER, TURN1_ASSISTANT].join('\n') + '\n');
+  await ingestSingleSession(memory, codexPath);
+  const afterTurn1 = memory.store.counts().observations;
+  // Turn 2: append a second user/assistant pair (NO new header — header-less tail).
+  appendFileSync(codexPath, [TURN2_USER, TURN2_ASSISTANT].join('\n') + '\n');
+  await ingestSingleSession(memory, codexPath);
+  const afterTurn2 = memory.store.counts().observations;
+  // Only the NEW turn's observations were added; turn 1 was never re-read past the cursor.
+  expect(afterTurn2).toBe(afterTurn1 + (afterTurn1)); // 2 obs/turn → exactly +2, never +4
+  expect(memory.store.listSessions().length).toBe(1); // still one codex: session (filename UUID)
+});
+```
+> `TURN1_*`/`TURN2_*` are short literal JSONL lines built inline (or sliced from the fixture). The assertion that matters: the second ingest adds EXACTLY the turn-2 observation count, proving the cursor resumed past turn 1 (per-line `offset += Buffer.byteLength(line)+1`) rather than re-buffering the whole file from offset 0.
+
 - [ ] **Step 2: Run** → FAIL (Claude `parseLine` rejects every Codex line; 0 observations; no namespacing).
 
 - [ ] **Step 3: Wire the selector + cursor streaming + cwd cache + namespacing.** In `ingest.ts`:
@@ -908,10 +1008,13 @@ export function isCodexTranscript(absPath: string): boolean {
 
 In `ingestFile`, branch once at the top:
 
-- **Codex path:** read the slice `[startOffset, EOF)` via `createReadStream(absPath, { start: startOffset, encoding: 'utf8' })` (cursor streaming, W4 — NOT offset 0; honors the ADR-0001 footprint discipline like Claude). Buffer the slice text (a single rollout file), tracking bytes consumed for the cursor. Recover the cached header cwd: `cwdHint = memory.store.getMeta(CODEX_CWD_PREFIX + absPath) ?? undefined`. Run `const { entries, cwd } = codexParseTranscript(sliceText, absPath, cwdHint)`. If `cwd` is non-undefined (this slice saw the header), cache it: `memory.store.setMeta(CODEX_CWD_PREFIX + absPath, cwd)`. Then iterate `entries` through `writeEntry(...)`, computing `externalId = namespacedExternalId('codex', entry.sessionId)` and `project = entry.cwd ? projectSlug(entry.cwd) : project`. Advance `offset` to EOF (startOffset + bytes read).
+- **Codex path (W-NEW-3 — stream PER-LINE like Claude, do NOT buffer the whole slice):** use the SAME `readline` loop Claude uses — `createReadStream(absPath, { start: startOffset })` + `createInterface({ input })` — and advance the cursor PER LINE exactly like Claude: `offset += Buffer.byteLength(line, 'utf8') + 1` after each line (so the two paths share identical cursor accounting and cannot drift). The ONLY difference from Claude is the parser: instead of `parseLine(line)` (one entry per line), feed each line into a **stateful `codexParseTranscript` accumulator** (a Codex parse instance that holds the rolling `cwd`/header state and emits a `ParsedEntry | undefined` per line). Recover the cached header cwd before the loop: `cwdHint = memory.store.getMeta(CODEX_CWD_PREFIX + absPath) ?? undefined`. The sessionId is still the FILENAME UUID (`sessionIdFromPath`), NOT the header — so a header-less mid-file resume still groups (W4). When a line is a `session_meta` header, the accumulator updates its rolling cwd and the loop caches it: `memory.store.setMeta(CODEX_CWD_PREFIX + absPath, cwd)`. Each emitted entry goes through `writeEntry(...)` with `externalId = namespacedExternalId('codex', entry.sessionId)` and `project = entry.cwd ? projectSlug(entry.cwd) : project`.
+
+  > Task 4's `codexParseTranscript(text, absPath, cwdHint)` whole-slice form stays the unit-tested surface; Task 5 adds a thin per-line stateful wrapper (`createCodexLineParser(absPath, cwdHint)` returning `{ pushLine(line): ParsedEntry | undefined; observedCwd(): string | undefined }`) that shares the same line-handling logic — extract the per-line body of `codexParseTranscript` into a function both call, so whole-slice and per-line paths cannot drift. This keeps cursor accounting byte-identical to Claude's per-line `offset += Buffer.byteLength(line)+1`.
+
 - **Claude path:** the existing `for await (const line of rl)` streaming loop verbatim, calling `writeEntry(...)` with `externalId = namespacedExternalId('claude-code', entry.sessionId)` (= bare id — regression-safe).
 
-`writeEntry(memory, sessionCache, bindingCache, externalId, project, entry, absPath, tally)` wraps the resolveSession → indexer.write → seedAnchors body unchanged; both paths call it so there is zero logic drift. The cursor advances to the bytes actually consumed (Codex: slice length added to `startOffset`; Claude: per-line as today), so a grown file resumes from where it stopped — no re-read, no duplicates.
+`writeEntry(memory, sessionCache, bindingCache, externalId, project, entry, absPath, tally)` wraps the resolveSession → indexer.write → seedAnchors body unchanged; both paths call it so there is zero logic drift. BOTH paths advance the cursor per-line via `offset += Buffer.byteLength(line, 'utf8') + 1`, so a grown file resumes from exactly where it stopped — no re-read, no duplicates, and no Codex-vs-Claude cursor-accounting divergence.
 
 > **Why this is correct and dedup-free (W4):** the cursor `>= size` guard in `ingestOneTranscript` (`ingest.ts:289`) skips an unchanged file entirely. When a Codex rollout GROWS (next `Stop`), we read only `[cursor, EOF)` — the new turns — and append them. Prior turns are already past the cursor and are never re-read, so the no-dedup `INSERT` never double-writes them. The filename-UUID sessionId means the header-less tail slice still groups under the right session; the cached cwd gives it the right project. This is the same at-least-once contract Claude already relies on.
 
@@ -944,6 +1047,8 @@ This makes namespacing **additive**: Claude is the un-prefixed "default namespac
 
 ```typescript
 // src/ingest/namespacing.ts
+import { isCodexTranscript } from './ingest.js';
+
 /**
  * Namespace a harness session id for storage (W1, #67). Claude Code keeps its
  * BARE id (migration-safe: existing rows + bindings written before namespacing
@@ -953,18 +1058,34 @@ This makes namespacing **additive**: Claude is the un-prefixed "default namespac
 export function namespacedExternalId(harnessId: string, rawSessionId: string): string {
   return harnessId === 'claude-code' ? rawSessionId : `${harnessId}:${rawSessionId}`;
 }
+
+/**
+ * Derive the harness id from a hook payload's transcript path (C-NEW-1). Every
+ * hook payload carries `transcriptPath` (`payload.ts:56-57`), and the path shape
+ * is the single source of harness truth shared by capture, recall, AND the
+ * skip/include consent flow — so the SAME classification used by ingest's parser
+ * seam (`isCodexTranscript`) also chooses the namespace on the hook + recall +
+ * MCP boundaries. No transcript path → assume Claude (bare), the safe default.
+ */
+export function harnessForPayload(payload: { transcriptPath?: string }): string {
+  return payload.transcriptPath && isCodexTranscript(payload.transcriptPath)
+    ? 'codex'
+    : 'claude-code';
+}
 ```
+
+> `isCodexTranscript` is defined in `ingest.ts` (Task 5). To avoid a circular import at module-eval time, `namespacing.ts` imports it lazily-safe (it is only CALLED at runtime, never at top level) — both modules live in `src/ingest`, and `ingest.ts` imports `namespacedExternalId` from `namespacing.ts` only inside function bodies, so there is no eval-time cycle. If the bundler still flags a cycle, hoist `isCodexTranscript` into `namespacing.ts` and re-export it from `ingest.ts` (the regex is self-contained). Verify with `npm run build` (the regression gate already runs it).
 
 **How the path drives the harness id:** in `ingestFile`, the Codex branch passes `'codex'` to `namespacedExternalId`; the Claude branch passes `'claude-code'` (= bare). Both branches already KNOW which they are because they were selected by `isCodexTranscript(absPath)` — so the namespace is path-derived, not param-threaded. The binding lookup (`readBinding`) inside `resolveSession` is keyed by the SAME already-namespaced `externalId`, so the binding namespace matches automatically. **No `harnessId` param is added to `ingestSingleSession`/`TranscriptSource`** — that threading was dead on the real capture path (C1).
 
-> Follow-on (out of scope): a future Codex `set-session-project` (the MCP/CLI binding writer invoked from a CURRENT Codex session) must namespace its key the same way. Today `set-session-project` is a Claude-only caller, so it stays bare and correct.
+> **C-NEW-1 — the consent/recall boundaries namespace too (NOT out of scope).** `set_session_project` is NOT Claude-only: the MCP server runs inside the Codex session and the recall hooks (`SessionStart`/`UserPromptSubmit`) serve Codex. So the notice id, the binding key, and the recall lookups MUST all use the same namespaced id, or Codex's skip/include silently no-ops and Codex session-scoped recall misses its row. **Task 6b** wires this symmetric namespacing across `session-start.ts`, `user-prompt-submit.ts`, `scope.ts`, and verifies `mcp/server.ts`. (The bare-vs-prefixed rule is identical — `harnessForPayload(payload)` derives the harness from the transcript path that every hook payload carries.)
 
 - [ ] **Step 1: Write the failing unit test (the integration test lives in Task 5):**
 
 ```typescript
 // src/ingest/namespacing.test.ts
 import { describe, expect, it } from 'vitest';
-import { namespacedExternalId } from './namespacing.js';
+import { harnessForPayload, namespacedExternalId } from './namespacing.js';
 
 describe('namespacedExternalId (W1)', () => {
   it('leaves Claude Code ids bare (migration-safe)', () => {
@@ -974,20 +1095,144 @@ describe('namespacedExternalId (W1)', () => {
     expect(namespacedExternalId('codex', '019e2658')).toBe('codex:019e2658');
   });
 });
+
+describe('harnessForPayload (C-NEW-1)', () => {
+  it('classifies a Codex rollout path as codex', () => {
+    expect(harnessForPayload({
+      transcriptPath: '/u/.codex/sessions/2026/05/14/rollout-2026-05-14T08-56-53-019e2658-c8b0-7230-9b59-c3646fbf0c7b.jsonl',
+    })).toBe('codex');
+  });
+  it('classifies a Claude projects path as claude-code (bare)', () => {
+    expect(harnessForPayload({ transcriptPath: '/u/.claude/projects/-x/sess.jsonl' })).toBe('claude-code');
+  });
+  it('defaults to claude-code when no transcript path is present', () => {
+    expect(harnessForPayload({})).toBe('claude-code');
+  });
+});
 ```
 
 > The two-harness-same-raw-id integration assertion is the Task 5 C1 test (`handleSessionEnd` drives a Codex path → `codex:`, a Claude path → bare). Migration safety is proven by the EXISTING Claude session/binding suite staying green (they pass bare ids and still resolve).
 
 - [ ] **Step 2: Run** `npx vitest run src/ingest/namespacing.test.ts` → FAIL (`namespacing.js` missing).
 
-- [ ] **Step 3: Implement** the helper. (It is consumed by Task 5 Step 3 at the `ingestFile` seam.)
+- [ ] **Step 3: Implement** the helper (`namespacedExternalId` + `harnessForPayload`). It is consumed by Task 5 Step 3 (`ingestFile` seam) and Task 6b (hook/recall/MCP boundaries).
+
+- [ ] **Step 3b: Re-export from the ingest barrel.** In `src/ingest/index.ts` add `export { namespacedExternalId, harnessForPayload } from './namespacing.js';` and `export { isCodexTranscript } from './ingest.js';` so the hook layer (`src/hooks/*`), recall (`src/recall/scope.ts`), and MCP (`src/mcp/server.ts`) import them from `../ingest/index.js` (the same barrel they already use for `readBinding`/`writeBinding`).
 
 - [ ] **Step 4: Run** `npx vitest run src/ingest/namespacing.test.ts` → PASS.
 
 - [ ] **Step 5: Commit**
 ```bash
-git add src/ingest/namespacing.ts src/ingest/namespacing.test.ts
-git commit -m "feat(ingest): namespacedExternalId helper — Claude bare, others prefixed (W1, #67)"
+git add src/ingest/namespacing.ts src/ingest/namespacing.test.ts src/ingest/index.ts
+git commit -m "feat(ingest): namespacedExternalId + harnessForPayload helpers — Claude bare, others prefixed (W1/C-NEW-1, #67)"
+```
+
+---
+
+## Task 6b: Symmetric namespacing on the consent + recall boundaries (C-NEW-1, CRITICAL)
+
+**Files:** Modify `src/hooks/session-start.ts`, `src/hooks/user-prompt-submit.ts`, `src/recall/scope.ts`, `src/mcp/server.ts` · Test `src/hooks/session-start.test.ts`, `src/recall/scope.test.ts` (+ existing suites as regression). **Do this AFTER Task 6** (consumes `harnessForPayload`/`namespacedExternalId`).
+
+**The bug (verified on disk):** Task 5/6 namespace the external id ONLY at the ingest write boundary. But the skip/include consent flow and session-scoped recall use the BARE id everywhere else, so for Codex the keys never reconcile:
+
+- `session-start.ts:98,133` `renderNotice(payload.sessionId, …)` injects the BARE `payload.sessionId` into the notice that tells the agent to call `set_session_project session="<id>"`.
+- `mcp/server.ts:444-479` `setSessionProjectAction` → `writeBinding(store, sid, …)` (`session-binding.ts:104,109`) → key `session-project:<bare-uuid>`.
+- ingest reads the binding under `session-project:codex:<uuid>` (`ingest.ts:117,146` `resolveBinding`/`readBinding`).
+- Key mismatch ⇒ Codex skip/include is a NO-OP (including the IRREVERSIBLE-delete consent gate from #52). Also `scope.ts:53` `getSessionByExternalId(bare)` → null for Codex session-scoped recall (degraded; the `scope.ts:57` cwd fallback saves it).
+
+**The fix (symmetric namespacing at the payload boundary — parity-preserving, do NOT descope skip/include):** derive the harness from the payload's transcript path (`harnessForPayload`, Task 6) on each boundary and apply `namespacedExternalId` so every boundary keys by the SAME id ingest uses. Claude stays bare (migration-safe), so the Claude suites stay byte-identical.
+
+- [ ] **Step 1: Write the failing tests.**
+
+```typescript
+// add to src/hooks/session-start.test.ts
+import { handleSessionStart } from './session-start.js';
+
+const CODEX_TP = '/u/.codex/sessions/2026/05/14/rollout-2026-05-14T08-56-53-019e2658-c8b0-7230-9b59-c3646fbf0c7b.jsonl';
+
+it('the Codex SessionStart notice tells the agent to pass the codex:-prefixed id (C-NEW-1)', async () => {
+  const out = await handleSessionStart(
+    { sessionId: '019e2658-c8b0-7230-9b59-c3646fbf0c7b', cwd: '/work/proj', transcriptPath: CODEX_TP },
+    { gatherFacts: async () => ({ sessions: 0, observations: 0, pending: 0, flagged: false, hasBinding: false }) },
+  );
+  expect(out).toContain('session="codex:019e2658-c8b0-7230-9b59-c3646fbf0c7b"'); // namespaced id in the notice
+  expect(out).not.toContain('session="019e2658-c8b0-7230-9b59-c3646fbf0c7b"');   // never the bare id for Codex
+});
+
+it('the Claude SessionStart notice stays BARE (regression)', async () => {
+  const out = await handleSessionStart(
+    { sessionId: 'abc-123', cwd: '/work/proj', transcriptPath: '/u/.claude/projects/-x/sess.jsonl' },
+    { gatherFacts: async () => ({ sessions: 0, observations: 0, pending: 0, flagged: false, hasBinding: false }) },
+  );
+  expect(out).toContain('session="abc-123"'); // unchanged byte-for-byte
+});
+```
+
+```typescript
+// add to src/recall/scope.test.ts — Codex session-scoped recall hits the namespaced row
+it('resolves a Codex session to its codex:-namespaced stored project (C-NEW-1)', () => {
+  const store = newStore();                                   // mirror the existing scope test helper
+  // A stored Codex session row under the namespaced external id with a project.
+  seedSession(store, { externalId: 'codex:019e2658', project: 'proj' });
+  const project = resolveRecallProject(store, {
+    scope: 'project',
+    sessionId: '019e2658',                                    // BARE id from the payload
+    transcriptPath: CODEX_TP,                                 // path → harness=codex → namespaced lookup
+  });
+  expect(project).toBe('proj');                               // hit the codex: row, not the cwd fallback
+});
+```
+
+> **End-to-end skip reconciliation** is asserted by extending the Task 5 C1 test (or a sibling): notice id → `writeBinding(nsId)` → ingest `resolveBinding(nsId)` ALL use `codex:<uuid>`, so a Codex skip actually excludes the session. Concretely: drive `setSessionProjectAction(memory, { action: 'skip', session: 'codex:019e2658', confirmDelete: true })`, then `ingestSingleSession(memory, codexPath)`, and assert the session produced ZERO observations (the skip binding under `session-project:codex:019e2658` was honored by ingest's resolveBinding). The Claude equivalent (bare) still skips — regression.
+
+- [ ] **Step 2: Run** → FAIL (notice carries the bare id; Codex recall misses the namespaced row).
+
+- [ ] **Step 3: Wire the namespacing on each boundary.**
+
+  - **`session-start.ts`** — `handleSessionStart`: compute the namespaced id once and use it for BOTH the binding check and the notice. `payload.sessionId` is the raw id; the notice must carry the namespaced one:
+
+    ```typescript
+    import { harnessForPayload, namespacedExternalId, readBinding } from '../ingest/index.js';
+    // … inside handleSessionStart, replacing the raw-id usages:
+    const nsId = payload.sessionId
+      ? namespacedExternalId(harnessForPayload(payload), payload.sessionId)
+      : undefined;
+    // hasBinding check (gatherFactsFromStore) keys by nsId; the notice carries nsId:
+    if (nsId && facts.hasBinding === false) {
+      const notice = renderNotice(nsId, payload.cwd);          // notice tells the agent to pass nsId
+      if (notice) blocks.push(notice);
+    }
+    ```
+    `gatherFactsFromStore(sessionId?)` (line 50/124) must receive the SAME `nsId` so `readBinding(store, nsId)` matches what `set_session_project`/ingest write. Pass `nsId` (not `payload.sessionId`) into `gatherFactsFromStore`. (`renderNotice`'s signature is unchanged — it just receives the already-namespaced id.)
+
+  - **`user-prompt-submit.ts`** — `recallFromStore`: the first-prompt notice (`renderNotice(payload.sessionId ?? '', …)`, line 196) and the `skip`-guard `readBinding(memory.store, payload.sessionId)` (line 170) both key by the namespaced id. Compute `const nsId = payload.sessionId ? namespacedExternalId(harnessForPayload(payload), payload.sessionId) : undefined;` and use `nsId` for the `readBinding` skip check AND pass `nsId` to `renderNotice` via `handleUserPromptSubmit` (thread `firstPrompt` + the nsId, or recompute nsId in `handleUserPromptSubmit` from the payload — recomputing is simplest and keeps the seam pure). `consumeFirstPromptFlag` keys its `notice-shown:` kv by `nsId` too (so the flag matches across Codex turns).
+
+  - **`scope.ts`** — `resolveRecallProject`: namespace the id before the binding + row lookups. Add a `transcriptPath`-derived harness (the input already carries `transcriptPath`):
+
+    ```typescript
+    import { harnessForPayload, namespacedExternalId, readBinding } from '../ingest/index.js';
+    // … inside resolveRecallProject, replacing the `sessionId` lookups:
+    if (sessionId) {
+      const nsId = namespacedExternalId(harnessForPayload({ transcriptPath }), sessionId);
+      const binding = readBinding(store, nsId);
+      if (binding?.action === 'set') return binding.project;
+      const existing = store.getSessionByExternalId(nsId);
+      if (existing?.project) return existing.project;
+    }
+    ```
+    The cwd/transcript-dir fallbacks (lines 57-58) are unchanged.
+
+  - **`mcp/server.ts`** — `setSessionProjectAction` (line 444): VERIFY-ONLY, no namespacing added here. It must pass the `session` arg straight through to `writeBinding`/`getSessionByExternalId` (it already does, lines 459/464/477) — the agent supplies the ALREADY-namespaced id from the notice, so re-namespacing here would DOUBLE-prefix (`codex:codex:…`). Confirm there is no second application. The `CLAUDE_CODE_SESSION_ID` env fallback (line 449-450) stays Claude-only (Codex has no env id; the agent must pass `session`). Add a guard test asserting `setSessionProjectAction(memory, { action: 'skip', session: 'codex:abc', confirmDelete: true })` writes the binding under EXACTLY `session-project:codex:abc` (single prefix).
+
+- [ ] **Step 4: Run** `npm run check` (full suite — the regression gate). New Codex notice/recall/skip tests pass; ALL existing Claude session-start/user-prompt/scope/mcp tests stay green (Claude ids are bare ⇒ byte-identical).
+
+- [ ] **Step 5: Commit**
+```bash
+git add src/hooks/session-start.ts src/hooks/session-start.test.ts \
+        src/hooks/user-prompt-submit.ts \
+        src/recall/scope.ts src/recall/scope.test.ts \
+        src/mcp/server.ts
+git commit -m "fix(harness): symmetric session-id namespacing on consent + recall boundaries so Codex skip/include reconciles (C-NEW-1, #67)"
 ```
 
 ---
@@ -1220,12 +1465,17 @@ git commit -m "feat(harness): register Codex + rewrite cmdUninstall to be --harn
 - [ ] No core module imports `src/harness` (`git grep -n "from '.*harness" src/store src/recall src/embedding src/optimize` → only the W1 helper lives in `src/ingest`, which is allowed).
 - [ ] The Codex parser is exercised by a REAL transcript fixture — `src/ingest/__fixtures__/codex/rollout-sample.jsonl`; the TOML installer is exercised by a REAL-config fixture — `src/harness/capabilities/__fixtures__/codex/config.toml`.
 - [ ] **C1:** the REAL `handleSessionEnd` path (no harness param) namespaces a Codex transcript `codex:` and a Claude one bare — proven by the Task 5 integration test driving `handleSessionEnd` directly. No `harnessId` param threaded through `ingestSingleSession`/`TranscriptSource`.
+- [ ] **C-NEW-1:** namespacing is SYMMETRIC across capture + consent + recall — the SessionStart notice for a Codex payload carries the `codex:`-prefixed id (Task 6b test); a Codex skip reconciles end-to-end (notice id → `writeBinding` → ingest `resolveBinding` all key `codex:<uuid>`) so the session is actually excluded; Codex session-scoped recall hits the `codex:` row; `set_session_project` applies the prefix exactly ONCE (no double-prefix); Claude notice/binding/recall stay bare (regression).
 - [ ] **W4:** Codex ingest streams from the byte cursor (NOT offset 0); a second `Stop` does not re-insert prior turns (verified: `createObservation` has no dedup). sessionId is from the FILENAME; header `cwd` is cached in kv_meta for header-less resumes.
 - [ ] **N5:** the rollout regex is timestamp-anchored and tested against two REAL filenames.
 - [ ] **C2:** `cmdUninstall` is `--harness`-aware (rewritten to `resolveHarnesses` + per-adapter `mcpBinary`); `abs uninstall --harness codex` removes Codex hooks AND unregisters the `codex` MCP binary — proven by a CLI test.
 - [ ] **C3:** TOML install is byte-identical across 3 runs over the real-config fixture and the result re-parses as valid TOML (dev-only `@iarna/toml`, never a runtime dep); ONE `normalize()` owns newline handling.
 - [ ] **W1-warn:** `cmdSetup --harness codex` registers MCP before splicing hooks; a re-`install-hooks` shows no duplicate `[[hooks.Stop]]`.
 - [ ] **W3:** untrusted-project trust warning is surfaced at install time and asserted.
+- [ ] **W-NEW-1:** `@iarna/toml@^2.2.5` pinned in `devDependencies` only (test import only, no runtime dep).
+- [ ] **W-NEW-2:** the trust assertion runs against a REAL cwd row present in the real-config fixture (not only synthetic `/work/foo`).
+- [ ] **W-NEW-3:** Codex ingest streams PER-LINE via the SAME `readline` loop + per-line `offset += Buffer.byteLength(line)+1` as Claude (a stateful accumulator feeds lines), not a whole-slice buffer — proven by the grown-rollout cursor-resume test.
+- [ ] **W-NEW-4:** a multi-turn fixture proves no double-count of twinned turns AND no drop of an `event_msg`-only turn.
 - [ ] **W2:** `eventMap` and the TOML installer use only the 6 real `0.125.0` events (`Stop`/`SessionStart`/`UserPromptSubmit`/`PreToolUse`/`PermissionRequest`/`PostToolUse`); no phantom PreCompact/Subagent; `Stop` (not `SessionEnd`) is capture.
 - [ ] Namespacing is migration-safe: an existing bare Claude `external_id` still resolves (existing session/binding tests pass unchanged); a Codex id is always `codex:`-prefixed.
 - [ ] `qualifies()` for Codex returns `{ ok: true, missing: [] }`; `resolveSession` is payload-only (no env leak).
@@ -1235,6 +1485,6 @@ git commit -m "feat(harness): register Codex + rewrite cmdUninstall to be --harn
 ## Out of scope (tracked follow-ons, not this issue)
 
 - **Codex tool-anchor extraction** — anchoring code edits from `apply_patch`/`function_call` lines (Codex shape ≠ Claude `tool_use`). Codex ships prose-only capture here; anchoring is a separate plan.
-- **Codex `set-session-project`** — namespacing the binding for a CURRENT Codex session (the `set_session_project` MCP/CLI path) when invoked from a Codex flow. Today it is a Claude-only caller (stays bare, correct).
+- ~~**Codex `set-session-project`**~~ — RECLASSIFIED IN-SCOPE by C-NEW-1 (Task 6b). The notice id, the `set_session_project` binding key, and the recall lookups are namespaced symmetrically so Codex skip/include and session-scoped recall work; this is no longer a follow-on.
 - **Comment-stripping fallback sentinel** — if a future Codex `config.toml` writer strips comments (killing our `# >>> … >>>` sentinels), switch to a non-comment marker table. Not needed for `0.125.0`.
 - **Auto-detect install** — `abs install-hooks`/`abs setup` with NO flag installing for ALL `detectInstalled()` harnesses (cross-adapter). The framework supports it (`detectInstalled()`); enabling it for both harnesses at once is a cross-cutting UX item.
