@@ -14,7 +14,7 @@ coding session — across <b>five harnesses</b> — and recalls what matters nex
 <a href="https://github.com/victorbjuliani/agentbrainsystem/blob/main/LICENSE"><img src="https://img.shields.io/github/license/victorbjuliani/agentbrainsystem?style=flat-square&color=8B5CF6&labelColor=1A1825" alt="MIT License" /></a>
 <a href="https://github.com/victorbjuliani/agentbrainsystem/stargazers"><img src="https://img.shields.io/github/stars/victorbjuliani/agentbrainsystem?style=flat-square&color=A78BFA&labelColor=1A1825&logo=github&logoColor=white" alt="Stars" /></a>
 <img src="https://img.shields.io/badge/node-%E2%89%A5%2022-7C3AED?style=flat-square&labelColor=1A1825&logo=node.js&logoColor=white" alt="Node ≥ 22" />
-<img src="https://img.shields.io/badge/tests-799%20passing-5EEAD4?style=flat-square&labelColor=1A1825" alt="799 tests" />
+<img src="https://img.shields.io/badge/tests-807%20passing-5EEAD4?style=flat-square&labelColor=1A1825" alt="807 tests" />
 <a href="https://victorbjuliani.github.io/agentbrainsystem/"><img src="https://img.shields.io/badge/website-live-22D3EE?style=flat-square&labelColor=1A1825" alt="Website" /></a>
 </p>
 
@@ -25,7 +25,7 @@ coding session — across <b>five harnesses</b> — and recalls what matters nex
 <img src="https://img.shields.io/badge/storage-embedded%20SQLite-5EEAD4?style=for-the-badge&labelColor=0A0810" alt="embedded SQLite" />
 </p>
 
-<img src="docs/assets/demo.gif" alt="A new Claude Code session asks about a hosted vector DB; agentbrainsystem's hook injects the past decision to use sqlite-vec — local-first" width="760" />
+<img src="docs/assets/certify-loop.gif" alt="The same question in two fresh Claude Code sessions over the same codebase. WITHOUT agentbrainsystem the agent has no memory of the past decision and reasons from scratch; WITH it, the recalled-memory block injects the team's 'integer cents, never floats — a rounding bug hit production' decision and the agent applies it as established convention." width="900" />
 
 <sub>
 <a href="#why">Why</a> ·
