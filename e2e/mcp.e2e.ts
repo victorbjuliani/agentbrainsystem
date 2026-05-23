@@ -7,7 +7,7 @@
  */
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { abs, callTool, type E2EHome, FIXTURES_PROJECTS, makeHome, mcpClient } from './harness.js';
+import { abs, callTool, type E2EHome, ingestFixtures, makeHome, mcpClient } from './harness.js';
 
 interface RecallHit {
   id: number;
@@ -47,7 +47,7 @@ afterEach(async () => {
 describe('B — persistence across a process restart', () => {
   it('content ingested by the CLI is recalled by a freshly spawned MCP server', async () => {
     // Process #1: ingest via the CLI (writes + persists the index to disk).
-    const ing = await abs(['ingest', '--dir', FIXTURES_PROJECTS], { env: h.env });
+    const ing = await ingestFixtures(h.env);
     expect(ing.code).toBe(0);
 
     // Process #2: a brand-new MCP server over the SAME ABS_HOME must recall it —
@@ -62,7 +62,7 @@ describe('B — persistence across a process restart', () => {
 });
 
 describe('D — MCP tool contract', () => {
-  it('exposes exactly the 8 documented tools', async () => {
+  it('exposes exactly the 9 documented tools', async () => {
     client = await mcpClient(h.env);
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([
@@ -71,6 +71,7 @@ describe('D — MCP tool contract', () => {
       'forget_preview',
       'memory_status',
       'optimize',
+      'promote',
       'recall',
       'remember',
       'set_session_project',

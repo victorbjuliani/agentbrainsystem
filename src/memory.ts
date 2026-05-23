@@ -17,6 +17,17 @@ export interface Memory {
   recall: Recall;
   /** Result of the startup index check, when `ensure` ran. */
   ensure?: EnsureResult;
+  /**
+   * Set when the startup index gate runs in the BACKGROUND (the MCP stdio server
+   * does this so the `initialize` handshake answers before a slow rebuild — see
+   * `startStdio`). Index-touching callers `await` it so they never read or write a
+   * half-built index. Undefined on the synchronous path (`ensure` already awaited).
+   *
+   * NEVER rejects: the background gate swallows its own failure (logs, resolves to
+   * void) so a one-off rebuild error can't poison every `await memory.ready` into a
+   * persistent tool outage — a degraded (stale) index still serves store rows.
+   */
+  ready?: Promise<EnsureResult | void>;
   close(): void;
 }
 

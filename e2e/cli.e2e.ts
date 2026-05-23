@@ -9,7 +9,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { abs, type E2EHome, FIXTURES_PROJECTS, makeHome, mcpClient, parseJson } from './harness.js';
+import { abs, type E2EHome, ingestFixtures, makeHome, mcpClient, parseJson } from './harness.js';
 
 interface IngestResult {
   filesProcessed: number;
@@ -35,7 +35,7 @@ afterEach(() => {
 
 describe('A — ingest → status', () => {
   it('ingests the fixture (skipping the isMeta turn) and status reflects real counts', async () => {
-    const ing = await abs(['ingest', '--dir', FIXTURES_PROJECTS], { env: h.env });
+    const ing = await ingestFixtures(h.env);
     expect(ing.code).toBe(0);
     const result = parseJson<IngestResult>(ing.stdout);
     expect(result.filesProcessed).toBeGreaterThan(0);
@@ -55,14 +55,14 @@ describe('A — ingest → status', () => {
   });
 
   it('is idempotent — re-ingesting the same dir adds nothing new', async () => {
-    await abs(['ingest', '--dir', FIXTURES_PROJECTS], { env: h.env });
-    const second = await abs(['ingest', '--dir', FIXTURES_PROJECTS], { env: h.env });
+    await ingestFixtures(h.env);
+    const second = await ingestFixtures(h.env);
     expect(second.code).toBe(0);
     expect(parseJson<IngestResult>(second.stdout).observationsAdded).toBe(0);
   });
 
   it('drops the harness-injected isMeta turn (not recallable)', async () => {
-    await abs(['ingest', '--dir', FIXTURES_PROJECTS], { env: h.env });
+    await ingestFixtures(h.env);
     const client = await mcpClient(h.env);
     try {
       const res = (await client.callTool({
@@ -79,7 +79,7 @@ describe('A — ingest → status', () => {
 
 describe('C — export → import round-trip', () => {
   it('replace mode reproduces the original observation count in a fresh store', async () => {
-    await abs(['ingest', '--dir', FIXTURES_PROJECTS], { env: h.env });
+    await ingestFixtures(h.env);
     const original = parseJson<StatusResult>((await abs(['status'], { env: h.env })).stdout).counts
       .observations;
     expect(original).toBeGreaterThan(0);
@@ -104,7 +104,7 @@ describe('C — export → import round-trip', () => {
   });
 
   it('merge mode sums imported content onto an existing store', async () => {
-    await abs(['ingest', '--dir', FIXTURES_PROJECTS], { env: h.env });
+    await ingestFixtures(h.env);
     const artifactCount = parseJson<StatusResult>((await abs(['status'], { env: h.env })).stdout)
       .counts.observations;
     const artifact = join(h.home, 'export.json');
@@ -182,7 +182,7 @@ describe('G — install-hooks + abs hook (non-fatal, always exit 0)', () => {
   });
 
   it('session-start injects baseline context once the store has observations', async () => {
-    await abs(['ingest', '--dir', FIXTURES_PROJECTS], { env: h.env });
+    await ingestFixtures(h.env);
     const res = await abs(['hook', 'session-start'], {
       env: h.env,
       input: payload({ hook_event_name: 'SessionStart', source: 'startup' }),
@@ -193,7 +193,7 @@ describe('G — install-hooks + abs hook (non-fatal, always exit 0)', () => {
   });
 
   it('user-prompt-submit injects FTS recall when the prompt matches stored memory', async () => {
-    await abs(['ingest', '--dir', FIXTURES_PROJECTS], { env: h.env });
+    await ingestFixtures(h.env);
     // Global scope: this asserts the recall-injection mechanism, not project scoping
     // — the payload's session/cwd intentionally do not match the fixture's project
     // (project-scoped isolation is covered by scenario K).
@@ -227,7 +227,7 @@ describe('K — cross-project isolation (#47)', () => {
 
   it('a project-A session does not recall project-B memory under project scope', async () => {
     const { projectsDir } = seedTwoProjects();
-    await abs(['ingest', '--dir', projectsDir], { env: h.env });
+    await ingestFixtures(h.env, projectsDir);
 
     // Project-A session (externalId sessA → stored project "projA") asks a query
     // that only matches project B's content. Under the default project scope it

@@ -76,6 +76,9 @@ export function createMcpServer(memory: Memory): McpServer {
       },
     },
     async ({ query, limit, project }) => {
+      // Wait for the background startup rebuild (if any) so recall never reads a
+      // half-built index. No-op once it has resolved, or on the synchronous path.
+      if (memory.ready) await memory.ready;
       // Explicit `project` wins (empty string = "no explicit project", not a
       // zero-match filter). Otherwise resolve the scope from the session BINDING
       // first, then the stored row, then the cwd slug (#47 `resolveRecallProject`)
@@ -408,6 +411,9 @@ export async function rememberAction(
   memory: Memory,
   { content, kind, session, scope }: RememberArgs,
 ): Promise<Record<string, unknown>> {
+  // Serialize behind the background startup rebuild (if any) so an index-at-write
+  // can't race a concurrent full rebuild. No-op once resolved / on the sync path.
+  if (memory.ready) await memory.ready;
   const sessionId =
     scope === 'global'
       ? getOrCreateGlobalSession(memory.store)
@@ -468,9 +474,38 @@ export function setSessionProjectAction(
   return { session: sid, action: 'skip', deleted: storedCount, applied: true };
 }
 
+/** Result of the startup index gate, derived from the indexer (no extra import). */
+type EnsureResult = Awaited<ReturnType<Memory['indexer']['ensureIndex']>>;
+
+/**
+ * Run the startup index gate as a NON-REJECTING promise: on failure it logs and
+ * resolves to void (degraded — the store rows still serve), so callers that
+ * `await memory.ready` never inherit a rejection. Without this, a one-off rebuild
+ * error (e.g. an embed-provider hiccup) would make every later `recall`/`remember`
+ * re-throw it — turning a degraded index into a persistent tool outage until
+ * restart (Codex P1 on #76).
+ */
+export function backgroundEnsure(
+  indexer: Pick<Memory['indexer'], 'ensureIndex'>,
+): Promise<EnsureResult | void> {
+  return indexer.ensureIndex().catch((err) => {
+    process.stderr.write(`[abs] background index rebuild failed: ${String(err)}\n`);
+  });
+}
+
 /** Boot the full stack and serve it over stdio. Used by the CLI / MCP packaging. */
 export async function startStdio(): Promise<void> {
-  const memory = await openMemory();
+  // Open the stack WITHOUT the startup rebuild gate so the stdio `initialize`
+  // handshake answers instantly. A slow rebuild here (a count-drift / signature
+  // change re-embeds every observation, which can take seconds) would keep the
+  // server from reading stdin, so `claude mcp list` probes time out as
+  // "✗ Failed to connect" even though the server is healthy.
+  const memory = await openMemory(undefined, { ensure: false });
+  // Bring the index up to date in the BACKGROUND; recall/remember await `ready` so
+  // they never read or write a half-built index. `backgroundEnsure` never rejects,
+  // so a rebuild failure stays non-fatal instead of poisoning every later call.
+  memory.ready = backgroundEnsure(memory.indexer);
+
   const server = createMcpServer(memory);
   const transport = new StdioServerTransport();
   await server.connect(transport);

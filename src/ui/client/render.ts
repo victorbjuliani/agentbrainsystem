@@ -10,10 +10,23 @@
  */
 import ForceGraph from 'force-graph';
 import type { NodeType } from '../graph-types.js';
+import { type Box, isPointOccluded, toCanvasBox } from './occlusion.js';
 import { colorForType, cssVar, withAlpha } from './palette.js';
 import type { ViewEdge, ViewGraph, ViewNode } from './types.js';
 
 const REDUCED_MOTION = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+/** Extra px grown around each panel so a label drawn just below a node still counts
+ *  as covered (the label baseline sits a few px under the node center). */
+const LABEL_OCCLUSION_MARGIN = 14;
+
+/** A panel is an occluder only while it is actually painted (the inspector lingers
+ *  at opacity 0 when closed; banners carry `hidden`). */
+function isPanelVisible(el: HTMLElement): boolean {
+  if (el.hidden) return false;
+  const s = getComputedStyle(el);
+  return s.display !== 'none' && s.visibility !== 'hidden' && Number(s.opacity) > 0.05;
+}
 
 /** Is the light theme active? Read live so a theme toggle re-routes the paint. */
 function isLightTheme(): boolean {
@@ -54,6 +67,31 @@ export function createRenderer(mount: HTMLElement, cb: RendererCallbacks): Rende
   /** Adjacency built once per dataset for O(1) neighbour lookups. */
   const adjacency = new Map<string, Set<string>>();
   const linksByNode = new Map<string, ViewEdge[]>();
+
+  /** Floating-panel rects in canvas-screen space — refreshed once per frame so a
+   *  node label that falls under a panel is suppressed instead of bleeding through
+   *  the glass (DESIGN §11 follow-up). See occlusion.ts for the pure geometry. */
+  let occluders: Box[] = [];
+
+  function refreshOccluders(): void {
+    const canvasEl = mount.querySelector('canvas');
+    if (!canvasEl) {
+      occluders = [];
+      return;
+    }
+    const canvasRect = canvasEl.getBoundingClientRect();
+    const panels = document.querySelectorAll<HTMLElement>(
+      '#overlays .overlay, #status-banner, #error-banner',
+    );
+    const next: Box[] = [];
+    for (const panel of panels) {
+      if (!isPanelVisible(panel)) continue;
+      const r = panel.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0) continue;
+      next.push(toCanvasBox(r, canvasRect, LABEL_OCCLUSION_MARGIN));
+    }
+    occluders = next;
+  }
 
   const t0 = performance.now();
   const elapsed = (): number => (performance.now() - t0) / 1000;
@@ -186,7 +224,15 @@ export function createRenderer(mount: HTMLElement, cb: RendererCallbacks): Rende
     // Label: mono, only when zoomed in enough OR the node is emphasised (§11 — labels
     // appear on hover/zoom, fade out on zoom-out to reduce noise).
     const showLabel = (scale > 1.6 || emphasised) && dim > 0.5;
-    if (showLabel) {
+    // Suppress labels that fall under a floating panel — text bleeding through the
+    // glass reads as broken (DESIGN §11 follow-up). The node glow under a panel is
+    // fine; only the label is hidden, and only when it would actually be covered.
+    let labelOccluded = false;
+    if (showLabel && occluders.length > 0) {
+      const sp = graph.graph2ScreenCoords(node.x ?? 0, node.y ?? 0);
+      labelOccluded = isPointOccluded(sp.x, sp.y, occluders);
+    }
+    if (showLabel && !labelOccluded) {
       const fontSize = Math.max(10 / scale, 2.2);
       ctx.font = `${fontSize}px 'JetBrains Mono', ui-monospace, monospace`;
       ctx.textAlign = 'center';
@@ -237,6 +283,9 @@ export function createRenderer(mount: HTMLElement, cb: RendererCallbacks): Rende
     .backgroundColor('rgba(0,0,0,0)')
     .nodeId('id')
     .nodeRelSize(1)
+    // Refresh panel rects once per frame (before nodes paint) so label occlusion
+    // tracks pan/zoom, resize, and the inspector opening/closing — all for free.
+    .onRenderFramePre(() => refreshOccluders())
     .nodeCanvasObject(paintNode)
     .nodePointerAreaPaint(paintPointer)
     .nodeVisibility(isVisible)
