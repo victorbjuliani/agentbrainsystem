@@ -2,6 +2,8 @@
  * E2E (Playwright) — the localhost graph UI against the BUILT binary. Covers:
  *   I  happy path: graph renders, controls present, /api/graph serves nodes, and the
  *      DOM-driven "excluir busca" delete (search → preview → confirm) actually deletes
+ *   K  consolidated lesson/decision kinds surface in /api/graph as first-class node
+ *      types (so the §11 class-sizing has something to size)
  *   J  negative: the write-path security gates (CSRF/Origin → 403, method → 405,
  *      bad handle → 409)
  *
@@ -12,8 +14,16 @@
  * until the debounced search populates `lastSearch`).
  */
 import { type Browser, chromium, expect, test } from '@playwright/test';
-import type { UiHandle } from './harness.js';
-import { abs, type E2EHome, FIXTURES_PROJECTS, makeHome, parseJson, startUi } from './harness.js';
+import type { FakeLlm, UiHandle } from './harness.js';
+import {
+  abs,
+  type E2EHome,
+  fakeOpenAi,
+  ingestFixtures,
+  makeHome,
+  parseJson,
+  startUi,
+} from './harness.js';
 
 interface StatusResult {
   counts: { observations: number };
@@ -33,7 +43,7 @@ let h: E2EHome;
 let ui: UiHandle | undefined;
 test.beforeEach(async () => {
   h = makeHome();
-  await abs(['ingest', '--dir', FIXTURES_PROJECTS], { env: h.env });
+  await ingestFixtures(h.env);
   ui = await startUi(h.env);
 });
 test.afterEach(() => {
@@ -81,6 +91,43 @@ test('I — graph renders, serves /api/graph, and "excluir busca" deletes the ma
     await expect.poll(() => obsCount(h.env)).toBeLessThan(before);
   } finally {
     await page.close();
+  }
+});
+
+test('K — consolidated lessons/decisions surface in /api/graph as their own node types', async () => {
+  // The §11 size hierarchy sizes lesson/decision nodes by class — but the raw
+  // fixture only ingests user/assistant/tool kinds, so that path was never exercised
+  // end-to-end. Consolidate (via the fake LLM) to mint a lesson + a decision, then
+  // confirm the graph payload carries them as first-class node types for the client
+  // to size. The pin path (#35) prepends them regardless of scope.
+  const fake = await fakeOpenAi(
+    JSON.stringify([
+      { kind: 'decision', content: 'Adopt Vitest as the canonical test runner; never add Jest.' },
+      {
+        kind: 'lesson',
+        content: 'Always run npm run build before testing the abs CLI on real data.',
+      },
+    ]),
+  );
+  try {
+    await abs(['consolidate'], {
+      env: { ...h.env, ABS_LLM_BASE_URL: (fake as FakeLlm).baseUrl, ABS_LLM_MODEL: 'stub' },
+    });
+
+    const base = (ui as UiHandle).baseUrl;
+    const page = await browser.newPage();
+    try {
+      const res = await page.request.get(`${base}/api/graph`);
+      expect(res.ok()).toBeTruthy();
+      const data = (await res.json()) as { nodes: Array<{ type: string }> };
+      const kinds = new Set(data.nodes.map((n) => n.type));
+      expect(kinds.has('lesson')).toBeTruthy();
+      expect(kinds.has('decision')).toBeTruthy();
+    } finally {
+      await page.close();
+    }
+  } finally {
+    fake.stop();
   }
 });
 

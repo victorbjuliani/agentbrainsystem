@@ -114,6 +114,21 @@ export function abs(
   });
 }
 
+/**
+ * Ingest a fixtures dir with the opt-in flags the CLI now requires.
+ *
+ * Bare `abs ingest --dir <d>` became a dry-run PREVIEW (writes nothing, prints
+ * human text — not JSON) when historical ingest went opt-in (#62). The suite must
+ * pass `--apply --all` to actually write, so this helper is the single place that
+ * knows the current invocation — call it everywhere instead of hand-rolling args.
+ */
+export function ingestFixtures(
+  env: NodeJS.ProcessEnv,
+  dir: string = FIXTURES_PROJECTS,
+): Promise<RunResult> {
+  return abs(['ingest', '--apply', '--all', '--dir', dir], { env });
+}
+
 /** Parse the JSON `abs status` / `abs ingest` print into a typed object. */
 export function parseJson<T>(stdout: string): T {
   return JSON.parse(stdout) as T;
