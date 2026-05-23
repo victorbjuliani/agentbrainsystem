@@ -39,10 +39,18 @@ function sessionIdFromPath(path: string): string | undefined {
 }
 
 const INJECTED_WRAPPER =
-  /<(system-reminder|command-name|command-message|command-args|command-contents|local-command-stdout|local-command-caveat)>[\s\S]*?<\/\1>/g;
+  /<(system-reminder|command-name|command-message|command-args|command-contents|local-command-stdout|local-command-caveat|INSTRUCTIONS)>[\s\S]*?<\/\1>/g;
+// Codex prepends the project AGENTS.md to the FIRST user turn as
+// `# AGENTS.md instructions for <path>\n\n<INSTRUCTIONS>…</INSTRUCTIONS>`. The
+// `<INSTRUCTIONS>` block is stripped by INJECTED_WRAPPER above; this strips the
+// one-line `# AGENTS.md instructions for …` preamble that introduces it. Anchored
+// on `^# AGENTS.md instructions` so it only matches the injected header, never
+// legitimate user prose that merely mentions agents or instructions.
+const AGENTS_PREAMBLE = /^#\s*AGENTS\.md instructions for .*$/gim;
 function clean(text: string): string {
   return text
     .replace(INJECTED_WRAPPER, '')
+    .replace(AGENTS_PREAMBLE, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
@@ -85,6 +93,10 @@ export interface CodexLineParser {
 
 export function createCodexLineParser(absPath: string, cwdHint?: string): CodexLineParser {
   const sessionId = sessionIdFromPath(absPath); // FILENAME-derived id (W4)
+  // De-dup is per-ingest-run (this parser instance only). A cursor-resume boundary
+  // that falls BETWEEN a response_item and its event_msg twin can yield one duplicate
+  // observation — accepted at-least-once tolerance, the same class as the Claude path.
+  // A persistent (cross-run) dedup is a follow-up (W2, #67).
   const seen = new Set<string>(); // normalized "role text" already captured — de-dup event_msg twins
   let cwd = cwdHint;
   let headerCwd: string | undefined;

@@ -82,6 +82,69 @@ describe('codexParseTranscript', () => {
     }
   });
 
+  it('strips the AGENTS.md instructions preamble + <INSTRUCTIONS> wrapper from a user turn (N1)', () => {
+    // Real Codex rollouts inject the project AGENTS.md into the FIRST user turn as
+    // a `# AGENTS.md instructions for …` preamble + an <INSTRUCTIONS>…</INSTRUCTIONS>
+    // block. Boilerplate-only → dropped (no observation); real prose underneath survives.
+    const boilerplateOnly = JSON.stringify({
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'user',
+        content: [
+          {
+            type: 'input_text',
+            text: '# AGENTS.md instructions for /work/proj\n\n<INSTRUCTIONS>\nAlways run npm run check.\nNever git add -A.\n</INSTRUCTIONS>',
+          },
+        ],
+      },
+    });
+    const dropped = codexParseTranscript(`${boilerplateOnly}\n`, REAL_PATH).entries;
+    expect(dropped).toHaveLength(0); // pure boilerplate → no stored observation
+
+    const withProse = JSON.stringify({
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'user',
+        content: [
+          {
+            type: 'input_text',
+            text: '# AGENTS.md instructions for /work/proj\n\n<INSTRUCTIONS>\nAlways run npm run check.\n</INSTRUCTIONS>\n\nInicie o serviço local do AcmeApp.',
+          },
+        ],
+      },
+    });
+    const kept = codexParseTranscript(`${withProse}\n`, REAL_PATH).entries;
+    expect(kept).toHaveLength(1);
+    expect(kept[0]?.text).toBe('Inicie o serviço local do AcmeApp.');
+    expect(kept[0]?.text).not.toContain('AGENTS.md instructions');
+    expect(kept[0]?.text).not.toContain('INSTRUCTIONS');
+    expect(kept[0]?.text).not.toContain('npm run check');
+  });
+
+  it('does NOT strip legitimate user prose that merely mentions instructions (N1 safety)', () => {
+    const prose = JSON.stringify({
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'user',
+        content: [
+          {
+            type: 'input_text',
+            text: 'Update the AGENTS.md instructions so the build step runs first.',
+          },
+        ],
+      },
+    });
+    const entries = codexParseTranscript(`${prose}\n`, REAL_PATH).entries;
+    expect(entries).toHaveLength(1);
+    // Inline mention (not a leading `# AGENTS.md instructions for …` header) survives.
+    expect(entries[0]?.text).toBe(
+      'Update the AGENTS.md instructions so the build step runs first.',
+    );
+  });
+
   it('never throws on malformed lines — a bad line is a skip', () => {
     expect(() =>
       codexParseTranscript('not json\n{"type":"response_item"}\n', REAL_PATH),
