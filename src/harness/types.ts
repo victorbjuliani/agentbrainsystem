@@ -80,8 +80,15 @@ export interface HarnessAdapter {
   qualifies(): QualifyResult;
   /** Native-event → canonical-moment map. */
   eventMap: EventMap;
-  /** Wire the lifecycle (idempotent, backup-first). */
-  install(): Promise<InstallReport>;
+  /**
+   * Wire the lifecycle (idempotent, backup-first). `cliPath` is the absolute path to
+   * the installed CLI entrypoint (`fileURLToPath(import.meta.url)` from `cli.ts`,
+   * threaded by the caller exactly as `registerMcp(cliPath, …)` already is, C2). The
+   * four shell-hook adapters accept-and-ignore it (their settings.json / config.toml
+   * installers bake no CLI path); the OpenCode adapter bakes it into the absolute
+   * `node <cli.js>` invocation in its generated plugin file.
+   */
+  install(cliPath: string): Promise<InstallReport>;
   /** Remove the lifecycle wiring. */
   uninstall(): Promise<UninstallReport>;
   /** Register the MCP server. `run` is injected by the CLI (no harness→cli coupling). */

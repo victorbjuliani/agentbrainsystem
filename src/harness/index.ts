@@ -3,6 +3,7 @@ import { claudeCodeAdapter } from './adapters/claude-code.js';
 import { codexAdapter } from './adapters/codex.js';
 import { copilotAdapter } from './adapters/copilot.js';
 import { geminiAdapter } from './adapters/gemini.js';
+import { opencodeAdapter } from './adapters/opencode.js';
 import { createRegistry, type HarnessRegistry } from './registry.js';
 
 let cached: HarnessRegistry | null = null;
@@ -15,6 +16,7 @@ export function defaultRegistry(): HarnessRegistry {
       codexAdapter(),
       geminiAdapter(),
       copilotAdapter(),
+      opencodeAdapter(),
     ]);
   return cached;
 }
