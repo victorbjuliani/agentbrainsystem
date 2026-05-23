@@ -1,0 +1,1 @@
+I'm adding a refund endpoint to this payments API. How should I represent the refund amount in code, and where should the auth token live?

@@ -9,6 +9,7 @@ docs/discovery/
 
 # === Node / TypeScript (stack lean — adjust when finalized) ===
 node_modules/
+node_modules
 dist/
 build/
 *.tsbuildinfo
@@ -41,6 +42,7 @@ e2e/.tmp/
 playwright-report/
 test-results/
 .playwright/
+.playwright-mcp/
 
 # === Editor / OS ===
 .DS_Store
