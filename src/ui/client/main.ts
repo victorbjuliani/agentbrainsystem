@@ -10,6 +10,7 @@
  * Shares the wire contract with the backend via `../graph-types.js`.
  */
 import { GRAPH_CONTRACT_VERSION, type GraphData, type NodeType } from '../graph-types.js';
+import { createRenderer } from './creature.js';
 import {
   type ClientSelector,
   confirmDelete,
@@ -19,7 +20,6 @@ import {
 } from './delete-client.js';
 import { radiusFor } from './node-size.js';
 import { mountOverlays } from './overlays.js';
-import { createRenderer } from './render.js';
 import { scopeToQuery } from './scope.js';
 import type { ScopeState, Theme, ViewEdge, ViewGraph, ViewNode } from './types.js';
 import { presentTypes } from './visible-types.js';
