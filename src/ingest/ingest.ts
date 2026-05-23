@@ -24,12 +24,19 @@ import { basename, dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { Memory } from '../memory.js';
 import { projectSlug } from '../optimize/targets.js';
-import { parseLine, type ToolAnchorSeed } from './claude-jsonl.js';
+import { type ParsedEntry, parseLine, type ToolAnchorSeed } from './claude-jsonl.js';
+import { createCodexLineParser } from './codex-jsonl.js';
+// W-R3-1: isCodexTranscript + namespacedExternalId are LEAF helpers in namespacing.ts.
+// ingest.ts IMPORTS them (one direction); it does NOT define isCodexTranscript itself.
+import { isCodexTranscript, namespacedExternalId } from './namespacing.js';
 import { cleanupBindings, readBinding, type SessionBinding } from './session-binding.js';
 import type { IngestOptions, IngestResult } from './types.js';
 
 /** kv_meta key prefix for the per-file byte-offset cursor. */
 const CURSOR_PREFIX = 'ingest:cursor:';
+
+/** kv_meta cache of a Codex rollout's header `cwd`, keyed by transcript path (W4 resume). */
+const CODEX_CWD_PREFIX = 'codex:cwd:';
 
 /** Per-run session-cache sentinel marking a session a `skip` binding excludes. */
 const SKIP = -1;
@@ -179,6 +186,61 @@ function resolveSession(
   return id;
 }
 
+/** Per-run mutable counters shared by the two ingest paths (no logic drift). */
+interface WriteTally {
+  added: number;
+  skipped: number;
+  seeded: number;
+}
+
+/**
+ * Resolve → index → seed one parsed entry under an ALREADY-namespaced externalId.
+ * Both the Claude and Codex paths call this, so the resolveSession → indexer.write
+ * → seedAnchors body is identical and cannot drift. The caller supplies the
+ * namespaced external id (Claude bare, Codex `codex:<uuid>`) and the effective
+ * project; this never re-derives the namespace.
+ */
+async function writeEntry(
+  memory: Memory,
+  sessionCache: Map<string, number>,
+  bindingCache: Map<string, SessionBinding | null>,
+  externalId: string,
+  effectiveProject: string,
+  entry: ParsedEntry,
+  absPath: string,
+  tally: WriteTally,
+): Promise<void> {
+  const sessionId = resolveSession(
+    memory,
+    sessionCache,
+    bindingCache,
+    externalId,
+    effectiveProject,
+    entry.cwd,
+  );
+  // A `skip` binding excludes this session: write nothing — no session, no
+  // observation, no anchors (#50). The cursor was already advanced by the caller.
+  if (sessionId === null) {
+    tally.skipped++;
+    return;
+  }
+  // Prose turn → store the text under its role. Edit-only turn (no prose) →
+  // store a compact 'tool_edit' summary so the seeded anchor has a home.
+  const hasText = entry.text.length > 0;
+  const obsId = await memory.indexer.write({
+    sessionId,
+    kind: hasText ? entry.role : 'tool_edit',
+    content: hasText ? entry.text : summarizeEdits(entry.toolAnchors),
+    source: absPath,
+    ...(entry.timestamp ? { createdAt: entry.timestamp } : {}),
+    ...(entry.uuid ? { metadata: { uuid: entry.uuid } } : {}),
+  });
+  tally.added++;
+  if (entry.toolAnchors.length > 0) {
+    tally.seeded += seedAnchors(memory, obsId, entry.toolAnchors);
+  }
+}
+
 /**
  * Ingest one file from its persisted cursor to EOF, indexing each new readable
  * turn. Streams line-by-line; advances the cursor by the byte length of every
@@ -186,6 +248,11 @@ function resolveSession(
  * The cursor is persisted only after the file is fully drained, so a crash
  * mid-file simply re-reads from the last committed offset (at-least-once; the
  * observation table tolerates a re-read because we only advance on completion).
+ *
+ * One selector at the top routes Codex rollouts (path-classified) through the
+ * Codex parser + `codex:` namespace; everything else stays the byte-for-byte
+ * Claude path. Both paths share `writeEntry` and identical per-line cursor
+ * accounting (`offset += Buffer.byteLength(line) + 1`), so they cannot drift.
  */
 async function ingestFile(
   memory: Memory,
@@ -196,67 +263,79 @@ async function ingestFile(
 ): Promise<void> {
   const sessionCache = new Map<string, number>();
   const bindingCache = new Map<string, SessionBinding | null>();
+  const tally: WriteTally = { added: 0, skipped: 0, seeded: 0 };
   let offset = startOffset;
-  let added = 0;
-  let skipped = 0;
-  let seeded = 0;
 
   const stream = createReadStream(absPath, { start: startOffset, encoding: 'utf8' });
   const rl = createInterface({ input: stream, crlfDelay: Number.POSITIVE_INFINITY });
 
-  for await (const line of rl) {
-    // Advance the byte cursor by the raw line + the newline readline stripped.
-    // (A trailing line without a newline overshoots by 1; harmless — EOF anyway.)
-    offset += Buffer.byteLength(line, 'utf8') + 1;
-
-    const entry = parseLine(line);
-    if (entry === null) {
-      skipped++;
-      continue;
+  if (isCodexTranscript(absPath)) {
+    // Codex path (W4): stream PER-LINE like Claude. The sessionId is the FILENAME
+    // UUID (so a header-less mid-file resume still groups), and the header `cwd`
+    // is recovered from the kv_meta cache for a header-less tail.
+    const cwdHint = memory.store.getMeta(`${CODEX_CWD_PREFIX}${absPath}`) ?? undefined;
+    const parser = createCodexLineParser(absPath, cwdHint);
+    for await (const line of rl) {
+      offset += Buffer.byteLength(line, 'utf8') + 1;
+      const entry = parser.pushLine(line);
+      if (!entry) {
+        tally.skipped++;
+        continue;
+      }
+      const externalId = namespacedExternalId('codex', entry.sessionId);
+      const effectiveProject = entry.cwd ? projectSlug(entry.cwd) : project;
+      await writeEntry(
+        memory,
+        sessionCache,
+        bindingCache,
+        externalId,
+        effectiveProject,
+        entry,
+        absPath,
+        tally,
+      );
     }
+    // Persist the header cwd this read observed (if the slice included a header),
+    // so a later header-less resume still derives the right project.
+    const observedCwd = parser.observedCwd();
+    if (observedCwd) memory.store.setMeta(`${CODEX_CWD_PREFIX}${absPath}`, observedCwd);
+  } else {
+    for await (const line of rl) {
+      // Advance the byte cursor by the raw line + the newline readline stripped.
+      // (A trailing line without a newline overshoots by 1; harmless — EOF anyway.)
+      offset += Buffer.byteLength(line, 'utf8') + 1;
 
-    // The project is the session's real cwd (`entry.cwd`), NOT the Claude Code
-    // storage dir name (`project`). The storage dir mis-buckets subagent
-    // transcripts (which live under `<project>/<uuid>/subagents/`) as the literal
-    // "subagents", and fragments one cwd stored under two dir encodings (old
-    // space/underscore vs new all-hyphen) into two projects. The cwd is canonical.
-    // Fall back to the storage dir name only for older lines that carry no cwd.
-    const effectiveProject = entry.cwd ? projectSlug(entry.cwd) : project;
-    const sessionId = resolveSession(
-      memory,
-      sessionCache,
-      bindingCache,
-      entry.sessionId,
-      effectiveProject,
-      entry.cwd,
-    );
-    // A `skip` binding excludes this session: advance the cursor (done above) but
-    // write nothing — no session, no observation, no anchors (#50).
-    if (sessionId === null) {
-      skipped++;
-      continue;
-    }
-    // Prose turn → store the text under its role. Edit-only turn (no prose) →
-    // store a compact 'tool_edit' summary so the seeded anchor has a home.
-    const hasText = entry.text.length > 0;
-    const obsId = await memory.indexer.write({
-      sessionId,
-      kind: hasText ? entry.role : 'tool_edit',
-      content: hasText ? entry.text : summarizeEdits(entry.toolAnchors),
-      source: absPath,
-      ...(entry.timestamp ? { createdAt: entry.timestamp } : {}),
-      ...(entry.uuid ? { metadata: { uuid: entry.uuid } } : {}),
-    });
-    added++;
-    if (entry.toolAnchors.length > 0) {
-      seeded += seedAnchors(memory, obsId, entry.toolAnchors);
+      const entry = parseLine(line);
+      if (entry === null) {
+        tally.skipped++;
+        continue;
+      }
+
+      // The project is the session's real cwd (`entry.cwd`), NOT the Claude Code
+      // storage dir name (`project`). The storage dir mis-buckets subagent
+      // transcripts (which live under `<project>/<uuid>/subagents/`) as the literal
+      // "subagents", and fragments one cwd stored under two dir encodings (old
+      // space/underscore vs new all-hyphen) into two projects. The cwd is canonical.
+      // Fall back to the storage dir name only for older lines that carry no cwd.
+      const effectiveProject = entry.cwd ? projectSlug(entry.cwd) : project;
+      const externalId = namespacedExternalId('claude-code', entry.sessionId); // = bare id
+      await writeEntry(
+        memory,
+        sessionCache,
+        bindingCache,
+        externalId,
+        effectiveProject,
+        entry,
+        absPath,
+        tally,
+      );
     }
   }
 
   writeCursor(memory, absPath, offset);
-  result.observationsAdded += added;
-  result.observationsSkipped += skipped;
-  result.anchorsSeeded += seeded;
+  result.observationsAdded += tally.added;
+  result.observationsSkipped += tally.skipped;
+  result.anchorsSeeded += tally.seeded;
 }
 
 /** A fresh zeroed tally. */

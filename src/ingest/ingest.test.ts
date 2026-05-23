@@ -1,14 +1,25 @@
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { EmbeddingProvider } from '../embedding/index.js';
+import { handleSessionEnd } from '../hooks/session-end.js';
 import { Indexer } from '../indexer/index.js';
 import type { Memory } from '../memory.js';
 import { Recall } from '../recall/index.js';
 import { MemoryStore } from '../store/index.js';
 import { ingestClaudeProjects, ingestSingleSession, surveyClaudeProjects } from './ingest.js';
 import { writeBinding } from './session-binding.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 /** Deterministic, offline provider so ingestion tests run without a model download. */
 class FakeProvider implements EmbeddingProvider {
@@ -576,6 +587,86 @@ describe('opt-in / scoped ingest (#62)', () => {
     const after = await surveyClaudeProjects(memory, { projectsDir });
     expect(after.find((p) => p.project === '-Users-me-A')?.newTranscripts).toBe(0);
     expect(after.find((p) => p.project === '-Users-me-B')?.newTranscripts).toBe(1);
+    memory.close();
+  });
+});
+
+describe('Codex ingest (per-format seam, W4/C1, #67)', () => {
+  const CODEX_UUID = '019e2658-c8b0-7230-9b59-c3646fbf0c7b';
+  const codexRel =
+    '.codex/sessions/2026/05/14/rollout-2026-05-14T08-56-53-019e2658-c8b0-7230-9b59-c3646fbf0c7b.jsonl';
+  const CWD = '/Users/me/proj';
+  const META = JSON.stringify({
+    type: 'session_meta',
+    payload: { id: CODEX_UUID, cwd: CWD, originator: 'Codex', cli_version: '0.125.0' },
+  });
+  const u = (text: string) =>
+    JSON.stringify({
+      type: 'response_item',
+      payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] },
+    });
+  const a = (text: string) =>
+    JSON.stringify({
+      type: 'response_item',
+      payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] },
+    });
+
+  it('ingests a Codex rollout via ingestSingleSession: one codex:-namespaced session, prose obs', async () => {
+    const memory = newMemory();
+    const src = join(__dirname, '__fixtures__/codex/rollout-sample.jsonl');
+    const codexPath = join(dir, codexRel);
+    mkdirSync(dirname(codexPath), { recursive: true });
+    copyFileSync(src, codexPath);
+    const result = await ingestSingleSession(memory, codexPath);
+    expect(result.observationsAdded).toBeGreaterThan(0);
+    const sessions = memory.store.listSessions();
+    expect(sessions.length).toBe(1);
+    expect(sessions[0]?.externalId).toBe(`codex:${CODEX_UUID}`); // W1 namespaced
+    memory.close();
+  });
+
+  it('the REAL dispatch path (handleSessionEnd) namespaces a Codex transcript codex:, Claude stays bare (C1)', async () => {
+    const memory = newMemory();
+    const codexPath = join(dir, codexRel);
+    mkdirSync(dirname(codexPath), { recursive: true });
+    copyFileSync(join(__dirname, '__fixtures__/codex/rollout-sample.jsonl'), codexPath);
+    const claudePath = join(projectsDir, '-Users-me-foo/sess.jsonl');
+    mkdirSync(dirname(claudePath), { recursive: true });
+    writeFileSync(claudePath, `${userLine('claude-sess', '/Users/me/foo', 'hello', 'u1')}\n`);
+    await handleSessionEnd(
+      { transcriptPath: codexPath },
+      { ingest: (p) => ingestSingleSession(memory, p).then(() => undefined) },
+    );
+    await handleSessionEnd(
+      { transcriptPath: claudePath },
+      { ingest: (p) => ingestSingleSession(memory, p).then(() => undefined) },
+    );
+    const ids = memory.store
+      .listSessions()
+      .map((s) => s.externalId)
+      .sort();
+    expect(ids).toEqual(['claude-sess', `codex:${CODEX_UUID}`]);
+    memory.close();
+  });
+
+  it('a second Stop on a GROWN Codex rollout appends only new turns — no re-insert of prior turns (W4)', async () => {
+    const memory = newMemory();
+    const codexPath = join(dir, codexRel);
+    mkdirSync(dirname(codexPath), { recursive: true });
+    // Turn 1: header + one user/assistant pair.
+    writeFileSync(codexPath, `${[META, u('turn one q'), a('turn one a')].join('\n')}\n`);
+    await ingestSingleSession(memory, codexPath);
+    const afterTurn1 = memory.store.counts().observations;
+    expect(afterTurn1).toBe(2);
+    // Turn 2: append a second pair (NO new header — header-less tail).
+    appendFileSync(codexPath, `${[u('turn two q'), a('turn two a')].join('\n')}\n`);
+    await ingestSingleSession(memory, codexPath);
+    const afterTurn2 = memory.store.counts().observations;
+    // Only the NEW turn's observations were added (cursor resumed past turn 1).
+    expect(afterTurn2).toBe(afterTurn1 + 2);
+    expect(memory.store.listSessions().length).toBe(1); // still one codex: session
+    // Project derived from the cached header cwd, even on the header-less resume.
+    expect(memory.store.listSessions()[0]?.project).not.toBe('2026-05-14');
     memory.close();
   });
 });
