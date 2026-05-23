@@ -5,7 +5,7 @@
 <h3>Your AI coding agent has amnesia. Cure it in one command.</h3>
 
 <p>
-<b>agentbrainsystem</b> is persistent memory for AI coding agents — it captures every Claude Code
+<b>agentbrainsystem</b> is persistent memory for AI coding agents — it captures every coding
 session and recalls what matters next time, so you stop re-explaining the same context every day.
 <b>100% local, $0, offline.</b> Your code never leaves your machine.
 </p>
@@ -26,6 +26,7 @@ session and recalls what matters next time, so you stop re-explaining the same c
 - 🔒 **Your code never leaves your laptop** — 100% local and offline. No cloud, no account, no API keys, no telemetry. `$0`.
 - 🩹 **Verifiable, self-healing memory** — facts anchored to real code (`file:line@commit`), labeled ✓verified / ~claimed / ⚠stale, re-anchoring when code moves.
 - 🗂️ **Project-scoped** — memory from one project never leaks into another.
+- 🔌 **Works with five harnesses** — Claude Code, Codex CLI, Gemini CLI, GitHub Copilot CLI & OpenCode, all sharing one local memory store.
 - 🕸️ **Visual memory graph** — explore the agent's memory as a living graph in your browser (`abs ui`).
 
 ## Get started
