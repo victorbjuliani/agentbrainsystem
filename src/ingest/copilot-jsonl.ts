@@ -23,11 +23,7 @@
  *
  * Never throws: a malformed / blank / non-conversation line is a skip.
  */
-import {
-  type ParsedEntry,
-  type ToolAnchorSeed,
-  normalizeWorktreePath,
-} from './claude-jsonl.js';
+import { normalizeWorktreePath, type ParsedEntry, type ToolAnchorSeed } from './claude-jsonl.js';
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null;

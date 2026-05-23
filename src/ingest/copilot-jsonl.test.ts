@@ -74,9 +74,9 @@ describe('createCopilotLineParser (#69)', () => {
     const { entries } = parseAll(fixture);
     const asst = entries.find((e) => e.role === 'assistant');
     expect(asst?.toolAnchors.some((a) => a.tool === 'Write')).toBe(true);
-    expect(
-      asst?.toolAnchors.some((a) => a.filePath.endsWith('src/ingest/copilot-jsonl.ts')),
-    ).toBe(true);
+    expect(asst?.toolAnchors.some((a) => a.filePath.endsWith('src/ingest/copilot-jsonl.ts'))).toBe(
+      true,
+    );
   });
 
   it('degrades to no anchors when toolRequests shape is unrecognized', () => {
