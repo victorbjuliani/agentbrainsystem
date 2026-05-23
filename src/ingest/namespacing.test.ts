@@ -3,9 +3,13 @@ import { describe, expect, it } from 'vitest';
 import {
   harnessForPayload,
   isCodexTranscript,
+  isCopilotTranscript,
   isGeminiTranscript,
   namespacedExternalId,
 } from './namespacing.js';
+
+const COPILOT_PATH =
+  '/Users/x/.copilot/session-state/3db5c133-d9b9-419c-a649-d8d1b0514c49/events.jsonl';
 
 describe('isCodexTranscript (W-R3-1 — leaf classifier)', () => {
   it('matches a codex sessions dir and a rollout filename', () => {
@@ -61,6 +65,32 @@ describe('isGeminiTranscript (#68 — leaf classifier)', () => {
   });
 });
 
+describe('isCopilotTranscript (#69 — leaf classifier)', () => {
+  it('detects a Copilot events.jsonl session-state path', () => {
+    expect(isCopilotTranscript(COPILOT_PATH)).toBe(true);
+  });
+  it('rejects a Codex rollout path', () => {
+    expect(
+      isCopilotTranscript(
+        '/Users/x/.codex/sessions/2026/05/23/rollout-2026-05-23T04-24-00-78432a44-385f-41f6-8a71-646d51996f8a.jsonl',
+      ),
+    ).toBe(false);
+  });
+  it('rejects a Gemini chats path', () => {
+    expect(
+      isCopilotTranscript('/Users/x/.gemini/tmp/p/chats/session-2026-05-23T04-24-78432a44.json'),
+    ).toBe(false);
+  });
+  it('rejects a Claude projects path', () => {
+    expect(isCopilotTranscript('/Users/x/.claude/projects/p/abc.jsonl')).toBe(false);
+  });
+  it('rejects a session-state dir whose UUID is malformed', () => {
+    expect(isCopilotTranscript('/Users/x/.copilot/session-state/not-a-uuid/events.jsonl')).toBe(
+      false,
+    );
+  });
+});
+
 describe('namespacedExternalId (W1)', () => {
   it('leaves Claude Code ids bare (migration-safe)', () => {
     expect(namespacedExternalId('claude-code', 'abc-123')).toBe('abc-123');
@@ -100,5 +130,8 @@ describe('harnessForPayload (C-NEW-1)', () => {
         transcriptPath: '/h/.gemini/tmp/p/chats/session-2026-05-23T04-24-78432a44.json',
       }),
     ).toBe('gemini');
+  });
+  it('routes a Copilot events.jsonl path to copilot (#69)', () => {
+    expect(harnessForPayload({ transcriptPath: COPILOT_PATH })).toBe('copilot');
   });
 });
