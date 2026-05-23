@@ -14,12 +14,22 @@
  * `<harnessId>:`.
  */
 
+/**
+ * Normalize Windows backslash separators to POSIX `/` before path-shape matching.
+ * Hook payloads on Windows carry `\`-separated transcript paths; without this the
+ * forward-slash detectors misclassify every non-Claude harness as Claude (#86).
+ */
+export function toPosixPath(absPath: string): string {
+  return absPath.replace(/\\/g, '/');
+}
+
 /** True when the path is a Codex rollout transcript (drives parser + namespace). */
 export function isCodexTranscript(absPath: string): boolean {
+  const p = toPosixPath(absPath);
   return (
-    absPath.includes('/.codex/sessions/') ||
+    p.includes('/.codex/sessions/') ||
     /\/rollout-\d{4}-\d{2}-\d{2}T[\d-]+-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$/i.test(
-      absPath,
+      p,
     )
   );
 }

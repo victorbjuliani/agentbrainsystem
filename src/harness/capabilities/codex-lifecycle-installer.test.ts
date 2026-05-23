@@ -141,7 +141,7 @@ describe('codexLifecycleInstaller', () => {
     expect(out).toContain('[mcp_servers.agentmemory]');
     expect(out).toContain('command = "npx"');
     // A representative real project table is untouched.
-    expect(out).toContain('[projects."/Users/vbjuliani/Devs/Widget"]');
+    expect(out).toContain('[projects."/Users/dev/projects/alpha"]');
   });
 
   it('produces output the REAL codex binary parses as valid TOML (no @iarna/toml dep)', async () => {
