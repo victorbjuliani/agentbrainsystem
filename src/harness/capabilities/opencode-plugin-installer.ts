@@ -319,12 +319,25 @@ export function opencodePluginInstaller(
     },
 
     async uninstall(): Promise<UninstallReport> {
-      // Remove our plugin-array entry (drop the key if it becomes empty); JSONC-safe.
+      // Remove BOTH our plugin-array entry AND our mcp.agentbrainsystem key in ONE
+      // JSONC-safe edit (opencode MCP is file-managed — `opencode mcp` has no
+      // non-interactive remove, so cmdUninstall's CLI unregister can't reverse it;
+      // we own the reversal here). Drop a key/array if it becomes empty; leave the
+      // user's other plugins + MCP servers untouched. A JSONC config aborts (no edit).
       editOpencodeConfig(configDir, (config) => {
-        if (!Array.isArray(config.plugin)) return;
-        const kept = (config.plugin as unknown[]).filter((p) => p !== pluginRelSpec);
-        if (kept.length > 0) config.plugin = kept;
-        else delete config.plugin;
+        if (Array.isArray(config.plugin)) {
+          const kept = (config.plugin as unknown[]).filter((p) => p !== pluginRelSpec);
+          if (kept.length > 0) config.plugin = kept;
+          else delete config.plugin;
+        }
+        if (typeof config.mcp === 'object' && config.mcp !== null) {
+          const mcp = config.mcp as Record<string, unknown>;
+          // Only remove OUR entry (match by the exact node <cli.js> command shape is
+          // overkill — the key is ours by name; a foreign server would not use it).
+          if (MCP_KEY in mcp) delete mcp[MCP_KEY];
+          if (Object.keys(mcp).length > 0) config.mcp = mcp;
+          else delete config.mcp;
+        }
       });
       // Delete the plugin file (only ours, matched by path).
       try {

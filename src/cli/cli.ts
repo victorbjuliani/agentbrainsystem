@@ -664,7 +664,13 @@ export async function cmdUninstall(args: string[], deps: UninstallDeps = {}): Pr
         : `✓ no abs hooks were present (${adapter.displayName})`,
     );
 
-    // 2. Unregister the MCP server with THIS adapter's CLI binary (C2 — not always claude).
+    // 2. Unregister the MCP server. File-managed adapters (opencode) already removed
+    // their config entry in step 1's uninstall() — `opencode mcp` has no
+    // non-interactive remove, so the CLI path would hang/fail. Skip it for them.
+    if (adapter.mcpFileManaged) {
+      out(`✓ MCP server entry removed from ${adapter.displayName} config`);
+      continue;
+    }
     const binary = adapter.mcpBinary ?? 'claude';
     const reg = await unregisterMcpServer(run, {
       binary,

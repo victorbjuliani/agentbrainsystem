@@ -74,6 +74,14 @@ export interface HarnessAdapter {
   mcpArgStyle?: 'separator' | 'positional';
   /** MCP scope for the positional arg style (`--scope user|project`); see `mcpArgStyle`. */
   mcpScope?: 'user' | 'project';
+  /**
+   * True when this adapter registers its MCP server by editing a config FILE (not via
+   * the harness CLI's `mcp add`). OpenCode is the only such adapter — `opencode mcp`
+   * has no non-interactive add/remove, so both register AND unregister are file-only.
+   * `cmdUninstall` reads this to SKIP the CLI `mcp remove` path (which would hang /
+   * fail) — the adapter's own `uninstall()` already removed the config entry.
+   */
+  mcpFileManaged?: boolean;
   /** Is this harness installed on the current machine? Never throws. */
   detect(): Promise<boolean>;
   /** The parity gate — does this harness expose all four pillars? */

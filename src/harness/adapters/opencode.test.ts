@@ -19,6 +19,7 @@ describe('opencodeAdapter (#72)', () => {
     expect(a.id).toBe('opencode');
     expect(a.displayName).toBe('OpenCode');
     expect(a.mcpBinary).toBe('opencode');
+    expect(a.mcpFileManaged).toBe(true); // MCP register + unregister are file-only
     expect(a.eventMap.capture).toEqual(['session.idle', 'session.compacted']);
     expect(a.eventMap.recall).toEqual(['experimental.chat.system.transform']);
     expect(a.eventMap.guard).toEqual(['session.deleted']);
