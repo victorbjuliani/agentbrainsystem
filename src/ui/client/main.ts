@@ -18,7 +18,6 @@ import {
   previewDelete,
   StaleTokenError,
 } from './delete-client.js';
-import { radiusFor } from './node-size.js';
 import { mountOverlays } from './overlays.js';
 import { scopeToQuery } from './scope.js';
 import type { ScopeState, Theme, ViewEdge, ViewGraph, ViewNode } from './types.js';
@@ -37,14 +36,10 @@ const ALL_TYPES: readonly NodeType[] = [
   'decision',
 ];
 
-/** Project the frozen wire payload into the renderer's view model. */
+/** Project the frozen wire payload into the renderer's view model. The creature
+ *  renderer derives all geometry from the wire fields, so this is a thin copy. */
 function toViewGraph(data: GraphData): ViewGraph {
-  const nodes: ViewNode[] = data.nodes.map((n) => ({
-    ...n,
-    radius: radiusFor(n.type, n.sizeDriver),
-    phase: Math.random() * Math.PI * 2,
-    breathRate: 1.4 + Math.random() * 1.2, // ~0.22–0.41 Hz, desynchronized
-  }));
+  const nodes: ViewNode[] = data.nodes.map((n) => ({ ...n }));
   const links: ViewEdge[] = data.edges.map((e) => ({ ...e }));
   return { nodes, links };
 }

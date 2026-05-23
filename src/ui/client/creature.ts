@@ -14,11 +14,11 @@
  * (scope, filters, search, selection, theme, delete) is unchanged.
  */
 import * as THREE from 'three';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { NodeType } from '../graph-types.js';
 import { beadParam, recencyNorm, tentacleAngle, tentacleLength } from './creature-geometry.js';
 import { colorForType } from './palette.js';
