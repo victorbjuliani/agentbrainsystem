@@ -85,6 +85,8 @@ export interface ParsedEntry {
   cwd?: string;
   timestamp?: string;
   uuid?: string;
+  /** Gemini message id (`randomUUID`); the id-watermark anchor (W-NEW-1, #68). Unset for Claude/Codex. */
+  id?: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

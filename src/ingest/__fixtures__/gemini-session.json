@@ -1,0 +1,21 @@
+{
+  "sessionId": "78432a44-385f-41f6-8a71-646d51996f8a",
+  "projectHash": "0d1a4009f6700896c0146f7f6a9cff700c8b147e430d24c26143836167a239cc",
+  "startTime": "2026-05-23T04:24:24.551Z",
+  "lastUpdated": "2026-05-23T04:24:25.000Z",
+  "messages": [
+    {
+      "id": "93a3561e-ace3-46b8-82e8-d24cecd6c0e9",
+      "timestamp": "2026-05-23T04:24:24.551Z",
+      "type": "user",
+      "content": [{ "text": "say hi" }]
+    },
+    {
+      "id": "a1b2c3d4-e5f6-47a8-99b0-c1d2e3f4a5b6",
+      "timestamp": "2026-05-23T04:24:25.000Z",
+      "type": "gemini",
+      "content": [{ "text": "hi!" }]
+    }
+  ],
+  "kind": "main"
+}
