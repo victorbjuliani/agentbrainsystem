@@ -16,9 +16,10 @@ describe('geminiAdapter (#68)', () => {
 
   it('resolves the session id from the payload only — NO env var fallback', () => {
     const a = geminiAdapter();
-    expect(
-      a.resolveSession({ payload: { sessionId: 'p1', transcriptPath: '/t.json' } }),
-    ).toEqual({ sessionId: 'p1', transcriptPath: '/t.json' });
+    expect(a.resolveSession({ payload: { sessionId: 'p1', transcriptPath: '/t.json' } })).toEqual({
+      sessionId: 'p1',
+      transcriptPath: '/t.json',
+    });
     // No GEMINI_* session-id env var exists; a Claude-style env must NOT leak in.
     expect(a.resolveSession({ env: { CLAUDE_CODE_SESSION_ID: 'e1' } })).toBeNull();
   });

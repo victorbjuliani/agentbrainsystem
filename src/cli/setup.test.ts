@@ -58,7 +58,15 @@ describe('Gemini positional arg style (#68 — Gemini rejects the -- separator)'
     ]);
   });
   it('default add args keep the -- separator (claude/codex unchanged)', () => {
-    expect(buildMcpAddArgs(CLI)).toEqual(['mcp', 'add', MCP_SERVER_NAME, '--', 'node', CLI, 'start']);
+    expect(buildMcpAddArgs(CLI)).toEqual([
+      'mcp',
+      'add',
+      MCP_SERVER_NAME,
+      '--',
+      'node',
+      CLI,
+      'start',
+    ]);
   });
   it('manual command for Gemini is POSITIONAL — no -- separator', () => {
     expect(manualMcpCommand('/cli.js', 'gemini', { argStyle: 'positional', scope: 'user' })).toBe(
@@ -66,7 +74,9 @@ describe('Gemini positional arg style (#68 — Gemini rejects the -- separator)'
     );
   });
   it('manual command default keeps the -- form (claude/codex byte-identical)', () => {
-    expect(manualMcpCommand('/cli.js')).toBe('claude mcp add agentbrainsystem -- node /cli.js start');
+    expect(manualMcpCommand('/cli.js')).toBe(
+      'claude mcp add agentbrainsystem -- node /cli.js start',
+    );
     expect(manualMcpCommand('/cli.js', 'codex')).toBe(
       'codex mcp add agentbrainsystem -- node /cli.js start',
     );
@@ -85,7 +95,9 @@ describe('Gemini positional arg style (#68 — Gemini rejects the -- separator)'
     });
     expect(r.status).toBe('error');
     if (r.status === 'error')
-      expect(r.manualCommand).toBe('gemini mcp add agentbrainsystem --scope user node /cli.js start');
+      expect(r.manualCommand).toBe(
+        'gemini mcp add agentbrainsystem --scope user node /cli.js start',
+      );
   });
 });
 

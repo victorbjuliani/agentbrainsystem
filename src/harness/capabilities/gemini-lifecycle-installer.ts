@@ -149,7 +149,8 @@ export function geminiLifecycleInstaller(options: GeminiInstallerOptions = {}): 
       const hooks: HookMap = { ...(settings.hooks ?? {}) };
       for (const spec of GEMINI_HOOKS) {
         const command = commandFor(baseCommand, spec);
-        const groups = hooks[spec.event] ? [...hooks[spec.event]] : [];
+        const existing = hooks[spec.event];
+        const groups = existing ? [...existing] : [];
         if (hasManaged(groups, command)) {
           hooks[spec.event] = groups; // already wired — idempotent
           continue;
