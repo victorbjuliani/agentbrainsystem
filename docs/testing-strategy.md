@@ -57,3 +57,31 @@ exercise end to end. Run it before a release or after touching a cross-surface c
 > OpenAI-compat client is tested with a mocked `fetch` — never a real endpoint. The real LLM
 > path is validated manually (`abs consolidate --dry-run` against a local Ollama) before
 > release. The local embedding model downloads once (~one-time, slow) and runs offline after.
+
+## Live Claude Code Smoke (`e2e/live/`, opt-in)
+
+The highest-fidelity proof of the product's core promise: it drives a **real headless
+Claude Code** (`claude -p`) end to end — Session A makes a decision → `SessionEnd` ingests it
+→ a fresh Session B recalls it and the `UserPromptSubmit` hook injects it into the prompt →
+the model uses it. Proves what the simulated-payload E2E (scenario G) cannot: that the loop
+fires inside a genuine CC session.
+
+- **What runs in `npm run check`:** the OFFLINE units only — `driver.test.ts` (stream-json
+  parser, against a committed real-capture fixture) and `assert.test.ts` (injection gate +
+  behavioral keyword-set). They never spawn `claude`. (`vitest.config.ts` includes
+  `e2e/live/**/*.test.ts`.)
+- **The live smoke is opt-in and OUT of CI:** `e2e/live/scenario.live.ts` self-skips unless
+  `ABS_LIVE_CC=1` (it needs `claude` auth and spends tokens). Run it via
+  **`./scripts/certify-1.0.sh`** (builds, then runs the full loop on `--model haiku`).
+- **Two blocking gates:** (1) deterministic — the recalled-memory fence appears in the
+  `UserPromptSubmit` `additionalContext` (parsed from `--output-format stream-json
+  --include-hook-events`); (2) behavioral core — the answer used the recalled concept. The
+  fuller behavioral set is a soft warning unless `ABS_LIVE_STRICT=1`.
+- **Isolation differs from the system suite:** auth does **not** survive a fake `HOME`
+  (`claude` reports "Not logged in"), so the live harness keeps the real `HOME` and isolates
+  **only** the store (`ABS_HOME`) and hooks (a temp `--settings` pointing at the built
+  binary). `--mcp-config '{"mcpServers":{}}' --strict-mcp-config` keeps it off the real MCP.
+- **README GIF:** `scripts/make-readme-gif.sh` reuses the same harness to record the
+  before/after demo (`docs/assets/certify-loop.gif` + a 9:16 `…-story.gif`). It captures the
+  real runs once into `e2e/live/gif/cap/*.txt`, then vhs replays them deterministically, so
+  `--no-capture` re-renders without spending tokens.
