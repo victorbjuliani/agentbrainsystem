@@ -255,7 +255,9 @@ module. Steps:
      - **Parse FAILS** (the file is JSONC: comments / trailing commas / JSON5) →
        **DO NOT WRITE.** Take a backup (defensive), then ABORT with a structured
        result `{ status: 'manual', targetPath, snippet }` whose `snippet` is the
-       exact JSON to paste — e.g. for MCP:
+       exact JSON to paste — e.g. for MCP (the `<cliPath>` placeholder is the SAME
+       threaded `cliPath` `fileMcpRegister(cliPath)` received — the absolute installed
+       `cli.js`, NOT bare `abs`, NOT the installer module path; C2):
        `"mcp": { "agentbrainsystem": { "type": "local", "command": ["node","<cliPath>","start"], "enabled": true } }`
        and for the plugin: `"plugin": ["./plugin/agentbrainsystem.js"]`. The caller
        (installer / `fileMcpRegister`) surfaces this as a printed manual-merge
@@ -267,6 +269,35 @@ This is the project's minimal-deps-honoring, lossless-or-abort contract: we neve
 overwrite a non-empty config we cannot round-trip. (If a later task adds
 `jsonc-parser`, only the "Parse FAILS" branch changes — abort becomes a
 `modify`/`applyEdits` in-place edit; everything else stays.)
+
+> **Wnew — collision-proof backup filename (same-ms `.bak` overwrite).** `abs setup
+> --harness opencode` (`cmdSetup`) calls `registerMcp` (writes the `mcp` key) THEN
+> `install` (writes the `plugin[]` entry) — TWO `editOpencodeConfig` edits against the
+> SAME `opencode.json` in the same run. The Gemini backup helper this writer copies
+> names backups `${path}.${new Date().toISOString().replace(/[:.]/g,'-')}.bak`
+> (`gemini-lifecycle-installer.ts:104`) — ISO-**millisecond** granularity. Two edits
+> inside one millisecond produce the SAME `.bak` name, so the second backup
+> **overwrites the first** → the `.bak` reflects the post-MCP-edit state, NOT the
+> user's original pre-setup config. (No live-file data loss — the second
+> read-merge-write sees the first edit's result, so the live `opencode.json` is
+> correct — but the `.bak` no longer recovers the true original: a rough edge.)
+>
+> **Fix (collision-proof backup name — chosen over the single-write merge because it's
+> a one-liner and keeps the two-edit flow + correct MCP status reporting intact):**
+> `editOpencodeConfig`'s backup helper appends a per-process monotonic discriminator,
+> mirroring the temp-file naming already in the same module
+> (`.abs-gemini-tmp-${Date.now()}-${process.pid}`, `gemini-lifecycle-installer.ts:109`).
+> Backup name becomes
+> `${path}.${new Date().toISOString().replace(/[:.]/g,'-')}.${process.pid}-${counter++}.bak`
+> where `counter` is a module-scoped integer bumped on every backup — so two same-ms
+> edits in one process get distinct `.bak` files and the FIRST (containing the true
+> original) is never clobbered. (This new backup helper lives in the opencode installer
+> module; the existing `gemini-lifecycle-installer.ts` `backupSettings` is NOT touched —
+> zero regression to the 4 prior adapters.)
+> - **Test (Task 5):** after a full `abs setup --harness opencode` against a temp plain
+>   `opencode.json` (the real two-edit path), assert that a `.bak` exists whose content
+>   equals the ORIGINAL pre-setup config bytes (the first backup survives), and the live
+>   `opencode.json` contains BOTH `mcp.agentbrainsystem` and the `plugin[]` entry.
 
 ### MCP registration method — FILE-ONLY (not the CLI)
 
@@ -307,9 +338,41 @@ already aligned — no work here beyond noting it in the adapter doc.
 
 ## Architecture
 
-The harness contract (`src/harness/types.ts`) is **unchanged** — `HarnessAdapter`
-already abstracts `detect`/`qualifies`/`eventMap`/`install`/`uninstall`/`registerMcp`/
-`resolveSession`. OpenCode fits the contract; only the *capabilities behind it* are new.
+The harness contract (`src/harness/types.ts`) gets ONE additive change — `install()`
+becomes `install(cliPath: string)` (C2; see below). Everything else
+(`detect`/`qualifies`/`eventMap`/`uninstall`/`registerMcp`/`resolveSession`) is
+unchanged. OpenCode fits the contract; only the *capabilities behind it* are new.
+
+> **C2 contract change — `install(cliPath)` (mirror `registerMcp(cliPath, run)`).**
+> Today `HarnessAdapter.install()` (`types.ts:74`) takes NO argument, and the two call
+> sites (`cmdInstallHooks` `cli.ts:405`, `cmdSetup` `cli.ts:482`) call
+> `adapter.install()` with nothing. The opencode plugin must bake the ABSOLUTE
+> `node <cli.js>` path into the generated plugin file, and the ONLY correct source of
+> that path is the CLI entrypoint's own `fileURLToPath(import.meta.url)` —
+> `cmdSetup` already computes exactly this as `const cliPath` at `cli.ts:463` and
+> threads it into `registerMcp(cliPath, ...)`. Deriving the path from
+> `import.meta.url` *inside the installer/capability module* is WRONG: after `tsc` that
+> resolves to `dist/harness/capabilities/opencode-plugin-installer.js`, not
+> `dist/cli/cli.js` — the baked plugin would shell `node <installer.js> opencode-capture`,
+> a path with no CLI dispatcher, and because every plugin shell-out is `.nothrow()` the
+> failure is silently swallowed → capture + recall dead. So we THREAD `cliPath` through
+> `install()` exactly as `registerMcp` already does (option a — the registerMcp-consistent
+> fix; NOT a walk-up from the installer's own `import.meta.url`).
+>
+> **Mechanical changes (Task 6a — contract + the 4 existing adapters + 2 call sites):**
+> - `types.ts:74`: `install(cliPath: string): Promise<InstallReport>;`
+> - The four existing adapters (`claude-code.ts:40`, `codex.ts:42`, `gemini.ts:46`,
+>   `copilot.ts:46`) change `install: () => installer.install()` →
+>   `install: (_cliPath) => installer.install()` — accept-and-IGNORE the arg (their
+>   settings.json / config.toml installers don't bake a CLI path; `_cliPath` is unused).
+>   This is a typecheck-only no-op for them — their existing tests stay byte-green.
+> - `cli.ts` call sites: `cmdSetup` already has `const cliPath = fileURLToPath(import.meta.url)`
+>   at `:463` (above `registerMcp`); the `adapter.install()` at `:482` becomes
+>   `adapter.install(cliPath)` reusing the SAME const (no new compute, no second
+>   `fileURLToPath`). `cmdInstallHooks` (`:401-415`) has NO cliPath in scope today, so
+>   hoist `const cliPath = fileURLToPath(import.meta.url)` to the top of `cmdInstallHooks`
+>   (the `fileURLToPath` import already exists for `:463`) and call
+>   `adapter.install(cliPath)` at `:405`.
 
 Two NEW capabilities (parallel to the existing `*-lifecycle-installer.ts` and
 `transcript-source.ts`):
@@ -481,39 +544,49 @@ This is the exact discipline of the Gemini `GEMINI_LASTID_PREFIX` watermark
 ### Task 3 — `PluginEventInstaller` capability + the plugin file template
 
 New file `src/harness/capabilities/opencode-plugin-installer.ts`. Exports
-`opencodePluginInstaller(options?)` returning a `LifecycleInstaller`
-(`{ install(): Promise<InstallReport>; uninstall(): Promise<UninstallReport> }`,
-the existing capability interface). Owns BOTH the plugin file AND the
-`opencode.json` `plugin`-array edit (and Task 5's MCP edit shares the same writer).
+`opencodePluginInstaller(options?)` returning a capability whose
+`install(cliPath: string): Promise<InstallReport>` takes the threaded CLI path and
+whose `uninstall(): Promise<UninstallReport>` is arg-free. Owns BOTH the plugin file
+AND the `opencode.json` `plugin`-array edit (and Task 5's MCP edit shares the same
+writer; `fileMcpRegister(cliPath)` takes the same threaded path).
 
 Options: `configDir` (default `~/.config/opencode`), `pluginFileName` (default
-`agentbrainsystem.js`), and the **absolute invocation** the plugin shells —
-`nodePath` (default `process.execPath`) + `cliPath` (default the resolved
-`fileURLToPath(import.meta.url)`-derived absolute `cli.js`, the SAME source the MCP
-registrar already uses, `cli.ts:463`). Also an `absCommand` override (default
-`undefined`) so a test can inject a single fake command string; **the shipped
-default is the absolute `node <cliPath>` pair, NEVER bare `abs`** — see C2 below.
+`agentbrainsystem.js`), and `nodePath` (default `process.execPath`) for the node
+binary baked into the plugin. The **`cliPath` is NOT an option / NOT defaulted from
+`import.meta.url`** — it is the REQUIRED argument to `install(cliPath)`, threaded from
+the CLI entrypoint (`cli.ts:463`; see C2). Also an `absCommand` override (default
+`undefined`) so a test can inject a single fake command string in place of the
+`${nodePath} ${cliPath}` pair; **the shipped default is the absolute
+`node <cliPath>` pair, NEVER bare `abs`** — see C2 below.
 
-> **C2 — the plugin MUST bake the ABSOLUTE invocation, not bare `abs`.** The plugin
-> runs inside opencode's own **Bun** process, which is frequently launched from a
-> GUI / launchd context whose `PATH` does NOT include the npm-global bin dir. A bare
-> ``$`abs …` `` then resolves to nothing, and because every shell-out is `.nothrow()`,
-> the failure is **silently swallowed** → capture + recall are dead with no error.
-> The installer already knows the real absolute path to abs's `cli.js` via
-> `fileURLToPath(import.meta.url)` (this is exactly what `registerMcp` writes into
-> `command: ["node","<cliPath>","start"]`, `cli.ts:463-464`). We capture `nodePath =
-> process.execPath` and that `cliPath` **at install time** and write them into the
-> plugin file as string literals, so the generated plugin shells the absolute
-> ``$`${nodePath} ${cliPath} opencode-capture --session ${id}` ``. No PATH dependency.
+> **C2 — the plugin MUST bake the ABSOLUTE invocation, not bare `abs`, sourced from
+> `cli.js` (NOT the installer module).** The plugin runs inside opencode's own **Bun**
+> process, frequently launched from a GUI / launchd context whose `PATH` does NOT
+> include the npm-global bin dir. A bare ``$`abs …` `` then resolves to nothing, and
+> because every shell-out is `.nothrow()`, the failure is **silently swallowed** →
+> capture + recall dead with no error.
+>
+> The ONLY correct source of the absolute `cli.js` path is the CLI entrypoint's own
+> `fileURLToPath(import.meta.url)`. Computing it inside THIS installer module is a trap:
+> after `tsc`, this module's `import.meta.url` is `dist/harness/capabilities/opencode-plugin-installer.js`,
+> NOT `dist/cli/cli.js` — the baked plugin would shell `node <installer.js> opencode-capture`,
+> a module with no CLI dispatcher (the `switch (cmd)` lives in `cli.ts`), so capture+recall
+> die silently. So `install(cliPath)` RECEIVES the path the CLI already threads into
+> `registerMcp(cliPath, ...)` (`cli.ts:463-464`, where `import.meta.url` IS `cli.js`).
+> We capture `nodePath = process.execPath` and that threaded `cliPath` **at install
+> time** and write both as `JSON.stringify(...)` string literals into the plugin file,
+> so the generated plugin shells the absolute
+> ``$`${nodePath} ${cliPath} opencode-capture --session ${id}` ``. No PATH dependency,
+> no installer-module-path bug.
 
-**Install:**
+**Install (`install(cliPath)`):**
 1. `assertNotSymlink` + atomic-write the plugin file to
    `<configDir>/plugin/<pluginFileName>` (create `plugin/` dir if missing). The file
-   body is the template below, with `__NODE__`/`__CLI__` substituted by `nodePath`/
-   `cliPath` (or, if `absCommand` is given for a test, the single token replaces the
-   `${nodePath} ${cliPath}` pair). Both substituted values are wrapped in
-   `JSON.stringify(...)` so a path containing spaces is a valid, correctly-quoted JS
-   string literal in the emitted module.
+   body is the template below, with `__NODE__`/`__CLI__` substituted by `nodePath` and
+   the threaded `cliPath` argument (or, if `absCommand` is given for a test, the single
+   token replaces the `${nodePath} ${cliPath}` pair). Both substituted values are
+   wrapped in `JSON.stringify(...)` so a path containing spaces is a valid,
+   correctly-quoted JS string literal in the emitted module.
 2. Edit the resolved config file via `editOpencodeConfig` (see "Config write
    strategy"): ensure `plugin` array contains `"./plugin/<pluginFileName>"` (relative
    module specifier — opencode resolves it from the config dir). Idempotent: skip if
@@ -590,10 +663,13 @@ rule is unverified); the live smoke-test in Task 8 is what actually proves the e
 shape against real opencode.)
 
 - **Tests** (`opencode-plugin-installer.test.ts`): point `configDir` at a temp dir.
-  Cover: (a) install writes `plugin/agentbrainsystem.js` containing the template with
-  the ABSOLUTE `node <cliPath>` pair substituted (assert the file contains the
-  resolved `process.execPath` + cli.js path, **NOT** bare `abs` — C2 regression
-  guard); (b) **idempotency** — second install is a no-op (no dup array entry,
+  Cover: (a) `install(cliPath)` writes `plugin/agentbrainsystem.js` containing the
+  template with the ABSOLUTE `node <cliPath>` pair substituted — assert the file
+  contains the passed `process.execPath` + the EXACT `cliPath` arg (e.g. an absolute
+  `/…/dist/cli/cli.js`), and **NOT** bare `abs` AND **NOT** any
+  `opencode-plugin-installer.js` / `capabilities/` path (C2 regression guard — proves
+  the path is threaded, not derived from this module's `import.meta.url`);
+  (b) **idempotency** — second install is a no-op (no dup array entry,
   byte-stable file, no extra backup); (c) preserves an existing unrelated plugin entry
   + the `$schema` key in a **plain-JSON** `opencode.json`; (d) uninstall removes our
   entry + file, leaves the user's plugin; (e) symlink config → refuse to write;
@@ -640,7 +716,7 @@ shape against real opencode.)
      DESC LIMIT`). Reuse the existing recall `TOP_K` constant.
   3. Map to the renderer's hit shape: `const hits = obs.map((observation) =>
      ({ observation, score: 0 }))` (`RecallHit` requires `observation` + `score`,
-     `recall.ts:31-34`; `score` is unused by `renderRecallBlock`).
+     `recall.ts:31`; `score` is unused by `renderRecallBlock`).
   4. `renderRecallBlock(hits, fenceHeader(project))` (`user-prompt-submit.ts:105`)
      so the injected text is byte-compatible with the per-prompt hook's fenced block
      (prompt-injection hygiene preserved).
@@ -665,7 +741,8 @@ shape against real opencode.)
 
 > **Opt-out (document explicitly — adapter header + this plan).** The skip command
 > works for opencode: `abs project --session opencode:<id> --skip` (`cmdProject`
-> accepts `--session` to override the ambient id, `cli.ts:864`). **Caveat:**
+> resolves `--session` to override the ambient id via `resolveSessionId(args)`,
+> `cli.ts:914`). **Caveat:**
 > `cmdProject` hard-codes `const cwd = process.cwd()` (`cli.ts:926`) and `--cwd` is
 > already taken as an ACTION flag there (`cli.ts:888` — "file this session under its
 > folder"), so adding a `--cwd <path>` *override* would collide with the existing
@@ -707,9 +784,11 @@ export function opencodeAdapter(): HarnessAdapter {
     displayName: 'OpenCode',
     mcpBinary: 'opencode',                 // for messaging only; MCP is file-written, not CLI
     detect: async () => {
-      // opencode on PATH OR ~/.config/opencode present (mirrors codex/gemini/copilot)
+      // ~/.config/opencode present (mirrors gemini/copilot one-liner exactly — there
+      // is NO `onPath` helper in this codebase; the 4 existing adapters' detect() is
+      // just access(~/.config-dir)+catch→false, N1).
       try { await access(join(homedir(), '.config', 'opencode')); return true; }
-      catch { return await onPath('opencode'); }
+      catch { return false; }
     },
     qualifies: () => ({ ok: true, missing: [] }),   // all four pillars verified (ADR-0011)
     eventMap: {
@@ -717,9 +796,9 @@ export function opencodeAdapter(): HarnessAdapter {
       recall:  ['experimental.chat.system.transform'],  // native per-turn system inject
       guard:   ['session.deleted'],                      // tombstone guard (in-plugin)
     },
-    install: () => installer.install(),
+    install: (cliPath) => installer.install(cliPath),    // C2: thread cliPath → baked absolute node <cli.js>
     uninstall: () => installer.uninstall(),
-    registerMcp: async () => fileMcpRegister(),    // writes config.mcp.agentbrainsystem
+    registerMcp: (cliPath) => fileMcpRegister(cliPath),  // C2: same threaded path → mcp.command ["node", cliPath, "start"]
     resolveSession: (input) => input.payload?.sessionId
       ? { sessionId: input.payload.sessionId } : null,   // id-only; no transcript path, no env
   };
@@ -752,17 +831,29 @@ points at the real installed CLI.
   temp plain `opencode.json`, idempotent on second call, never clobbers a foreign
   entry; (f) **C1** — `registerMcp` against a JSONC `.json` (comment/trailing comma)
   → `{ status: 'manual' }`, config byte-unchanged, snippet contains the mcp entry;
-  (g) **C1** — when `opencode.jsonc` exists, `registerMcp` targets it (not `.json`).
+  (g) **C1** — when `opencode.jsonc` exists, `registerMcp` targets it (not `.json`);
+  (h) **Wnew — backup not clobbered by the two-edit setup**: drive the real
+  `cmdSetup`-equivalent two edits (registerMcp THEN install) against a temp plain
+  `opencode.json`, then assert a `.bak` exists whose bytes EQUAL the original pre-setup
+  config (the first backup survived the same-ms second edit), and the live file has
+  BOTH `mcp.agentbrainsystem` and the `plugin[]` entry;
+  (i) **C2 — `registerMcp(cliPath)` bakes the threaded path**: the written
+  `mcp.agentbrainsystem.command` is `["node", <the cliPath arg>, "start"]` — assert the
+  exact passed `cliPath`, NOT bare `abs`.
 
 ### Task 6 — Register in `defaultRegistry()`
 
 `src/harness/index.ts`: import `opencodeAdapter` and add it as the **fifth** entry in
 `createRegistry([...])`. Update `src/harness/index.test.ts` /
 `src/harness/registry.test.ts` expectations (count 4 → 5; `byId('opencode')` resolves;
-`opencode` in `all()`). This makes `abs install-hooks --harness opencode` /
+`opencode` in `all()`). `abs install-hooks --harness opencode` /
 `abs setup --harness opencode` / `abs uninstall --harness opencode` resolve the adapter
-through the existing `resolveHarnesses` flow (`cli.ts:372`) with **no CLI change** for
-install/uninstall/setup — they already dispatch by `--harness <id>`.
+through the existing `resolveHarnesses` flow (`cli.ts:372`) — they already dispatch by
+`--harness <id>`. The ONLY CLI change is the C2 `install(cliPath)` threading at the two
+call sites (`cmdInstallHooks` `cli.ts:405`, `cmdSetup` `cli.ts:482`) plus the contract
+edit in `types.ts:74` and the 4 prior adapters' accept-and-ignore signature — covered
+in the C2 contract-change block under "Architecture" (do that mechanical change as part
+of this task: contract + 4 adapters + 2 call sites, typecheck-only no-op for the four).
 
 ### Task 7 — Test fixtures + suite
 
@@ -773,8 +864,16 @@ install/uninstall/setup — they already dispatch by `--harness <id>`.
   place (drift-proof). Optionally include a tiny **real** opencode.db slice (read-only
   copy of a single benign session) as a smoke fixture, gated to skip if absent.
 - `npm run check` green (lint → typecheck → all suites). Confirm the 4 prior adapters'
-  tests are byte-unchanged (zero regression — we touched only additive surfaces +
-  the registry count).
+  tests still pass byte-unchanged (zero regression). NOTE the ONE non-additive edit:
+  the C2 contract change `install(cliPath)` touches `types.ts:74` + the 4 adapters'
+  `install` signature (accept-and-ignore `_cliPath`; their `installer.install()` body
+  call is unchanged). This is safe-by-construction: the ONLY two zero-arg
+  `adapter.install()` call sites in the whole tree are `cli.ts:405` + `cli.ts:482`, and
+  C2 updates BOTH to `adapter.install(cliPath)` — so no zero-arg adapter call remains to
+  fail typecheck. The 4 adapters' test files call the capability `installer.install()`
+  directly (signature untouched), NOT `adapter.install()`, so they are byte-green. (TS
+  would reject a zero-arg call to a one-required-param `install`, which is exactly why
+  both call sites MUST be updated in the same change — not optional.)
 
 ### Task 8 — Live acceptance (opencode v1.15.10 installed)
 
@@ -838,10 +937,26 @@ feasible:
   strict-parse-or-abort `editOpencodeConfig` helper instead (Tasks 3/5). Tested:
   plain JSON merges in place, `.jsonc` is the target when present, a JSONC `.json`
   aborts to a printed manual snippet with the file unchanged.
-- **Plugin shells the ABSOLUTE `node <cli.js>`, never bare `abs` (C2).** opencode's
-  Bun process PATH may lack the npm-global bin; bare `abs` + `.nothrow()` = silent
-  dead capture/recall. The absolute pair is baked at install time. Tested: generated
-  plugin contains the absolute command, not `abs`.
+- **Plugin shells the ABSOLUTE `node <cli.js>`, never bare `abs`, sourced from the
+  CLI entrypoint not the installer module (C2).** opencode's Bun process PATH may lack
+  the npm-global bin; bare `abs` + `.nothrow()` = silent dead capture/recall. The path
+  MUST come from `cli.ts`'s `fileURLToPath(import.meta.url)` — deriving it inside the
+  installer module resolves to `dist/harness/capabilities/opencode-plugin-installer.js`
+  after `tsc` (no CLI dispatcher there) and is equally dead. Fix: thread `cliPath`
+  through `install(cliPath)` (contract change, `types.ts:74`) exactly as
+  `registerMcp(cliPath, run)` already does; `cmdInstallHooks`/`cmdSetup` pass the
+  `cli.ts:463` `cliPath`. The 4 prior adapters accept-and-ignore the arg. Tested:
+  generated plugin contains the absolute `node <cli.js>` command, NOT `abs` and NOT any
+  `capabilities/`/installer-module path.
+- **`abs setup --harness opencode` double-edits one `opencode.json` → `.bak`
+  collision (Wnew).** `cmdSetup` runs `registerMcp` then `install`, two
+  `editOpencodeConfig` edits in the same run; the Gemini-style ISO-millisecond `.bak`
+  name collides on a same-ms second edit and overwrites the first (the one holding the
+  user's true original). No live-file loss, but the backup is wrong. Fix: the opencode
+  installer's backup helper appends `${process.pid}-${counter++}` (mirroring the
+  module's temp-file naming) so same-ms backups get distinct names; the existing
+  `gemini-lifecycle-installer.ts` helper is untouched. Tested: post-setup `.bak` equals
+  the original pre-setup config.
 - **Consent for opencode (C3).** opencode never calls `abs hook` → `renderNotice`
   never fires natively. The notice is injected once per session by `opencode-recall`
   (first-transform, via `consumeFirstPromptFlag` keyed `opencode:<ses>`). Opt-out is
@@ -875,16 +990,26 @@ feasible:
   `listObservations` (W2), with the consent notice prepended on the session's first
   recall and suppressed thereafter (C3).
 - The generated plugin shells the absolute `node <cli.js>` invocation, not bare `abs`
-  (C2); config writes are JSONC-safe — plain JSON merges in place, JSONC aborts to a
-  printed manual snippet with the user's file unchanged (C1).
+  and not the installer module path (C2 — `cliPath` threaded through `install(cliPath)`
+  + `fileMcpRegister(cliPath)` from `cli.ts:463`; contract `types.ts:74` updated; the 4
+  prior adapters accept-and-ignore the arg, tests still green); config writes are
+  JSONC-safe — plain JSON merges in place, JSONC aborts to a printed manual snippet with
+  the user's file unchanged (C1).
+- `abs setup --harness opencode`'s two-edit run leaves a `.bak` that recovers the user's
+  true pre-setup config (Wnew — collision-proof per-process backup filename).
 - `defaultRegistry()` returns 5 adapters; `--harness opencode` resolves.
 - Adapter + two capabilities + plugin template documented (header comments) with the
   on-disk facts, the consent/opt-out story, and the tested opencode version range.
 
 ## Task count: 8
 
-(8 tasks unchanged; the plan-critic fixes added tests inside existing tasks — Task 3
-gains the C1 JSONC + C2 absolute-path cases [+3], Task 4 gains the C3 consent cases
+(8 tasks unchanged. Round-2 plan-critic fixes added tests inside existing tasks — Task
+3 gains the C1 JSONC + C2 absolute-path cases [+3], Task 4 gains the C3 consent cases
 [+2] and the W2 real-method assertion, Task 5 gains the C1 JSONC/precedence MCP cases
-[+2]. Net new test cases: 7. No new task introduced; the W1 debounce and the dual-
-export hedge live in the existing plugin template + Task 8 smoke.)
+[+2]. Round-3 plan-critic fixes: C2 corrected from "derive in installer" to "thread
+`cliPath` through `install()`" — a contract change (`types.ts`) + 4 prior adapters'
+accept-ignore signature + 2 `cli.ts` call sites, folded into Task 6 + the Architecture
+C2 block; Task 5 gains the Wnew collision-proof-`.bak` test [+1] and the C2 threaded-
+path MCP assertion [+1]; N1 dropped the non-existent `onPath` fallback; N2 corrected
+file:line citations. Net new test cases over round 2: 2. No new task introduced; the W1
+debounce and the dual-export hedge live in the existing plugin template + Task 8 smoke.)
