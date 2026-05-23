@@ -1,0 +1,8 @@
+{"timestamp": "2026-05-14T12:00:00.000Z", "type": "session_meta", "payload": {"id": "019e2658-c8b0-7230-9b59-c3646fbf0c7b", "cwd": "/Users/vbjuliani/Meu Mac/Profissional/PG_Consultoria/AI_Team/PGIntegra", "originator": "Codex Desktop", "cli_version": "0.130.0-alpha.5"}}
+{"timestamp": "2026-05-14T12:00:01.000Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Turn one user question about the build"}]}}
+{"timestamp": "2026-05-14T12:00:01.100Z", "type": "event_msg", "payload": {"type": "user_message", "message": "Turn one user question about the build"}}
+{"timestamp": "2026-05-14T12:00:02.000Z", "type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Turn one assistant answer about the build"}]}}
+{"timestamp": "2026-05-14T12:00:02.100Z", "type": "event_msg", "payload": {"type": "agent_message", "message": "Turn one assistant answer about the build"}}
+{"timestamp": "2026-05-14T12:00:03.000Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Turn two follow up about tests"}]}}
+{"timestamp": "2026-05-14T12:00:04.000Z", "type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Turn two answer with the event-only turn marker nearby"}]}}
+{"timestamp": "2026-05-14T12:00:05.000Z", "type": "event_msg", "payload": {"type": "user_message", "message": "This is an event-only turn with no response_item twin"}}
