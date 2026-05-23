@@ -326,9 +326,11 @@ section { padding-block:var(--s-16); }
   section { padding-block:var(--s-16); }
   .hero__cta .btn { flex:1 1 auto; justify-content:center; }
   .more-panel { grid-template-columns:1fr; }
-  /* keep the sticky header inside narrow viewports */
+  /* keep the sticky header inside narrow viewports: logo-only brand
+     (the wordmark collided with the language toggle on small screens) */
   .nav__inner { gap:var(--s-2); }
   .nav .btn { padding:var(--s-2) var(--s-3); }
+  .brand b { display:none; }
 }
 
 /* touch targets */
