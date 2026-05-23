@@ -124,4 +124,14 @@ describe('handleSessionStart — memory notice', () => {
     expect(ctx).not.toContain('persistent memory active'); // empty store → no baseline
     expect(ctx).toContain('"foo"'); // but the notice still fires
   });
+
+  it('renderNotice echoes the (already-namespaced) id it is handed — no re-derivation (R4)', async () => {
+    const line = await handleSessionStart(
+      { sessionId: 'codex:019e2658', cwd: '/Users/me/Devs/foo', source: 'startup' },
+      { gatherFacts: async () => noticeFacts },
+    );
+    const ctx = injected(line);
+    expect(ctx).toContain('session="codex:019e2658"');
+    expect(ctx).not.toContain('codex:codex:'); // handler does not double-prefix
+  });
 });

@@ -58,6 +58,12 @@ export type McpRegisterStatus =
 export interface HarnessAdapter {
   id: string;
   displayName: string;
+  /**
+   * The CLI binary that owns `mcp add/list/remove` for this harness (e.g. 'claude'
+   * or 'codex'). `cmdUninstall` reads this to route the MCP unregister to the right
+   * binary (C2). Optional — absent defaults to 'claude' at the call site.
+   */
+  mcpBinary?: string;
   /** Is this harness installed on the current machine? Never throws. */
   detect(): Promise<boolean>;
   /** The parity gate — does this harness expose all four pillars? */

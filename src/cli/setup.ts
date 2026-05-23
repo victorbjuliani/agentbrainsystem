@@ -26,35 +26,56 @@ export type RegisterResult =
   | { status: 'no-claude'; manualCommand: string }
   | { status: 'error'; message: string; manualCommand: string };
 
-/** The `claude mcp add …` argv that registers this CLI as a stdio MCP server. */
-export function buildClaudeMcpAddArgs(cliPath: string): string[] {
-  return ['mcp', 'add', MCP_SERVER_NAME, '--', 'node', cliPath, 'start'];
+/** Options shared by register/unregister — selects the CLI binary that owns `mcp add/list/remove`. */
+export interface McpRegisterOptions {
+  /** CLI binary that owns `mcp add/list/remove` (defaults to 'claude'). */
+  binary?: string;
 }
 
+/** `<binary> mcp add agentbrainsystem -- node <cli> start`. */
+export function buildMcpAddArgs(cliPath: string): string[] {
+  return ['mcp', 'add', MCP_SERVER_NAME, '--', 'node', cliPath, 'start'];
+}
+export function buildMcpListArgs(): string[] {
+  return ['mcp', 'list'];
+}
+export function buildMcpRemoveArgs(): string[] {
+  return ['mcp', 'remove', MCP_SERVER_NAME];
+}
+
+/** Back-compat aliases (Claude-named callers/tests keep working). */
+export const buildClaudeMcpAddArgs = buildMcpAddArgs;
+export const buildClaudeMcpRemoveArgs = buildMcpRemoveArgs;
+
 /** The copy-pasteable command shown when auto-registration isn't possible. */
-export function manualMcpCommand(cliPath: string): string {
-  return `claude mcp add ${MCP_SERVER_NAME} -- node ${cliPath} start`;
+export function manualMcpCommand(cliPath: string, binary = 'claude'): string {
+  return `${binary} mcp add ${MCP_SERVER_NAME} -- node ${cliPath} start`;
 }
 
 /**
- * Register the MCP server with Claude Code, idempotently:
- *   1. probe `claude --version` — absent ⇒ `no-claude` (caller prints the manual command)
- *   2. `claude mcp list` already lists the server ⇒ `already`
- *   3. `claude mcp add …` ⇒ `registered`, or `error` with the captured message
+ * Register the MCP server with the harness CLI, idempotently:
+ *   1. probe `<binary> --version` — absent ⇒ `no-claude` (caller prints the manual command)
+ *   2. `<binary> mcp list` already lists the server ⇒ `already`
+ *   3. `<binary> mcp add …` ⇒ `registered`, or `error` with the captured message
  */
-export async function registerMcpServer(cliPath: string, run: RunFn): Promise<RegisterResult> {
-  const manualCommand = manualMcpCommand(cliPath);
+export async function registerMcpServer(
+  cliPath: string,
+  run: RunFn,
+  options: McpRegisterOptions = {},
+): Promise<RegisterResult> {
+  const binary = options.binary ?? 'claude';
+  const manualCommand = manualMcpCommand(cliPath, binary);
 
   let probe: RunResult;
   try {
-    probe = await run('claude', ['--version']);
+    probe = await run(binary, ['--version']);
   } catch {
     return { status: 'no-claude', manualCommand };
   }
   if (probe.code !== 0) return { status: 'no-claude', manualCommand };
 
   try {
-    const list = await run('claude', ['mcp', 'list']);
+    const list = await run(binary, buildMcpListArgs());
     if (list.code === 0 && list.stdout.includes(MCP_SERVER_NAME)) {
       return { status: 'already' };
     }
@@ -62,20 +83,15 @@ export async function registerMcpServer(cliPath: string, run: RunFn): Promise<Re
     // listing failed — fall through and attempt the add anyway
   }
 
-  const added = await run('claude', buildClaudeMcpAddArgs(cliPath));
+  const added = await run(binary, buildMcpAddArgs(cliPath));
   if (added.code === 0) return { status: 'registered' };
   const message = (added.stderr || added.stdout).trim() || `exit ${added.code}`;
   return { status: 'error', message, manualCommand };
 }
 
-/** The `claude mcp remove …` argv that unregisters this CLI as a stdio MCP server. */
-export function buildClaudeMcpRemoveArgs(): string[] {
-  return ['mcp', 'remove', MCP_SERVER_NAME];
-}
-
 /** The copy-pasteable command shown when auto-unregistration isn't possible. */
-export function manualMcpRemoveCommand(): string {
-  return `claude mcp remove ${MCP_SERVER_NAME}`;
+export function manualMcpRemoveCommand(binary = 'claude'): string {
+  return `${binary} mcp remove ${MCP_SERVER_NAME}`;
 }
 
 export type UnregisterResult =
@@ -85,25 +101,29 @@ export type UnregisterResult =
   | { status: 'error'; message: string; manualCommand: string };
 
 /**
- * Unregister the MCP server from Claude Code, idempotently — the inverse of
+ * Unregister the MCP server from the harness CLI, idempotently — the inverse of
  * {@link registerMcpServer}:
- *   1. probe `claude --version` — absent ⇒ `no-claude` (caller prints the manual command)
- *   2. `claude mcp list` does NOT list the server ⇒ `not-registered`
- *   3. `claude mcp remove …` ⇒ `removed`, or `error` with the captured message
+ *   1. probe `<binary> --version` — absent ⇒ `no-claude` (caller prints the manual command)
+ *   2. `<binary> mcp list` does NOT list the server ⇒ `not-registered`
+ *   3. `<binary> mcp remove …` ⇒ `removed`, or `error` with the captured message
  */
-export async function unregisterMcpServer(run: RunFn): Promise<UnregisterResult> {
-  const manualCommand = manualMcpRemoveCommand();
+export async function unregisterMcpServer(
+  run: RunFn,
+  options: McpRegisterOptions = {},
+): Promise<UnregisterResult> {
+  const binary = options.binary ?? 'claude';
+  const manualCommand = manualMcpRemoveCommand(binary);
 
   let probe: RunResult;
   try {
-    probe = await run('claude', ['--version']);
+    probe = await run(binary, ['--version']);
   } catch {
     return { status: 'no-claude', manualCommand };
   }
   if (probe.code !== 0) return { status: 'no-claude', manualCommand };
 
   try {
-    const list = await run('claude', ['mcp', 'list']);
+    const list = await run(binary, buildMcpListArgs());
     if (list.code === 0 && !list.stdout.includes(MCP_SERVER_NAME)) {
       return { status: 'not-registered' };
     }
@@ -111,7 +131,7 @@ export async function unregisterMcpServer(run: RunFn): Promise<UnregisterResult>
     // listing failed — fall through and attempt the remove anyway
   }
 
-  const removed = await run('claude', buildClaudeMcpRemoveArgs());
+  const removed = await run(binary, buildMcpRemoveArgs());
   if (removed.code === 0) return { status: 'removed' };
   const message = (removed.stderr || removed.stdout).trim() || `exit ${removed.code}`;
   return { status: 'error', message, manualCommand };

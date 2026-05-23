@@ -14,6 +14,7 @@ export {
   ingestSingleSession,
   surveyClaudeProjects,
 } from './ingest.js';
+export { harnessForPayload, isCodexTranscript, namespacedExternalId } from './namespacing.js';
 export type { BindingDecision, SessionBinding } from './session-binding.js';
 export {
   clearBinding,

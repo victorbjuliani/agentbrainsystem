@@ -202,4 +202,10 @@ describe('consumeFirstPromptFlag', () => {
   it('returns false without a session id (nothing to key on)', () => {
     expect(consumeFirstPromptFlag(store, undefined)).toBe(false);
   });
+
+  it('keys notice-shown:<bare-id> for a Claude payload (W-R3-3, #67)', () => {
+    expect(consumeFirstPromptFlag(store, 'abc-123')).toBe(true); // first call: writes the flag
+    expect(store.getMeta('notice-shown:abc-123')).toBe('1'); // exact bare key — chokepoint no-op for Claude
+    expect(consumeFirstPromptFlag(store, 'abc-123')).toBe(false); // second call: already shown
+  });
 });

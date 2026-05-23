@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { dispatchHook } from './dispatch.js';
+import type { HookPayload } from './payload.js';
 
 const savedExitCode = process.exitCode;
 
@@ -58,5 +59,58 @@ describe('dispatchHook — routing + non-fatal', () => {
       stderr: (l) => errs.push(l),
     });
     expect(process.exitCode).toBe(0);
+  });
+});
+
+describe('dispatchHook — chokepoint namespacing (C-NEW-1/R4, #67)', () => {
+  // Inject a capturing handler so we observe the EXACT payload the chokepoint
+  // hands downstream — directly proving the session id was namespaced BEFORE any
+  // handler runs, with no dependency on whether session-start happens to render a
+  // notice line. Assertions always run (no vacuous `if` guards).
+  function capturing() {
+    const captured: HookPayload[] = [];
+    const handlers: Record<string, (p: HookPayload) => Promise<string | undefined>> = {
+      'session-start': async (p) => {
+        captured.push(p);
+        return undefined;
+      },
+    };
+    return { captured, handlers };
+  }
+
+  it('namespaces payload.sessionId ONCE at dispatch for a Codex transcript', async () => {
+    const { captured, handlers } = capturing();
+    await dispatchHook('session-start', {
+      stdin: stdinOf({
+        session_id: '019e2658-c8b0-7230-9b59-c3646fbf0c7b',
+        cwd: '/work/proj',
+        transcript_path:
+          '/u/.codex/sessions/2026/05/14/rollout-2026-05-14T08-56-53-019e2658-c8b0-7230-9b59-c3646fbf0c7b.jsonl',
+        source: 'startup',
+      }),
+      handlers,
+    });
+    expect(captured).toHaveLength(1);
+    // The handler RECEIVED the namespaced id — applied exactly once, never bare.
+    expect(captured[0]?.sessionId).toBe('codex:019e2658-c8b0-7230-9b59-c3646fbf0c7b');
+    expect(captured[0]?.sessionId).not.toContain('codex:codex:'); // single-application guard
+  });
+
+  it('leaves a Claude payload sessionId BARE at dispatch (regression)', async () => {
+    const { captured, handlers } = capturing();
+    await dispatchHook('session-start', {
+      stdin: stdinOf({
+        session_id: 'abc-123',
+        cwd: '/work/proj',
+        transcript_path: '/u/.claude/projects/-x/sess.jsonl',
+        source: 'startup',
+      }),
+      handlers,
+    });
+    expect(captured).toHaveLength(1);
+    // Bare id reaches the handler unchanged — never prefixed for Claude.
+    expect(captured[0]?.sessionId).toBe('abc-123');
+    expect(captured[0]?.sessionId).not.toContain('claude-code:');
+    expect(captured[0]?.sessionId).not.toContain('codex:');
   });
 });
