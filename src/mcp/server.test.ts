@@ -7,8 +7,14 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { AppConfig } from '../config.js';
 import { __clearDeleteCacheForTests } from '../delete/delete.js';
 import type { EnsureResult } from '../indexer/index.js';
+import { readBinding } from '../ingest/index.js';
 import { type Memory, openMemory } from '../memory.js';
-import { backgroundEnsure, createMcpServer, rememberAction } from './server.js';
+import {
+  backgroundEnsure,
+  createMcpServer,
+  rememberAction,
+  setSessionProjectAction,
+} from './server.js';
 
 let dir: string;
 let mem: Memory;
@@ -295,5 +301,19 @@ describe('background startup rebuild (MCP boot latency)', () => {
   it('backgroundEnsure forwards the result on success', async () => {
     const ok = await backgroundEnsure(mem.indexer);
     expect(ok).toMatchObject({ reason: expect.any(String) });
+  });
+});
+
+describe('setSessionProjectAction — single-prefix guard (R4, #67)', () => {
+  it('writes the binding under EXACTLY the opaque session id — no double-prefix', () => {
+    const res = setSessionProjectAction(mem, {
+      action: 'skip',
+      session: 'codex:abc',
+      confirmDelete: true,
+    });
+    expect(res.applied).toBe(true);
+    // The binding key is session-project:codex:abc, never session-project:codex:codex:abc.
+    expect(readBinding(mem.store, 'codex:abc')?.action).toBe('skip');
+    expect(readBinding(mem.store, 'codex:codex:abc')).toBeNull();
   });
 });
