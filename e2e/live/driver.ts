@@ -111,18 +111,27 @@ export function runClaude(opts: RunOptions): Promise<RunResult> {
   if (opts.streamHooks) {
     args.push('--output-format', 'stream-json', '--include-hook-events', '--verbose');
   }
+  // Isolate the store: ABS_HOME points hooks at the scaffold, but ABS_DB_PATH takes
+  // PRIORITY over ABS_HOME in loadConfig (config.ts) — a leaked parent ABS_DB_PATH would
+  // make the spawned hooks write to that external DB (mutating real data, invalidating the
+  // result). Strip it (and the LLM vars) so the scaffold is the only store, matching the
+  // e2e/harness.ts hygiene.
+  const env: NodeJS.ProcessEnv = { ...process.env, ABS_HOME: opts.absHome };
+  for (const k of ['ABS_DB_PATH', 'ABS_LLM_BASE_URL', 'ABS_LLM_MODEL', 'ABS_LLM_API_KEY']) {
+    delete env[k];
+  }
   return new Promise((resolvePromise, reject) => {
-    const child = spawn('claude', args, {
-      cwd: opts.cwd,
-      env: { ...process.env, ABS_HOME: opts.absHome },
-    });
+    const child = spawn('claude', args, { cwd: opts.cwd, env });
     let raw = '';
     child.stdout.on('data', (d) => {
       raw += d.toString();
     });
     child.on('error', reject);
     child.on('close', (code) => {
-      resolvePromise({ raw, code: code ?? 0, events: parseStream(raw) });
+      // `null` means the child was killed by a signal, not a clean exit — surface it as a
+      // non-zero code so a signal-aborted session fails the certification deterministically
+      // instead of being read as success (the GIF capture does not assert exit codes).
+      resolvePromise({ raw, code: code ?? -1, events: parseStream(raw) });
     });
   });
 }
