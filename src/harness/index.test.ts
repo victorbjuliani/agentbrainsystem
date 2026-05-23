@@ -19,8 +19,12 @@ describe('defaultRegistry', () => {
     expect(defaultRegistry().byId('copilot')?.displayName).toBe('GitHub Copilot CLI');
   });
 
-  it('registers all four qualifying adapters (#69)', () => {
-    expect(defaultRegistry().all().length).toBe(4);
+  it('includes the OpenCode adapter (#72)', () => {
+    expect(defaultRegistry().byId('opencode')?.displayName).toBe('OpenCode');
+  });
+
+  it('registers all five qualifying adapters (#72)', () => {
+    expect(defaultRegistry().all().length).toBe(5);
   });
 
   it('the Claude adapter carries mcpBinary = claude (C2)', () => {

@@ -18,6 +18,7 @@ import { consolidate } from '../consolidate/index.js';
 import { type DeleteSelector, executeIds, previewSelector } from '../delete/index.js';
 import { exportStore, importStore } from '../export/index.js';
 import { GLOBAL_PROJECT, getOrCreateGlobalSession } from '../global.js';
+import type { OpencodeInstallReport } from '../harness/capabilities/opencode-plugin-installer.js';
 import { sqliteTranscriptSource } from '../harness/capabilities/sqlite-transcript-source.js';
 import { defaultRegistry, type HarnessAdapter } from '../harness/index.js';
 import { dispatchHook } from '../hooks/index.js';
@@ -486,12 +487,30 @@ export function resolveHarnesses(args: string[]): HarnessAdapter[] | null {
   return claude ? [claude] : [];
 }
 
+/**
+ * C1 (opencode): when `install()` couldn't losslessly edit a JSONC config, it returns
+ * a manual-merge snippet (config left byte-unchanged). Print it so the user can paste.
+ * The four shell-hook adapters never set this — it's a no-op for them.
+ */
+function surfaceJsoncManual(displayName: string, report: OpencodeInstallReport): void {
+  if (!report.manual) return;
+  out(
+    `! ${displayName} config is JSONC — add this to ${report.targetPath ?? 'your config'} manually:`,
+  );
+  out(report.manual);
+}
+
 /** `abs install-hooks` — register the memory hooks in settings.json (opt-in). */
 async function cmdInstallHooks(args: string[]): Promise<void> {
   const harnesses = resolveHarnesses(args);
   if (!harnesses) return;
+  // C2: thread the CLI entrypoint path (this module's import.meta.url) into install()
+  // so the OpenCode adapter can bake the absolute `node <cli.js>` into its plugin file.
+  // The four shell-hook adapters accept-and-ignore it.
+  const cliPath = fileURLToPath(import.meta.url);
   for (const adapter of harnesses) {
-    const report = await adapter.install();
+    const report = await adapter.install(cliPath);
+    surfaceJsoncManual(adapter.displayName, report);
     if (report.wired.length > 0) {
       out(`registered hooks (${adapter.displayName}): ${report.wired.join(', ')}`);
     } else {
@@ -568,10 +587,11 @@ async function cmdSetup(args: string[]): Promise<void> {
       break;
   }
 
-  const hooks = await adapter.install();
+  const hooks = await adapter.install(cliPath);
   if (hooks.wired.length > 0) out(`✓ hooks registered: ${hooks.wired.join(', ')}`);
   // W3: surface the trust warning when wiring Codex hooks into an untrusted project.
   if ('trustWarning' in hooks && hooks.trustWarning) out(`! ${hooks.trustWarning}`);
+  surfaceJsoncManual(adapter.displayName, hooks);
 
   out('');
   out(`Done. Restart ${adapter.displayName} — it will recall + remember automatically.`);
