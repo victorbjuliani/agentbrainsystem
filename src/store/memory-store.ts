@@ -147,6 +147,7 @@ export class MemoryStore {
     const db = new Database(path);
     sqliteVec.load(db);
     db.pragma('journal_mode = WAL'); // durability across restarts
+    db.pragma('busy_timeout = 5000'); // wait up to 5s for a concurrent writer before SQLITE_BUSY
     db.pragma('foreign_keys = ON'); // honour ON DELETE CASCADE
     this.db = db;
     this.runMigrations();
