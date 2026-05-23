@@ -286,6 +286,11 @@ export function opencodePluginInstaller(
     return JSON.stringify(mcp, null, 2);
   }
 
+  /** What to delete by hand when a JSONC config aborts the uninstall edit (#89). */
+  function manualRemoveSnippet(): string {
+    return `remove "${pluginRelSpec}" from the plugin[] array and the "${MCP_KEY}" key from the mcp{} object`;
+  }
+
   return {
     async install(cliPath: string): Promise<OpencodeInstallReport> {
       const report: OpencodeInstallReport = { wired: ['capture', 'recall'] };
@@ -324,7 +329,7 @@ export function opencodePluginInstaller(
       // non-interactive remove, so cmdUninstall's CLI unregister can't reverse it;
       // we own the reversal here). Drop a key/array if it becomes empty; leave the
       // user's other plugins + MCP servers untouched. A JSONC config aborts (no edit).
-      editOpencodeConfig(configDir, (config) => {
+      const result = editOpencodeConfig(configDir, (config) => {
         if (Array.isArray(config.plugin)) {
           const kept = (config.plugin as unknown[]).filter((p) => p !== pluginRelSpec);
           if (kept.length > 0) config.plugin = kept;
@@ -339,6 +344,12 @@ export function opencodePluginInstaller(
           else delete config.mcp;
         }
       });
+      // JSONC abort: the config edit did NOT happen, so the plugin[] entry + mcp key
+      // are STILL present. Do NOT delete the plugin file (config still references it)
+      // and do NOT claim removal — surface a manual snippet instead (#89).
+      if (result.status === 'manual') {
+        return { removed: [], manual: manualRemoveSnippet(), targetPath: result.targetPath };
+      }
       // Delete the plugin file (only ours, matched by path).
       try {
         if (existsSync(pluginAbsPath) && !lstatSync(pluginAbsPath).isSymbolicLink()) {

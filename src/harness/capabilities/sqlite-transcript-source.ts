@@ -177,7 +177,11 @@ export function sqliteTranscriptSource(
           } catch {
             /* default role */
           }
-          if (typeof row.m_time === 'number') createdAt = new Date(row.m_time).toISOString();
+          // Stamp from the PART time, not the message time: parts of one message are
+          // emitted at different times, and m_time would collapse them to one instant,
+          // distorting activity ordering (MAX(observations.created_at)) and making later
+          // chunks look older (#90c). p_time is already fetched.
+          if (typeof row.p_time === 'number') createdAt = new Date(row.p_time).toISOString();
           await memory.indexer.write({
             sessionId: storeSessionId,
             kind: role,

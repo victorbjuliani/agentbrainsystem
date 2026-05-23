@@ -113,6 +113,24 @@ describe('opencodePluginInstaller (#72)', () => {
     expect(parsed.plugin).toBeUndefined(); // plugin[] dropped (was only ours)
   });
 
+  it('(d3) uninstall on a JSONC config ABORTS: nothing removed, plugin file kept, manual snippet returned (#89)', async () => {
+    const installer = opencodePluginInstaller({ configDir: dir, nodePath: NODE });
+    await installer.install(CLI);
+    expect(() => lstatSync(join(dir, 'plugin', 'agentbrainsystem.js'))).not.toThrow();
+    // Rewrite the config as JSONC (comment + trailing comma) — still references us.
+    const jsonc = '{\n  // user comment\n  "plugin": ["./plugin/agentbrainsystem.js"],\n}\n';
+    writeFileSync(join(dir, 'opencode.json'), jsonc);
+    const report = await installer.uninstall();
+    // Aborted: NOTHING removed (the old code reported success here), config byte-stable,
+    // plugin file still present (config still references it), manual snippet surfaced.
+    expect(report.removed).toEqual([]);
+    expect(report.manual).toBeDefined();
+    expect(report.manual).toContain('agentbrainsystem');
+    expect(report.targetPath).toBeDefined();
+    expect(read()).toBe(jsonc);
+    expect(() => lstatSync(join(dir, 'plugin', 'agentbrainsystem.js'))).not.toThrow();
+  });
+
   it('(e) symlink config → refuse to write', async () => {
     const realTarget = join(dir, 'real-config.json');
     writeFileSync(realTarget, `${JSON.stringify({}, null, 2)}\n`);

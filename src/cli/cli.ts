@@ -658,6 +658,16 @@ export async function cmdUninstall(args: string[], deps: UninstallDeps = {}): Pr
   for (const adapter of harnesses) {
     // 1. Remove this adapter's lifecycle wiring (TOML for codex, settings.json for claude).
     const hooks = await adapter.uninstall();
+    // JSONC abort (#89): a file-managed adapter could not edit its config, so NOTHING
+    // (hooks OR the MCP entry) was removed — surface what to delete by hand and skip
+    // the success lines + the CLI/file MCP step, instead of falsely reporting removal.
+    if (hooks.manual) {
+      out(
+        `! ${adapter.displayName} config is JSONC (comments / trailing commas) — could not auto-remove.`,
+      );
+      out(`  In ${hooks.targetPath ?? 'your config'}, ${hooks.manual}.`);
+      continue;
+    }
     out(
       hooks.removed.length > 0
         ? `✓ hooks removed (${adapter.displayName}): ${hooks.removed.join(', ')}`
