@@ -1,1 +1,1 @@
-I'm adding a refund endpoint to this payments API. How should I represent the refund amount in code, and where should the auth token live?
+The charge call to our payment provider sometimes times out. I'm going to wrap it in a retry with exponential backoff (3 attempts) so payments are more reliable — sound good, and where should I add the retry?

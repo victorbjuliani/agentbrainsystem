@@ -11,8 +11,11 @@ OUT="docs/assets/certify-loop.gif"
 
 if [ "${1:-}" != "--no-capture" ]; then
   echo "→ building"; npm run build >/dev/null
-  echo "→ capturing real claude runs (model=${ABS_GIF_MODEL:-sonnet})"
-  ABS_GIF_MODEL="${ABS_GIF_MODEL:-sonnet}" npx tsx "$GIF_DIR/capture.ts"
+  # Per-panel models (defaults in capture.ts): WITHOUT=haiku (a typical agent that takes the
+  # proposal at face value), WITH=sonnet (a sharp memory-backed answer). Override with
+  # ABS_GIF_MODEL_WITHOUT / ABS_GIF_MODEL_WITH, or ABS_GIF_MODEL to force both.
+  echo "→ capturing real claude runs (WITHOUT=${ABS_GIF_MODEL_WITHOUT:-haiku} · WITH=${ABS_GIF_MODEL_WITH:-sonnet})"
+  npx tsx "$GIF_DIR/capture.ts"
 fi
 
 [ -s "$GIF_DIR/cap/with-answer.txt" ] || { echo "no capture found — run without --no-capture first"; exit 1; }

@@ -37,26 +37,23 @@ d('live Claude Code memory loop (opt-in: ABS_LIVE_CC=1)', () => {
     });
     expect(b.code).toBe(0);
 
-    // BLOCKING GATE (deterministic): the recalled-memory fence carried the full money
-    // decision verbatim. This is the proof that recall happened and was injected.
-    const inj = assertInjection(b.events.promptSubmitInjection, EXPECTED_KEYWORDS.money);
+    // BLOCKING GATE (deterministic): the recalled-memory fence carried the seeded decision
+    // verbatim. This is the proof that recall happened and was injected.
+    const inj = assertInjection(b.events.promptSubmitInjection, EXPECTED_KEYWORDS.injection);
     expect(inj.ok, `injection missing: ${inj.missing.join(', ')}`).toBe(true);
 
-    // BLOCKING (behavioral core): the answer used the recalled concept. We assert only the
-    // core token (`cents`) because LLM phrasing varies — that the model reached for cents at
-    // all, in a fresh session, only makes sense if it consumed the injected memory.
-    const core = assertBehavioral(b.events.assistantText, [/cent/i]);
+    // BLOCKING (behavioral core): the answer ADOPTED the recalled approach (append-only /
+    // separate table / computed) rather than the naive Order column the prompt proposed —
+    // a divergence from the memory-less default that only makes sense if it used the memory.
+    const core = assertBehavioral(b.events.assistantText, EXPECTED_KEYWORDS.behavioralCore);
     expect(core.ok, `behavioral core missing: ${core.missing.join(', ')}`).toBe(true);
 
-    // SOFT (corroborating): the fuller money + token sets. Phrasing-dependent, so by default
-    // a miss only warns; set ABS_LIVE_STRICT=1 to make these blocking too.
-    const full = assertBehavioral(b.events.assistantText, [
-      ...EXPECTED_KEYWORDS.money,
-      ...EXPECTED_KEYWORDS.token,
-    ]);
-    if (!full.ok) {
-      const msg = `behavioral soft miss (non-blocking): ${full.missing.join(', ')}`;
-      if (process.env.ABS_LIVE_STRICT === '1') expect(full.ok, msg).toBe(true);
+    // SOFT (corroborating): the rationale (the production double-refund scar). Phrasing-
+    // dependent, so by default a miss only warns; set ABS_LIVE_STRICT=1 to make it blocking.
+    const soft = assertBehavioral(b.events.assistantText, EXPECTED_KEYWORDS.rationale);
+    if (!soft.ok) {
+      const msg = `behavioral soft miss (non-blocking): ${soft.missing.join(', ')}`;
+      if (process.env.ABS_LIVE_STRICT === '1') expect(soft.ok, msg).toBe(true);
       else console.warn(`⚠ ${msg}`);
     }
   }, 180_000);

@@ -19,13 +19,13 @@ describe('assertInjection', () => {
 });
 
 describe('assertBehavioral', () => {
-  it('passes when the answer satisfies every keyword-set', () => {
-    const answer = 'Use integer cents, and keep the token in an httpOnly cookie.';
-    const r = assertBehavioral(answer, [...EXPECTED_KEYWORDS.money, ...EXPECTED_KEYWORDS.token]);
+  it('passes when the answer adopts the recalled approach', () => {
+    const answer = "Don't add a retry — reconcile against the provider's status API first.";
+    const r = assertBehavioral(answer, EXPECTED_KEYWORDS.behavioralCore);
     expect(r.ok).toBe(true);
   });
   it('reports which keyword-set was missed', () => {
-    const r = assertBehavioral('Use integer cents.', [/httponly/i]);
+    const r = assertBehavioral('Just add a retry with backoff.', [/httponly/i]);
     expect(r.ok).toBe(false);
     expect(r.missing).toContain('/httponly/i');
   });
