@@ -1,2 +1,2 @@
-• we store all monetary amounts as integer cents, never floats (a float rounding bug hit us in production)
-• the session token lives in an httpOnly cookie, never localStorage (to limit XSS)
+• never auto-retry a failed charge — a timeout often means it already went through
+• on failure, reconcile against the provider's status API before acting

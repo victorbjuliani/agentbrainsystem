@@ -25,7 +25,7 @@ coding session — across <b>five harnesses</b> — and recalls what matters nex
 <img src="https://img.shields.io/badge/storage-embedded%20SQLite-5EEAD4?style=for-the-badge&labelColor=0A0810" alt="embedded SQLite" />
 </p>
 
-<img src="docs/assets/certify-loop.gif" alt="The same question in two fresh Claude Code sessions over the same codebase. WITHOUT agentbrainsystem the agent has no memory of the past decision and reasons from scratch; WITH it, the recalled-memory block injects the team's 'integer cents, never floats — a rounding bug hit production' decision and the agent applies it as established convention." width="900" />
+<img src="docs/assets/certify-loop.gif" alt="The same proposal in two fresh Claude Code sessions over the same payments codebase — 'I'll wrap the charge call in a retry with backoff, good?'. WITHOUT agentbrainsystem the agent endorses it (a retry that would double-charge customers); WITH it, the recalled-memory block surfaces the team's hard rule — 'never auto-retry a failed charge; a timeout often means it already went through' — and the agent stops the change." width="900" />
 
 <sub>
 <a href="#why">Why</a> ·
