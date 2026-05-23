@@ -76,6 +76,9 @@ export function createMcpServer(memory: Memory): McpServer {
       },
     },
     async ({ query, limit, project }) => {
+      // Wait for the background startup rebuild (if any) so recall never reads a
+      // half-built index. No-op once it has resolved, or on the synchronous path.
+      if (memory.ready) await memory.ready;
       // Explicit `project` wins (empty string = "no explicit project", not a
       // zero-match filter). Otherwise resolve the scope from the session BINDING
       // first, then the stored row, then the cwd slug (#47 `resolveRecallProject`)
@@ -408,6 +411,9 @@ export async function rememberAction(
   memory: Memory,
   { content, kind, session, scope }: RememberArgs,
 ): Promise<Record<string, unknown>> {
+  // Serialize behind the background startup rebuild (if any) so an index-at-write
+  // can't race a concurrent full rebuild. No-op once resolved / on the sync path.
+  if (memory.ready) await memory.ready;
   const sessionId =
     scope === 'global'
       ? getOrCreateGlobalSession(memory.store)
@@ -470,7 +476,20 @@ export function setSessionProjectAction(
 
 /** Boot the full stack and serve it over stdio. Used by the CLI / MCP packaging. */
 export async function startStdio(): Promise<void> {
-  const memory = await openMemory();
+  // Open the stack WITHOUT the startup rebuild gate so the stdio `initialize`
+  // handshake answers instantly. A slow rebuild here (a count-drift / signature
+  // change re-embeds every observation, which can take seconds) would keep the
+  // server from reading stdin, so `claude mcp list` probes time out as
+  // "✗ Failed to connect" even though the server is healthy.
+  const memory = await openMemory(undefined, { ensure: false });
+  // Bring the index up to date in the BACKGROUND; recall/remember await `ready` so
+  // they never read or write a half-built index. A failure is non-fatal — the store
+  // rows are intact and degraded recall still beats a dead server — so log to stderr.
+  memory.ready = memory.indexer.ensureIndex();
+  memory.ready.catch((err) => {
+    process.stderr.write(`[abs] background index rebuild failed: ${String(err)}\n`);
+  });
+
   const server = createMcpServer(memory);
   const transport = new StdioServerTransport();
   await server.connect(transport);

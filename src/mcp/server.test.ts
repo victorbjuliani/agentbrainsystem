@@ -6,8 +6,9 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { AppConfig } from '../config.js';
 import { __clearDeleteCacheForTests } from '../delete/delete.js';
+import type { EnsureResult } from '../indexer/index.js';
 import { type Memory, openMemory } from '../memory.js';
-import { createMcpServer } from './server.js';
+import { createMcpServer, rememberAction } from './server.js';
 
 let dir: string;
 let mem: Memory;
@@ -242,5 +243,43 @@ describe('MCP server', () => {
       stale: boolean;
     };
     expect(status).toMatchObject({ observations: 2, vectors: 2, fts: 2, stale: false });
+  });
+});
+
+describe('background startup rebuild (MCP boot latency)', () => {
+  it('openMemory with ensure:false defers the startup index gate (fast boot)', async () => {
+    // The MCP stdio server boots with ensure:false so the `initialize` handshake
+    // answers before any rebuild — the gate result must NOT be computed eagerly.
+    const m = await openMemory(config(), { ensure: false });
+    try {
+      expect(m.ensure).toBeUndefined();
+    } finally {
+      m.close();
+    }
+  });
+
+  it('rememberAction parks on memory.ready and never writes a half-built index', async () => {
+    // Simulate the boot path: a still-running background rebuild. The write must wait
+    // for it. A non-gated write would land within these macrotasks regardless of how
+    // fast embedding is — so a still-empty store after 50ms proves the gate holds.
+    let resolveReady!: (r: EnsureResult) => void;
+    mem.ready = new Promise<EnsureResult>((res) => {
+      resolveReady = res;
+    });
+
+    let settled = false;
+    const pending = rememberAction(mem, { content: 'gated write' }).then((v) => {
+      settled = true;
+      return v as { id: number };
+    });
+
+    await new Promise((r) => setTimeout(r, 50));
+    expect(settled).toBe(false);
+    expect(mem.store.counts().observations).toBe(0);
+
+    resolveReady({ rebuilt: false, reason: 'fresh', status: mem.indexer.status() });
+    const out = await pending;
+    expect(out.id).toBeGreaterThan(0);
+    expect(mem.store.counts().observations).toBe(1);
   });
 });
