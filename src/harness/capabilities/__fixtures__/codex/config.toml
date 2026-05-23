@@ -1,0 +1,105 @@
+personality = "pragmatic"
+model = "gpt-5.5"
+model_reasoning_effort = "xhigh"
+
+
+notify = ["/Users/dev/.codex/computer-use/Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient", "turn-ended"]
+
+[marketplaces.openai-bundled]
+last_updated = "2026-05-19T19:42:33Z"
+source_type = "local"
+source = "/Users/dev/.codex/.tmp/bundled-marketplaces/openai-bundled"
+
+[plugins."outlook-email@openai-curated"]
+enabled = true
+
+[plugins."computer-use@openai-bundled"]
+enabled = true
+
+[plugins."github@openai-curated"]
+enabled = true
+
+[projects."/Users/dev/projects/alpha"]
+trust_level = "trusted"
+
+[projects."/Users/dev/projects/beta"]
+trust_level = "trusted"
+
+[projects."/Users/dev/projects/gamma"]
+trust_level = "trusted"
+
+[projects."/Users/dev/Documents/sessions/2026-04-21-session-one"]
+trust_level = "trusted"
+
+[projects."/Users/dev/projects/delta"]
+trust_level = "trusted"
+
+[projects."/Users/dev/Documents/sessions/2026-04-22-session-two"]
+trust_level = "trusted"
+
+[projects."/Users/dev/Documents/sessions/2026-04-23-session-three"]
+trust_level = "trusted"
+
+[projects."/Users/dev/projects/epsilon"]
+trust_level = "trusted"
+
+[projects."/Users/dev/Documents/sessions/2026-05-05-session-four"]
+trust_level = "trusted"
+
+[projects."/Users/dev/Documents/sessions/2026-05-07-session-five"]
+trust_level = "trusted"
+
+[projects."/Users/dev/projects/zeta"]
+trust_level = "trusted"
+
+[projects."/Users/dev/projects/eta"]
+trust_level = "trusted"
+
+[projects."/Users/dev/Meu Mac/work/sample-project"]
+trust_level = "trusted"
+
+[projects."/Users/dev/Documents/sessions/2026-05-12-session-six"]
+trust_level = "trusted"
+
+[projects."/Users/dev/Meu Mac/work/sample-project-two"]
+trust_level = "trusted"
+
+[features]
+memories = true
+goals = true
+
+[apps.connector_00000000000000000000000000000000.tools.github_remove_issue_label]
+approval_mode = "approve"
+
+[apps.connector_00000000000000000000000000000000.tools.github_add_issue_labels]
+approval_mode = "approve"
+[marketplaces.caveman-repo]
+source_type = "local"
+source = "/Users/dev/projects/theta"
+
+[marketplaces.openai-primary-runtime]
+last_updated = "2026-05-17T05:21:24Z"
+source_type = "local"
+source = "/Users/dev/.cache/codex-runtimes/codex-primary-runtime/plugins/openai-primary-runtime"
+
+[plugins."caveman@caveman-repo"]
+enabled = true
+
+[plugins."superpowers@openai-curated"]
+enabled = true
+
+[plugins."slack@openai-curated"]
+enabled = true
+
+[plugins."documents@openai-primary-runtime"]
+enabled = true
+
+[mcp_servers.agentmemory]
+command = "npx"
+args = ["-y", "@agentmemory/mcp"]
+
+[mcp_servers.agentmemory.env]
+AGENTMEMORY_URL = "http://localhost:3111"
+
+[projects."/Users/dev/projects/agentbrainsystem"]
+trust_level = "trusted"

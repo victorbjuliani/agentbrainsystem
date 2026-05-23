@@ -18,4 +18,17 @@ describe('cliMcpRegistrar', () => {
     const registrar = cliMcpRegistrar();
     expect((await registrar.register('/path/cli.js', run)).status).toBe('unavailable');
   });
+
+  it('passes the configured binary through to registerMcpServer (codex)', async () => {
+    const seen: string[] = [];
+    const run = async (cmd: string, args: string[]) => {
+      seen.push(cmd);
+      if (args.includes('--version')) return { code: 0, stdout: 'codex', stderr: '' };
+      if (args.includes('list')) return { code: 0, stdout: '', stderr: '' };
+      return { code: 0, stdout: '', stderr: '' };
+    };
+    const registrar = cliMcpRegistrar({ binary: 'codex' });
+    expect((await registrar.register('/cli.js', run)).status).toBe('registered');
+    expect(seen.every((c) => c === 'codex')).toBe(true);
+  });
 });
