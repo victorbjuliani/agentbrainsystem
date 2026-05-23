@@ -205,10 +205,12 @@ function renderPlugin(nodeLiteral: string, cliLiteral: string, absCommand?: stri
   // Default: the absolute `${NODE} ${CLI}` pair (C2). Test: a single injected token.
   const capturePrefix = absCommand
     ? `$\`${absCommand} opencode-capture --session \${id}\``
-    : '$`${NODE} ${CLI} opencode-capture --session ${id}`';
+    : // biome-ignore lint/suspicious/noTemplateCurlyInString: emitted verbatim into the Bun plugin; ${NODE}/${CLI}/${id} are interpolated by opencode's `$` at runtime, not here.
+      '$`${NODE} ${CLI} opencode-capture --session ${id}`';
   const recallPrefix = absCommand
     ? `$\`${absCommand} opencode-recall --session \${input.sessionID} --cwd \${directory}\``
-    : '$`${NODE} ${CLI} opencode-recall --session ${input.sessionID} --cwd ${directory}`';
+    : // biome-ignore lint/suspicious/noTemplateCurlyInString: emitted verbatim into the Bun plugin; interpolated by opencode's `$` at runtime, not here.
+      '$`${NODE} ${CLI} opencode-recall --session ${input.sessionID} --cwd ${directory}`';
   const nodeDecl = absCommand ? '' : `  const NODE = ${nodeLiteral};\n`;
   const cliDecl = absCommand ? '' : `  const CLI = ${cliLiteral};\n`;
   return `// agentbrainsystem — OpenCode capture + recall bridge (managed by \`abs\`; do not edit).
