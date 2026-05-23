@@ -14,8 +14,8 @@ import {
   abs,
   type E2EHome,
   type FakeLlm,
-  FIXTURES_PROJECTS,
   fakeOpenAi,
+  ingestFixtures,
   makeHome,
   parseJson,
 } from './harness.js';
@@ -61,7 +61,7 @@ describe('F — consolidate via a fake OpenAI-compatible endpoint', () => {
   }
 
   it('dry-run calls the LLM once and writes nothing; a real run writes recallable lessons', async () => {
-    await abs(['ingest', '--dir', FIXTURES_PROJECTS], { env: h.env });
+    await ingestFixtures(h.env);
     const before = await obsCount(h.env);
 
     const dry = await abs(['consolidate', '--dry-run'], { env: llmEnv() });
@@ -78,7 +78,7 @@ describe('F — consolidate via a fake OpenAI-compatible endpoint', () => {
   });
 
   it('is idempotent (a consolidated session is skipped) and --force re-distills it', async () => {
-    await abs(['ingest', '--dir', FIXTURES_PROJECTS], { env: h.env });
+    await ingestFixtures(h.env);
     await abs(['consolidate'], { env: llmEnv() });
     const callsAfterFirst = (fake as FakeLlm).calls();
 
@@ -109,7 +109,7 @@ describe('H — optimize (consumes consolidated memory)', () => {
         },
       ]),
     );
-    await abs(['ingest', '--dir', FIXTURES_PROJECTS], { env: h.env });
+    await ingestFixtures(h.env);
     const run = await abs(['consolidate'], {
       env: { ...h.env, ABS_LLM_BASE_URL: fake.baseUrl, ABS_LLM_MODEL: 'stub' },
     });

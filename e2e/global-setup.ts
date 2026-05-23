@@ -24,7 +24,7 @@ export default async function setup(): Promise<void> {
   const h = makeHome();
   try {
     // Ingest embeds every observation → forces the model load/download exactly once.
-    const res = await abs(['ingest', '--dir', FIXTURES_PROJECTS], {
+    const res = await abs(['ingest', '--apply', '--all', '--dir', FIXTURES_PROJECTS], {
       env: h.env,
       timeoutMs: 180_000, // generous: a cold machine downloads the model here
     });
