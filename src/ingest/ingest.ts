@@ -294,7 +294,6 @@ async function ingestFile(
   const sessionCache = new Map<string, number>();
   const bindingCache = new Map<string, SessionBinding | null>();
   const tally: WriteTally = { added: 0, skipped: 0, seeded: 0 };
-  let offset = startOffset;
 
   if (isGeminiTranscript(absPath)) {
     // Whole-file JSON, NOT line-delimited and NOT incremental: Gemini rewrites the
@@ -359,7 +358,6 @@ async function ingestFile(
     const cwdHint = memory.store.getMeta(`${COPILOT_CWD_PREFIX}${absPath}`) ?? undefined;
     const parser = createCopilotLineParser(absPath, cwdHint);
     for await (const line of rl) {
-      offset += Buffer.byteLength(line, 'utf8') + 1;
       const entry = parser.pushLine(line);
       if (!entry) {
         tally.skipped++;
@@ -387,7 +385,6 @@ async function ingestFile(
     const cwdHint = memory.store.getMeta(`${CODEX_CWD_PREFIX}${absPath}`) ?? undefined;
     const parser = createCodexLineParser(absPath, cwdHint);
     for await (const line of rl) {
-      offset += Buffer.byteLength(line, 'utf8') + 1;
       const entry = parser.pushLine(line);
       if (!entry) {
         tally.skipped++;
@@ -412,10 +409,6 @@ async function ingestFile(
     if (observedCwd) memory.store.setMeta(`${CODEX_CWD_PREFIX}${absPath}`, observedCwd);
   } else {
     for await (const line of rl) {
-      // Advance the byte cursor by the raw line + the newline readline stripped.
-      // (A trailing line without a newline overshoots by 1; harmless — EOF anyway.)
-      offset += Buffer.byteLength(line, 'utf8') + 1;
-
       const entry = parseLine(line);
       if (entry === null) {
         tally.skipped++;
@@ -443,7 +436,13 @@ async function ingestFile(
     }
   }
 
-  writeCursor(memory, absPath, offset);
+  // Persist the EXACT byte offset consumed (start + bytes the stream actually read
+  // to EOF), NOT a per-line `byteLength + 1` tally. The tally overshot by 1 on any
+  // file without a trailing newline, leaving cursor === size + 1; the Copilot
+  // `cursor > size` compaction guard then misfired every run → full re-sync →
+  // duplicate observations (#88). bytesRead is exact regardless of a trailing
+  // newline and even if the file grew mid-read.
+  writeCursor(memory, absPath, startOffset + stream.bytesRead);
   result.observationsAdded += tally.added;
   result.observationsSkipped += tally.skipped;
   result.anchorsSeeded += tally.seeded;

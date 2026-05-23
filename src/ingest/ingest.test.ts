@@ -846,6 +846,29 @@ describe('Copilot ingest (byte cursor + compaction guard, #69)', () => {
     memory.close();
   });
 
+  it('an events.jsonl WITHOUT a trailing newline is NOT re-synced on the next ingest (#88 — no +1 cursor overshoot)', async () => {
+    const memory = newMemory();
+    const copilotPath = join(dir, copilotRel);
+    mkdirSync(dirname(copilotPath), { recursive: true });
+    // No trailing newline — the old `byteLength + 1` tally left cursor === size + 1,
+    // tripping the `cursor > size` compaction guard and re-syncing every run.
+    const body = [ctx, u('e1', 'turn one q'), a('e2', 'turn one a')].join('\n'); // NO trailing \n
+    writeFileSync(copilotPath, body);
+    await ingestSingleSession(memory, copilotPath);
+    const afterFirst = memory.store.counts().observations;
+    expect(afterFirst).toBe(2);
+    // Cursor is the EXACT byte size, not size + 1.
+    const cursor = Number.parseInt(
+      memory.store.getMeta(`ingest:cursor:${copilotPath}`) ?? '-1',
+      10,
+    );
+    expect(cursor).toBe(Buffer.byteLength(body, 'utf8'));
+    // Re-ingest the UNCHANGED file → nothing new, no duplicates (the bug doubled it).
+    await ingestSingleSession(memory, copilotPath);
+    expect(memory.store.counts().observations).toBe(2);
+    memory.close();
+  });
+
   it('a compaction/fork truncate-to-shorter-prefix + new tail is RE-SYNCED, NEVER silently dropped (the cursor>size guard in ingestOneTranscript)', async () => {
     const memory = newMemory();
     const copilotPath = join(dir, copilotRel);
