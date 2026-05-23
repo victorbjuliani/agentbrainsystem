@@ -42,6 +42,24 @@ export interface Renderer {
   resize(w: number, h: number): void;
 }
 
+/** Thrown by `createRenderer` when the browser has no WebGL2 context (ADR-0015).
+ *  `main.ts` catches this to paint an on-brand fallback instead of a black canvas. */
+export class CreatureUnsupportedError extends Error {
+  constructor() {
+    super('WebGL2 is not available in this browser');
+    this.name = 'CreatureUnsupportedError';
+  }
+}
+
+/** Probe WebGL2 on a throwaway canvas so we never leave a dead context on the mount. */
+function webgl2Supported(): boolean {
+  try {
+    return Boolean(document.createElement('canvas').getContext('webgl2'));
+  } catch {
+    return false;
+  }
+}
+
 /** Stable per-edge endpoint id (edges arrive as wire string ids). */
 function endpointId(end: string | ViewNode): string {
   return typeof end === 'string' ? end : end.id;
@@ -84,6 +102,13 @@ interface Bead {
 }
 
 export function createRenderer(mount: HTMLElement, cb: RendererCallbacks): Renderer {
+  if (!webgl2Supported()) throw new CreatureUnsupportedError();
+
+  // Theme drives the elevation model (DESIGN §8): dark = additive bioluminescence
+  // (glow + bloom); light = translucent pastel gel with a soft diffuse shadow and
+  // near-zero bloom, so the creature reads on a pale canvas instead of washing out.
+  let isLight = document.documentElement.dataset.theme === 'light';
+
   // --- renderer / scene / camera / composer (HDR bloom + ACES) ----------------
   const canvas = document.createElement('canvas');
   canvas.style.position = 'absolute';
@@ -125,12 +150,16 @@ export function createRenderer(mount: HTMLElement, cb: RendererCallbacks): Rende
   scene.add(root);
 
   // --- static bell: dome shell + inner gel + halo + hot core (DESIGN §11) -----
-  const bellUniforms = { uTime: { value: 0 }, uColor: { value: new THREE.Color(0x8b5cf6) } };
+  const bellUniforms = {
+    uTime: { value: 0 },
+    uColor: { value: new THREE.Color(0x8b5cf6) },
+    uLight: { value: isLight ? 1 : 0 },
+  };
   const bellMat = new THREE.ShaderMaterial({
     transparent: true,
     depthWrite: false,
     side: THREE.DoubleSide,
-    blending: THREE.AdditiveBlending,
+    blending: isLight ? THREE.NormalBlending : THREE.AdditiveBlending,
     uniforms: bellUniforms,
     vertexShader: `
       uniform float uTime;
@@ -149,6 +178,7 @@ export function createRenderer(mount: HTMLElement, cb: RendererCallbacks): Rende
       }`,
     fragmentShader: `
       uniform vec3 uColor;
+      uniform float uLight;
       varying vec3 vN; varying vec3 vView; varying vec3 vPos;
       void main(){
         float fres = pow(1.0 - max(dot(vN, vView), 0.0), 3.0);
@@ -156,9 +186,17 @@ export function createRenderer(mount: HTMLElement, cb: RendererCallbacks): Rende
         float ribs = 0.5 + 0.5*sin(ang*46.0); ribs = pow(ribs, 5.0);
         float lowBand = smoothstep(${(BELL_R * 0.55).toFixed(2)}, -0.6, vPos.y);
         float sss = smoothstep(1.5, 0.0, length(vPos.xz)) * smoothstep(0.6, -1.0, vPos.y);
-        float a = fres*0.7 + ribs*0.12*lowBand + sss*0.18 + 0.010;
-        vec3 col = uColor*(0.22 + fres*0.62) + vec3(0.14,0.09,0.26)*ribs*lowBand + uColor*sss*0.5;
-        gl_FragColor = vec4(col, a*0.42);
+        if (uLight > 0.5) {
+          // Light: translucent pastel gel (DESIGN §8) — fresnel-dense rim so the
+          // silhouette reads on white; normal blending (set on the material).
+          vec3 gel = mix(vec3(0.66,0.60,0.86), uColor*0.55, 0.45);
+          float ga = clamp(fres*0.55 + ribs*0.05*lowBand + sss*0.20 + 0.05, 0.0, 0.82);
+          gl_FragColor = vec4(gel, ga);
+        } else {
+          float a = fres*0.7 + ribs*0.12*lowBand + sss*0.18 + 0.010;
+          vec3 col = uColor*(0.22 + fres*0.62) + vec3(0.14,0.09,0.26)*ribs*lowBand + uColor*sss*0.5;
+          gl_FragColor = vec4(col, a*0.42);
+        }
       }`,
   });
   const bell = new THREE.Mesh(
@@ -209,6 +247,33 @@ export function createRenderer(mount: HTMLElement, cb: RendererCallbacks): Rende
   core.position.set(0, BELL_Y - 0.6, 0.15);
   root.add(core);
 
+  // Soft diffuse shadow under the creature — light mode only (DESIGN §8: "sombra
+  // difusa sob ele"). A dark radial sprite with normal blending; hidden in dark
+  // (glow is the elevation there, not shadow). Sits behind/below the bell.
+  const shadow = new THREE.Sprite(
+    new THREE.SpriteMaterial({
+      map: GLOW,
+      color: 0x14101b,
+      transparent: true,
+      opacity: 0,
+      blending: THREE.NormalBlending,
+      depthWrite: false,
+    }),
+  );
+  shadow.scale.set(7.5, 4.2, 1);
+  shadow.position.set(0, BELL_Y - 3.4, -1.2);
+  root.add(shadow);
+
+  // Glow sprites are additive; on a pale canvas they read as white blobs, so light
+  // mode dims them to nothing and leans on the gel bell + shadow instead.
+  function applySpriteTheme(): void {
+    halo.material.opacity = isLight ? 0 : 0.18;
+    core.material.opacity = isLight ? 0 : 1;
+    (inner.material as THREE.MeshBasicMaterial).opacity = isLight ? 0 : 0.06;
+    shadow.material.opacity = isLight ? 0.22 : 0;
+  }
+  applySpriteTheme();
+
   // --- data-driven layers (rebuilt on setData) --------------------------------
   let data: ViewGraph = { nodes: [], links: [] };
   let visibleTypes: Set<NodeType> | null = null;
@@ -221,6 +286,27 @@ export function createRenderer(mount: HTMLElement, cb: RendererCallbacks): Rende
   const SEG = 64;
   const tentacleLines: { tentacle: Tentacle; posAttr: THREE.BufferAttribute }[] = [];
 
+  // Tentacle + neural-mesh line materials are rebuilt per setData, so they carry the
+  // theme too: additive luminous violet in dark, deeper opaque violet on white (§8).
+  interface ThemedLine {
+    mat: THREE.LineBasicMaterial;
+    role: 'tentacle' | 'mesh';
+    baseOp: number;
+  }
+  let themedLines: ThemedLine[] = [];
+  function styleLine(t: ThemedLine): void {
+    if (isLight) {
+      t.mat.blending = THREE.NormalBlending;
+      t.mat.color.set(t.role === 'mesh' ? 0x8b78d8 : 0x6d4fd0);
+      t.mat.opacity = t.role === 'mesh' ? 0.3 : Math.min(0.6, t.baseOp + 0.28);
+    } else {
+      t.mat.blending = THREE.AdditiveBlending;
+      t.mat.color.set(t.role === 'mesh' ? 0xc9bbff : 0x9b7cf0);
+      t.mat.opacity = t.role === 'mesh' ? 0.18 : t.baseOp;
+    }
+    t.mat.needsUpdate = true;
+  }
+
   // Beads as one additive Points cloud (HDR colours feed the bloom).
   let beadGeo: THREE.BufferGeometry | null = null;
   let beadPos = new Float32Array(0);
@@ -231,11 +317,15 @@ export function createRenderer(mount: HTMLElement, cb: RendererCallbacks): Rende
   let beadColBA: THREE.BufferAttribute | null = null;
   let beadSizeBA: THREE.BufferAttribute | null = null;
 
+  const beadUniforms = {
+    uPix: { value: renderer.getPixelRatio() },
+    uLight: { value: isLight ? 1 : 0 },
+  };
   const beadMat = new THREE.ShaderMaterial({
     transparent: true,
     depthWrite: false,
-    blending: THREE.AdditiveBlending,
-    uniforms: { uPix: { value: renderer.getPixelRatio() } },
+    blending: isLight ? THREE.NormalBlending : THREE.AdditiveBlending,
+    uniforms: beadUniforms,
     vertexShader: `
       attribute float aSize;
       varying vec3 vC; uniform float uPix;
@@ -247,12 +337,22 @@ export function createRenderer(mount: HTMLElement, cb: RendererCallbacks): Rende
       }`,
     fragmentShader: `
       varying vec3 vC;
+      uniform float uLight;
       void main(){
         float d = length(gl_PointCoord - 0.5);
-        float a = smoothstep(0.5, 0.04, d);
-        float hot = smoothstep(0.28, 0.0, d);
-        vec3 col = mix(vC, vC + vec3(0.6), hot*0.45);
-        gl_FragColor = vec4(col, a);
+        if (uLight > 0.5) {
+          // Light: solid pastel pigment dot (DESIGN §8) — deepen the kind colour so
+          // it reads on white, with a low-alpha bloom-ish halo for the "acender".
+          vec3 pig = clamp(vC, 0.0, 1.0) * 0.62;
+          float core = smoothstep(0.42, 0.06, d);
+          float halo = smoothstep(0.5, 0.30, d) * 0.35;
+          gl_FragColor = vec4(pig, max(core, halo));
+        } else {
+          float a = smoothstep(0.5, 0.04, d);
+          float hot = smoothstep(0.28, 0.0, d);
+          vec3 col = mix(vC, vC + vec3(0.6), hot*0.45);
+          gl_FragColor = vec4(col, a);
+        }
       }`,
     vertexColors: true,
   });
@@ -269,6 +369,7 @@ export function createRenderer(mount: HTMLElement, cb: RendererCallbacks): Rende
     }
     dynamic.length = 0;
     tentacleLines.length = 0;
+    themedLines = [];
   }
 
   /** Position of point `u` (0=bell, 1=tip) on tentacle `T` at time `time`. */
@@ -329,16 +430,14 @@ export function createRenderer(mount: HTMLElement, cb: RendererCallbacks): Rende
       const posBA = new THREE.Float32BufferAttribute(new Float32Array((SEG + 1) * 3), 3);
       const lineGeo = new THREE.BufferGeometry();
       lineGeo.setAttribute('position', posBA);
-      const line = new THREE.Line(
-        lineGeo,
-        new THREE.LineBasicMaterial({
-          color: 0x9b7cf0,
-          transparent: true,
-          opacity: op,
-          blending: THREE.AdditiveBlending,
-          depthWrite: false,
-        }),
-      );
+      const lineMat = new THREE.LineBasicMaterial({
+        transparent: true,
+        depthWrite: false,
+      });
+      const tentLine: ThemedLine = { mat: lineMat, role: 'tentacle', baseOp: op };
+      styleLine(tentLine);
+      themedLines.push(tentLine);
+      const line = new THREE.Line(lineGeo, lineMat);
       root.add(line);
       dynamic.push(line);
       tentacleLines.push({ tentacle: T, posAttr: posBA });
@@ -395,16 +494,11 @@ export function createRenderer(mount: HTMLElement, cb: RendererCallbacks): Rende
     if (meshVerts.length) {
       const mg = new THREE.BufferGeometry();
       mg.setAttribute('position', new THREE.Float32BufferAttribute(meshVerts, 3));
-      const mesh = new THREE.LineSegments(
-        mg,
-        new THREE.LineBasicMaterial({
-          color: 0xc9bbff,
-          transparent: true,
-          opacity: 0.18,
-          blending: THREE.AdditiveBlending,
-          depthWrite: false,
-        }),
-      );
+      const meshMat = new THREE.LineBasicMaterial({ transparent: true, depthWrite: false });
+      const meshLine: ThemedLine = { mat: meshMat, role: 'mesh', baseOp: 0.18 };
+      styleLine(meshLine);
+      themedLines.push(meshLine);
+      const mesh = new THREE.LineSegments(mg, meshMat);
       root.add(mesh);
       dynamic.push(mesh);
     }
@@ -597,8 +691,20 @@ export function createRenderer(mount: HTMLElement, cb: RendererCallbacks): Rende
       if (REDUCED_MOTION) frame(performance.now());
     },
     refreshTheme(): void {
-      const light = document.documentElement.dataset.theme === 'light';
-      renderer.toneMappingExposure = light ? 0.78 : 0.98;
+      // Swap the whole elevation model (DESIGN §8). Additive glow + bloom wash out on
+      // white, so light mode flips bell/beads/lines to normal blending with pigment
+      // colours, kills the bloom, and turns on the diffuse shadow.
+      isLight = document.documentElement.dataset.theme === 'light';
+      renderer.toneMappingExposure = isLight ? 0.92 : 0.98;
+      bloom.strength = isLight ? 0.16 : 0.62;
+      bellUniforms.uLight.value = isLight ? 1 : 0;
+      bellMat.blending = isLight ? THREE.NormalBlending : THREE.AdditiveBlending;
+      bellMat.needsUpdate = true;
+      beadUniforms.uLight.value = isLight ? 1 : 0;
+      beadMat.blending = isLight ? THREE.NormalBlending : THREE.AdditiveBlending;
+      beadMat.needsUpdate = true;
+      applySpriteTheme();
+      for (const t of themedLines) styleLine(t);
       if (REDUCED_MOTION) frame(performance.now());
     },
     fit(): void {
