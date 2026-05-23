@@ -1,4 +1,7 @@
 # checkout-api (fixture)
 
 A tiny payments API used by the live Claude Code memory-loop validation.
-Money is stored as integer cents; the session token is an httpOnly cookie.
+
+Endpoints:
+- `POST /orders` — create an order
+- `POST /refunds` — refund an order (work in progress)

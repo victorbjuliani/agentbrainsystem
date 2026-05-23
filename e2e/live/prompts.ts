@@ -5,11 +5,9 @@
  * depends on Session A's decisions.
  */
 export const SESSION_A_PROMPT =
-  'You are working on this checkout-api. We just resolved two things — state each as a ' +
-  'clear, committed decision in your reply, with the reason: (1) store all monetary ' +
-  'amounts as integer cents, never floats, because a float rounding bug hit us in ' +
-  'production; (2) keep the session token in an httpOnly cookie, never localStorage, to ' +
-  'limit XSS exposure. Confirm both decisions in your own words.';
+  'Two decisions for this checkout-api, note them: we store all monetary amounts as ' +
+  'integer cents, never floats (a float rounding bug hit us in production); and the ' +
+  'session token lives in an httpOnly cookie, never localStorage (to limit XSS).';
 
 export const SESSION_B_PROMPT =
   "I'm adding a refund endpoint to this payments API. How should I represent the refund " +

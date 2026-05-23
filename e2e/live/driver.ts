@@ -79,6 +79,11 @@ export interface RunOptions {
   model?: string;
   /** Add stream-json + hook events (Session B). Session A omits it. */
   streamHooks?: boolean;
+  /**
+   * Appended to the system prompt. Used to pin the answer language (the spawned `claude`
+   * otherwise inherits the user's global CLAUDE.md, which may force another language).
+   */
+  appendSystemPrompt?: string;
 }
 
 export interface RunResult {
@@ -100,6 +105,9 @@ export function runClaude(opts: RunOptions): Promise<RunResult> {
     '{"mcpServers":{}}',
     '--strict-mcp-config',
   ];
+  if (opts.appendSystemPrompt) {
+    args.push('--append-system-prompt', opts.appendSystemPrompt);
+  }
   if (opts.streamHooks) {
     args.push('--output-format', 'stream-json', '--include-hook-events', '--verbose');
   }
