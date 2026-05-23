@@ -14,6 +14,7 @@ import type { EmbeddingProvider } from '../embedding/index.js';
 import { handleSessionEnd } from '../hooks/session-end.js';
 import { Indexer } from '../indexer/index.js';
 import type { Memory } from '../memory.js';
+import { projectSlug } from '../optimize/targets.js';
 import { Recall } from '../recall/index.js';
 import { MemoryStore } from '../store/index.js';
 import { ingestClaudeProjects, ingestSingleSession, surveyClaudeProjects } from './ingest.js';
@@ -667,6 +668,112 @@ describe('Codex ingest (per-format seam, W4/C1, #67)', () => {
     expect(memory.store.listSessions().length).toBe(1); // still one codex: session
     // Project derived from the cached header cwd, even on the header-less resume.
     expect(memory.store.listSessions()[0]?.project).not.toBe('2026-05-14');
+    memory.close();
+  });
+});
+
+describe('Gemini ingest (whole-file JSON, id-watermark + .project_root, #68)', () => {
+  const GEM_UUID = '78432a44-385f-41f6-8a71-646d51996f8a';
+  const REAL_CWD = '/Users/me/Devs/agentbrainsystem';
+  const doc = (msgs: object[]) =>
+    JSON.stringify({
+      sessionId: GEM_UUID,
+      projectHash: 'h',
+      startTime: 't',
+      lastUpdated: 't',
+      messages: msgs,
+      kind: 'main',
+    });
+  const userMsg = (i: number) => ({
+    id: `u${i}`,
+    timestamp: 't',
+    type: 'user',
+    content: [{ text: `q${i}` }],
+  });
+  const asstMsg = (i: number) => ({
+    id: `a${i}`,
+    timestamp: 't',
+    type: 'gemini',
+    content: [{ text: `r${i}` }],
+  });
+  const m = (id: string, type: 'user' | 'gemini', text: string) => ({
+    id,
+    timestamp: 't',
+    type,
+    content: [{ text }],
+  });
+
+  it('a second SessionEnd on a GROWN Gemini file ingests only the new message, under the REAL project (id watermark + .project_root, never "chats")', async () => {
+    const memory = newMemory();
+    const slugDir = join(dir, '.gemini/tmp/agentbrainsystem');
+    const geminiPath = join(slugDir, 'chats/session-2026-05-23T04-24-78432a44.json');
+    mkdirSync(dirname(geminiPath), { recursive: true });
+    writeFileSync(join(slugDir, '.project_root'), REAL_CWD); // C-NEW-1 marker
+
+    // SessionEnd #1 — a 2-message file → exactly 2 observations, REAL project.
+    writeFileSync(geminiPath, doc([userMsg(1), asstMsg(1)]));
+    await ingestSingleSession(memory, geminiPath);
+    expect(memory.store.counts().observations).toBe(2);
+    const sess = memory.store.listSessions();
+    expect(sess.length).toBe(1);
+    expect(sess[0]?.externalId).toBe(`gemini:${GEM_UUID}`);
+    expect(sess[0]?.project).toBe(projectSlug(REAL_CWD)); // real cwd, NOT 'chats'
+    expect(sess[0]?.project).not.toBe('chats');
+
+    // Gemini REWRITES THE WHOLE FILE with a 3rd message appended. SessionEnd #2.
+    writeFileSync(geminiPath, doc([userMsg(1), asstMsg(1), userMsg(2)]));
+    await ingestSingleSession(memory, geminiPath);
+    expect(memory.store.counts().observations).toBe(3); // +1 ONLY — not +3
+    expect(memory.store.listSessions().length).toBe(1);
+
+    // Idempotent: a SessionEnd on the UNCHANGED file adds nothing.
+    await ingestSingleSession(memory, geminiPath);
+    expect(memory.store.counts().observations).toBe(3);
+    memory.close();
+  });
+
+  it('a /rewind that truncates + regrows is RE-SYNCED, never silently dropped (W-NEW-1)', async () => {
+    const memory = newMemory();
+    const slugDir = join(dir, '.gemini/tmp/agentbrainsystem');
+    const geminiPath = join(slugDir, 'chats/session-2026-05-23T04-24-78432a44.json');
+    mkdirSync(dirname(geminiPath), { recursive: true });
+    writeFileSync(join(slugDir, '.project_root'), REAL_CWD);
+
+    // Ingest 3 prose messages → 3 obs. Last id watermarked = 'm3'.
+    writeFileSync(
+      geminiPath,
+      doc([m('m1', 'user', 'q1'), m('m2', 'gemini', 'r1'), m('m3', 'user', 'q2')]),
+    );
+    await ingestSingleSession(memory, geminiPath);
+    expect(memory.store.counts().observations).toBe(3);
+
+    // /rewind to m1 (drops m2,m3) THEN add 2 NEW messages with NEW ids. The
+    // watermarked 'm3' is GONE → must re-sync, NOT skip (a count watermark of 3
+    // would see length 3 and add NOTHING — silent drop).
+    writeFileSync(
+      geminiPath,
+      doc([m('m1', 'user', 'q1'), m('m4', 'gemini', 'r2'), m('m5', 'user', 'q3')]),
+    );
+    await ingestSingleSession(memory, geminiPath);
+    expect(memory.store.counts().observations).toBeGreaterThanOrEqual(3); // NO silent drop
+    expect(memory.store.counts().observations).toBe(6); // re-synced whole file
+    expect(memory.store.searchFts('q3', 10).length).toBeGreaterThan(0); // new turn landed
+    expect(memory.store.listSessions().length).toBe(1);
+    memory.close();
+  });
+
+  it('NOTE-1: a Gemini file with NO .project_root marker buckets under the slug dir, never "chats"', async () => {
+    const memory = newMemory();
+    const slugDir = join(dir, '.gemini/tmp/agentbrainsystem');
+    const geminiPath = join(slugDir, 'chats/session-2026-05-23T04-24-78432a44.json');
+    mkdirSync(dirname(geminiPath), { recursive: true });
+    // NO .project_root written → fallback to the slug dir name.
+    writeFileSync(geminiPath, doc([userMsg(1), asstMsg(1)]));
+    await ingestSingleSession(memory, geminiPath);
+    const sess = memory.store.listSessions();
+    expect(sess.length).toBe(1);
+    expect(sess[0]?.project).toBe('agentbrainsystem'); // slug dir, not 'chats'
+    expect(sess[0]?.project).not.toBe('chats');
     memory.close();
   });
 });

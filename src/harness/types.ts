@@ -64,6 +64,16 @@ export interface HarnessAdapter {
    * binary (C2). Optional — absent defaults to 'claude' at the call site.
    */
   mcpBinary?: string;
+  /**
+   * MCP CLI arg style for this harness. Gemini rejects the `--` separator and needs
+   * the positional `--scope <scope> node <cli> start` form (#68). `cmdUninstall`
+   * reads this (+ `mcpScope`) so the `mcp remove` matches the `mcp add` scope —
+   * otherwise a user-scoped server is left behind by a project-scope-defaulting
+   * remove (#87). Absent → the `--`/no-scope default (claude/codex).
+   */
+  mcpArgStyle?: 'separator' | 'positional';
+  /** MCP scope for the positional arg style (`--scope user|project`); see `mcpArgStyle`. */
+  mcpScope?: 'user' | 'project';
   /** Is this harness installed on the current machine? Never throws. */
   detect(): Promise<boolean>;
   /** The parity gate — does this harness expose all four pillars? */
