@@ -15,10 +15,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { loadConfig } from '../config.js';
 import { __clearDeleteCacheForTests } from '../delete/delete.js';
 import { getOrCreateGlobalSession } from '../global.js';
+import { buildOpencodeDb } from '../harness/capabilities/__fixtures__/opencode-db.js';
 import { type Memory, openMemory } from '../memory.js';
 import {
   cmdForget,
   cmdIngest,
+  cmdOpencodeCapture,
+  cmdOpencodeRecall,
   cmdProject,
   cmdPromote,
   cmdRemember,
@@ -654,5 +657,118 @@ describe('cmdRemember — global authoring (hermetic, tmp ABS_HOME, real local p
     await cmdRemember(['some text', '--json']);
     expect(outLines.join('')).toContain('--global');
     expect(process.exitCode).toBe(1);
+  });
+});
+
+describe('cmdOpencodeCapture / cmdOpencodeRecall (#72, hermetic, real local provider)', () => {
+  let dir: string;
+  let outLines: string[];
+  const SES = 'ses_abc123';
+  const PROJ_DIR = '/Users/test/Devs/ChessTrainer';
+  const PROJ_SLUG = '-Users-test-Devs-ChessTrainer';
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'abs-cli-opencode-'));
+    process.env.ABS_HOME = dir;
+    delete process.env.ABS_EMBED_DIM; // capture embeds for real (local provider, dim 384)
+    outLines = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk: string | Uint8Array) => {
+      outLines.push(String(chunk));
+      return true;
+    });
+    vi.spyOn(process.stderr, 'write').mockImplementation((chunk: string | Uint8Array) => {
+      outLines.push(String(chunk));
+      return true;
+    });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete process.env.ABS_HOME;
+    process.exitCode = 0;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function seedDb(): void {
+    buildOpencodeDb(join(dir, 'opencode.db'), [
+      {
+        id: SES,
+        directory: PROJ_DIR,
+        messages: [
+          { id: 'm1', role: 'user', parts: [{ id: 'p1', text: 'how do I castle in chess' }] },
+          {
+            id: 'm2',
+            role: 'assistant',
+            parts: [{ id: 'p2', text: 'Castling moves the king two squares toward a rook.' }],
+          },
+        ],
+      },
+    ]);
+  }
+
+  it('(a) opencode-capture ingests a temp DB → observations under opencode:ses_', async () => {
+    seedDb();
+    await cmdOpencodeCapture(['--session', SES, '--db', join(dir, 'opencode.db')]);
+    const mem = await openMemory(loadConfig(), { ensure: false });
+    const session = mem.store.getSessionByExternalId(`opencode:${SES}`);
+    expect(session).not.toBeNull();
+    expect(session?.project).toBe(PROJ_SLUG);
+    expect(mem.store.listObservations({ project: PROJ_SLUG }).length).toBe(2);
+    mem.close();
+  });
+
+  it('(b) opencode-capture missing --session → exit 1', async () => {
+    await cmdOpencodeCapture([]);
+    expect(process.exitCode).toBe(1);
+    expect(outLines.join('')).toContain('--session');
+  });
+
+  it('(c) opencode-recall with seeded observations → fenced recalled-memory block scoped to project', async () => {
+    seedDb();
+    await cmdOpencodeCapture(['--session', SES, '--db', join(dir, 'opencode.db')]);
+    outLines = [];
+    await cmdOpencodeRecall(['--session', SES, '--cwd', PROJ_DIR]);
+    const text = outLines.join('');
+    expect(text).toContain('<recalled-memory>');
+    expect(text).toContain(`project "${PROJ_SLUG}"`);
+    expect(text).toContain('Castling');
+  });
+
+  it('(d) opencode-recall on an empty store → prints nothing, exit 0', async () => {
+    await cmdOpencodeRecall(['--session', 'ses_none', '--cwd', PROJ_DIR]);
+    // first-recall consent notice IS printed even on an empty store (see test g);
+    // but recall block alone is empty. Here the notice fires once → assert no recall fence.
+    const text = outLines.join('');
+    expect(text).not.toContain('<recalled-memory>');
+    expect(process.exitCode).toBe(0);
+  });
+
+  it('(e) opencode-recall missing --session/--cwd → exit 1', async () => {
+    await cmdOpencodeRecall(['--session', SES]);
+    expect(process.exitCode).toBe(1);
+    process.exitCode = 0;
+    outLines = [];
+    await cmdOpencodeRecall(['--cwd', PROJ_DIR]);
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('(f) consent: first recall prepends the notice; the second does NOT (flag consumed)', async () => {
+    seedDb();
+    await cmdOpencodeCapture(['--session', SES, '--db', join(dir, 'opencode.db')]);
+    outLines = [];
+    await cmdOpencodeRecall(['--session', SES, '--cwd', PROJ_DIR]);
+    const first = outLines.join('');
+    expect(first).toContain('agentbrainsystem — memory notice.');
+    outLines = [];
+    await cmdOpencodeRecall(['--session', SES, '--cwd', PROJ_DIR]);
+    const second = outLines.join('');
+    expect(second).not.toContain('agentbrainsystem — memory notice.');
+    expect(second).toContain('<recalled-memory>'); // recall still works
+  });
+
+  it('(g) consent fires even on an otherwise-empty recall (notice alone on the first turn)', async () => {
+    await cmdOpencodeRecall(['--session', 'ses_empty', '--cwd', PROJ_DIR]);
+    const text = outLines.join('');
+    expect(text).toContain('agentbrainsystem — memory notice.');
+    expect(text).not.toContain('<recalled-memory>');
   });
 });
