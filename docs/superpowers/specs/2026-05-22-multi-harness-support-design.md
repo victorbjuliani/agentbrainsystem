@@ -115,6 +115,13 @@ location per harness — it receives it.
   (Relates to the known hazard that resetting the DB wipes ingest cursors — the
   cursor key must be namespaced per harness.)
 - **Session id namespaced by source** to avoid cross-harness id collision.
+  Implemented (#67) at a SINGLE chokepoint in `src/hooks/dispatch.ts`: right after
+  `parseHookPayload`, `payload.sessionId` is namespaced once (`harnessForPayload` →
+  `namespacedExternalId`). Every hook-path consumer — `session-start.ts`,
+  `user-prompt-submit.ts`, `scope.ts`, AND `pre-tool-use.ts` — receives the
+  already-namespaced id with zero per-site code (the guard hook is covered by the
+  chokepoint for free, like any other handler). Claude stays bare (migration-safe);
+  Codex is `codex:<uuid>`.
 - **No cross-harness semantic dedupe**: distinct transcripts = distinct sessions.
 
 ### `qualifies()` — the parity gate as code
