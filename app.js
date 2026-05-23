@@ -20,6 +20,8 @@
     "hero.sub": "Memória persistente para o seu agente de IA. Ele lembra cada sessão — para você parar de reexplicar o mesmo contexto, todo dia. Local, gratuito, privado.",
     "hero.note": "Funciona em macOS, Windows e Linux. Node ≥ 22.",
 
+    "harness.label": "Funciona com o seu agente — cinco harnesses, uma só memória compartilhada",
+
     "feat.eyebrow": "Por que existe",
     "feat.h": "Pare de ser a memória do seu agente.",
     "feat.lead": "A cada sessão, ele recomeça do zero. O agentbrainsystem lembra — captura cada uma e faz recall do que importa, sem esforço.",
@@ -36,7 +38,7 @@
     "how.eyebrow": "Como funciona",
     "how.h": "Três passos. Esforço zero.",
     "how.1.h": "Captura",
-    "how.1.p": "Hooks ingerem cada sessão do Claude Code automaticamente quando ela termina — $0, sem LLM.",
+    "how.1.p": "Hooks (ou um plugin no OpenCode) ingerem cada sessão automaticamente quando ela termina — $0, sem LLM.",
     "how.2.h": "Armazena",
     "how.2.p": "Indexado localmente na sua máquina, totalmente offline. Nada é enviado pra fora.",
     "how.3.h": "Recall",
@@ -62,7 +64,7 @@
     "faq.2.q": "Tem algum custo?",
     "faq.2.a": "Não — $0 por padrão. Embeddings locais, sem API key. Opcionalmente, conecte qualquer LLM compatível com OpenAI (Ollama local ou hosted) para consolidação mais profunda — opcional e desativado por padrão.",
     "faq.3.q": "Funciona com quais agentes?",
-    "faq.3.a": "Feito para o Claude Code via MCP, com captura de sessão e injeção de contexto sem esforço, através de hooks.",
+    "faq.3.a": "Cinco harnesses — Claude Code, Codex CLI, Gemini CLI, GitHub Copilot CLI e OpenCode — cada um via MCP, com captura de sessão e injeção de contexto sem esforço, através do ciclo de vida nativo de cada harness. A mesma memória local é compartilhada entre todos.",
     "faq.4.q": "É open source?",
     "faq.4.a": "Totalmente — no GitHub. Star, fork, leia cada linha.",
 

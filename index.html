@@ -101,6 +101,20 @@
   </div>
 </section>
 
+<!-- ===================== HARNESSES (compatibility band) ===================== -->
+<section class="harnesses" aria-label="Supported coding agents">
+  <div class="wrap">
+    <p class="harnesses__label reveal" data-i18n="harness.label">Works with your agent — five harnesses, one shared memory</p>
+    <ul class="harness-row reveal">
+      <li class="harness-pill"><span class="harness-dot" aria-hidden="true"></span><span translate="no">Claude Code</span></li>
+      <li class="harness-pill"><span class="harness-dot" aria-hidden="true"></span><span translate="no">Codex CLI</span></li>
+      <li class="harness-pill"><span class="harness-dot" aria-hidden="true"></span><span translate="no">Gemini CLI</span></li>
+      <li class="harness-pill"><span class="harness-dot" aria-hidden="true"></span><span translate="no">GitHub Copilot CLI</span></li>
+      <li class="harness-pill"><span class="harness-dot" aria-hidden="true"></span><span translate="no">OpenCode</span></li>
+    </ul>
+  </div>
+</section>
+
 <!-- ===================== FEATURES (3 heroes) ===================== -->
 <section id="features">
   <div class="wrap">
@@ -143,7 +157,7 @@
       <li class="step">
         <span class="step__n" aria-hidden="true">01</span>
         <h3 data-i18n="how.1.h">Capture</h3>
-        <p data-i18n="how.1.p">Hooks auto-ingest every Claude Code session when it ends — $0, no LLM.</p>
+        <p data-i18n="how.1.p">Hooks (or an OpenCode plugin) auto-ingest every coding session when it ends — $0, no LLM.</p>
         <p class="tech" translate="no">JSONL · hooks</p>
       </li>
       <li class="step">
@@ -239,7 +253,7 @@
     <div class="faq">
       <details class="reveal"><summary data-i18n="faq.1.q">Does it send my code anywhere?</summary><div class="ans" data-i18n="faq.1.a">No. Everything runs locally and offline. No network calls, no telemetry, no account.</div></details>
       <details class="reveal"><summary data-i18n="faq.2.q">Does it cost anything?</summary><div class="ans" data-i18n="faq.2.a">No — $0 by default. Local embeddings, no API keys. Optionally plug in any OpenAI-compatible LLM (local Ollama or hosted) for deeper consolidation — opt-in, off by default.</div></details>
-      <details class="reveal"><summary data-i18n="faq.3.q">Which agents does it work with?</summary><div class="ans" data-i18n="faq.3.a">Built for Claude Code via MCP, with hands-free session capture and context injection through hooks.</div></details>
+      <details class="reveal"><summary data-i18n="faq.3.q">Which agents does it work with?</summary><div class="ans" data-i18n="faq.3.a">Five harnesses — Claude Code, Codex CLI, Gemini CLI, GitHub Copilot CLI and OpenCode — each via MCP, with hands-free session capture and context injection through that harness's native lifecycle. The same local memory is shared across all of them.</div></details>
       <details class="reveal"><summary data-i18n="faq.4.q">Is it open source?</summary><div class="ans" data-i18n="faq.4.a">Fully — on GitHub. Star it, fork it, read every line.</div></details>
     </div>
   </div>
