@@ -33,6 +33,7 @@ export function opencodeAdapter(): HarnessAdapter {
     id: 'opencode',
     displayName: 'OpenCode',
     mcpBinary: 'opencode', // messaging only; MCP is file-written, not CLI
+    mcpFileManaged: true, // both register + unregister are file edits — skip the CLI mcp path
     detect: async () => {
       try {
         await access(join(homedir(), '.config', 'opencode'));

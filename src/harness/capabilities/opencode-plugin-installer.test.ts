@@ -98,6 +98,21 @@ describe('opencodePluginInstaller (#72)', () => {
     expect(() => lstatSync(join(dir, 'plugin', 'agentbrainsystem.js'))).toThrow();
   });
 
+  it('(d2) uninstall ALSO removes the mcp.agentbrainsystem key (file-managed MCP), leaves foreign mcp', async () => {
+    const installer = opencodePluginInstaller({ configDir: dir });
+    await installer.registerMcp(CLI);
+    await installer.install(CLI);
+    // add a foreign mcp server to prove we only remove ours
+    const cfg = JSON.parse(read());
+    cfg.mcp.other = { type: 'local', command: ['x'] };
+    writeFileSync(join(dir, 'opencode.json'), `${JSON.stringify(cfg, null, 2)}\n`);
+    await installer.uninstall();
+    const parsed = JSON.parse(read());
+    expect(parsed.mcp?.agentbrainsystem).toBeUndefined(); // ours removed
+    expect(parsed.mcp?.other).toEqual({ type: 'local', command: ['x'] }); // foreign kept
+    expect(parsed.plugin).toBeUndefined(); // plugin[] dropped (was only ours)
+  });
+
   it('(e) symlink config → refuse to write', async () => {
     const realTarget = join(dir, 'real-config.json');
     writeFileSync(realTarget, `${JSON.stringify({}, null, 2)}\n`);
