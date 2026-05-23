@@ -206,6 +206,55 @@ export async function cmdIngest(args: string[]): Promise<void> {
   }
 }
 
+/** One harness's status row for `abs status`. */
+export interface HarnessStatusRow {
+  id: string;
+  displayName: string;
+  /** Is this harness installed on the current machine? (adapter.detect) */
+  installed: boolean;
+  /** Does this harness expose all four parity pillars? (adapter.qualifies) */
+  parity: boolean;
+}
+
+/** The minimal registry shape `gatherHarnessStatus` needs (fake-able in tests). */
+interface HarnessStatusRegistry {
+  all(): readonly HarnessAdapter[];
+}
+
+/**
+ * Build a status row per known harness adapter. Each `detect()` is awaited
+ * defensively — a throwing adapter never crashes status; it surfaces as
+ * `installed: false`. `parity` reads the synchronous `qualifies()` gate.
+ *
+ * "wired" (is THIS harness's lifecycle actually installed) is intentionally NOT
+ * reported: there is no `isInstalled` on the adapter contract, and probing it
+ * would mean re-parsing five distinct config formats (settings.json / config.toml /
+ * hooks.json / opencode JSONC). `installed + parity` is the concise, non-fatal
+ * surface the user needs to know they can run `abs setup --harness <id>`.
+ */
+export async function gatherHarnessStatus(
+  registry: HarnessStatusRegistry,
+): Promise<HarnessStatusRow[]> {
+  const adapters = registry.all();
+  return Promise.all(
+    adapters.map(async (a) => {
+      let installed = false;
+      try {
+        installed = await a.detect();
+      } catch {
+        installed = false; // a throwing detect() must never crash status
+      }
+      let parity = false;
+      try {
+        parity = a.qualifies().ok;
+      } catch {
+        parity = false;
+      }
+      return { id: a.id, displayName: a.displayName, installed, parity };
+    }),
+  );
+}
+
 async function cmdStatus(): Promise<void> {
   const config = loadConfig();
   const memory = await openMemory(config);
@@ -215,6 +264,7 @@ async function cmdStatus(): Promise<void> {
     const globalObservations = globalSession
       ? memory.store.listObservations({ sessionId: globalSession.id }).length
       : 0;
+    const harnesses = await gatherHarnessStatus(defaultRegistry());
     out(
       JSON.stringify(
         {
@@ -230,6 +280,7 @@ async function cmdStatus(): Promise<void> {
             startupRebuilt: memory.ensure?.rebuilt ?? false,
             startupReason: memory.ensure?.reason,
           },
+          harnesses,
         },
         null,
         2,
