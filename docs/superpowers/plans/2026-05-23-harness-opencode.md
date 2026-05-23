@@ -173,7 +173,7 @@ CREATE TABLE `part` (
 Verified real rows:
 
 - `session.id` = `ses_1e1ffd31affeOz4vj2gNwUXRRA`, `session.directory` =
-  `/Users/vbjuliani/Devs/ChessTrainer` (the canonical cwd — **use this, not
+  `/Users/dev/Devs/sample-project` (the canonical cwd — **use this, not
   `message.data.path.cwd`**, which is empty on `user` messages).
 - `part.id` = `prt_e1e002d3f001pX4L6nPLygXOxE`; `part.data` =
   `{ "type": "text", "text": "# Caveman Ultra — ativado\n…" }`. Distinct
@@ -427,7 +427,7 @@ npm + Node ≥22 + TypeScript (ESM). Biome lint/format, Vitest, `tsc`. Validatio
 `abs` test** (dist is NOT rebuilt by `check` — false-negatives otherwise). Reuse the
 existing **`better-sqlite3`** dep (`package.json:42`) for the read-only DB open — no
 new dependency. Worktree:
-`/Users/vbjuliani/Devs/agentbrainsystem/.worktrees/h72`, branch
+`/Users/dev/Devs/agentbrainsystem/.worktrees/h72`, branch
 `feat/harness-opencode`, stacked on Phase0 + Codex + Gemini + Copilot.
 
 ## Where this BREAKS prior-adapter framework assumptions (read before coding)
