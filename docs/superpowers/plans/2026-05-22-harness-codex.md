@@ -9,7 +9,9 @@
 1. **MCP registration** — `registerMcpServer` is hardcoded to the `claude` binary. Generalize it to take a CLI binary + an `mcp add`/`mcp list`/`mcp remove` argv builder, so it drives both `claude mcp add agentbrainsystem -- node <cli> start` and `codex mcp add agentbrainsystem -- node <cli> start`. Claude behavior stays byte-identical (regression gate).
 2. **Lifecycle install** — Codex hooks are NOT in `~/.claude/settings.json`; they live in `~/.codex/config.toml` under a `[hooks]` table (TOML, matcher-group arrays per PascalCase event). A new `CodexLifecycleInstaller` capability owns the TOML read/merge/write, idempotent + backup-first, mirroring `installHooks`'s safety contract but for TOML.
 
-A third change is the **transcript parser**: Codex's rollout JSONL schema is fundamentally different from Claude's (different line `type`s, session id only in the header line, content blocks named `input_text`/`output_text` not `text`). A `codexParseTranscript` variant handles it; the JSONL ingest loop gains a per-format parser seam so Claude's path is untouched.
+A third change is the **transcript parser**: Codex's rollout JSONL schema is fundamentally different from Claude's (different line `type`s, session id only in the header line **and the rollout FILENAME**, content blocks named `input_text`/`output_text` not `text`). A `codexParseTranscript` variant handles it; the JSONL ingest loop gains a per-format parser seam so Claude's path is untouched. Crucially the Codex sessionId is taken from the **filename UUID** (always present, on every resumed read), NOT from the in-file `session_meta` header — this lets Codex resume from a byte cursor exactly like Claude (no offset-0 re-read every turn), which is mandatory because `Stop` fires PER-TURN, not once per session (W4).
+
+**W1 namespacing — where it really lives:** the real capture path is `Stop` hook → `abs hook session-end` → `dispatch.ts` `HANDLERS['session-end']` → `handleSessionEnd(payload)` → `ingestSingleSession(memory, transcriptPath)`. **No harness id flows through dispatch/handlers**, so threading a `harnessId` param is dead on the real path. Instead the namespace is derived **inside the ingest layer** from the transcript path, reusing the same `isCodexTranscript(absPath)` classifier that Task 5 adds for the parser seam. `namespacedExternalId(harness, rawId)` is applied at the `resolveSession`/binding choke point based on path classification — so the REAL `dispatchHook('session-end')` path namespaces correctly with zero harness-awareness in dispatch or handlers.
 
 **Tech Stack:** Node ≥ 22, TypeScript (ESM), Vitest, Biome, embedded SQLite via `better-sqlite3` (synchronous). TOML parsing/writing uses a hand-rolled minimal serializer scoped to the `[hooks]` table (no new dependency — see Task 3 rationale). Source-of-truth design doc: `docs/superpowers/specs/2026-05-22-multi-harness-support-design.md`. Builds on the Phase-0 adapter framework (`src/harness/`).
 
@@ -51,14 +53,14 @@ Registered servers persist in `config.toml` under `[mcp_servers.<name>]` (the `[
 ### Lifecycle hooks — the big correction
 - `codex features list` shows **`codex_hooks   stable   true`** — the hooks subsystem is shipped and on by default.
 - There is **NO `codex hooks` CLI subcommand** (`codex --help` lists no `hooks` command). Hooks are **declared in `config.toml`, not via a CLI**.
-- The native binary's `HookEventName` enum (confirmed via `strings` + Context7 `/openai/codex` `codex-rs/protocol/src/protocol.rs`) is **Claude-derived, PascalCase**:
+- The native binary's `HookEventName` enum (confirmed by `strings` on the installed `codex-darwin-arm64` native binary `0.125.0` — the embedded JSON schema `"const"` list AND the concatenated enum string `PreToolUsePermissionRequestPostToolUseSessionStartUserPromptSubmitStop`) is **exactly these 6 events, PascalCase**:
   ```rust
   pub enum HookEventName {
-      PreToolUse, PermissionRequest, PostToolUse, PreCompact, PostCompact,
-      SessionStart, UserPromptSubmit, SubagentStart, SubagentStop, Stop,
+      PreToolUse, PermissionRequest, PostToolUse,
+      SessionStart, UserPromptSubmit, Stop,
   }
   ```
-  **There is NO `SessionEnd`.** The session-finished moment is **`Stop`** (Claude's `SessionEnd` has no Codex equivalent; `Stop` is the closest "the agent finished a turn / session is idle" signal — the same role the design doc's table assigns it: `CapturePoint = Stop`).
+  **W2 correction:** earlier drafts listed `PreCompact, PostCompact, SubagentStart, SubagentStop` from a research-derived/newer source — those are **NOT in the installed `0.125.0` binary** and are dropped (verified absent: every `"const":` event in the embedded schema is one of the 6 above). **There is NO `SessionEnd`.** The session-finished moment is **`Stop`** (Claude's `SessionEnd` has no Codex equivalent; `Stop` is the closest "the agent finished a turn" signal — the design doc's table assigns it `CapturePoint = Stop`). **Caveat — `Stop` fires PER TURN, not once per session** (it is "the agent finished THIS turn"). This is the W4 hazard: see Task 5.
 - A registered hook's identity key (from `hooks/list`, Context7 app-server README) is
   `"/Users/me/.codex/config.toml:pre_tool_use:0:0"` — i.e. `<sourcePath>:<snake_case_event>:<group_index>:<hook_index>`. The on-disk event keys are **snake_case** (`pre_tool_use`), the protocol enum is PascalCase. Hook entry fields: `eventName`, `handlerType: "command"`, `command`, `timeoutSec`, `matcher`, `source`, `enabled`.
 - Each event is an **array of matcher groups**, each group `{ matcher, hooks: [{ type/handler, command, timeout }] }` — the **same shape as Claude's `hooks.<Event>[]`** in settings.json, just expressed as TOML under `config.toml`.
@@ -68,6 +70,8 @@ The hook handler is spawned with the hook JSON on **stdin** (same model as Claud
 
 ### Transcript schema — REAL sample (`~/.codex/sessions/2026/05/14/rollout-…-019e2658-c8b0-….jsonl`)
 The filename embeds the session UUID: `rollout-<ISO-ts>-<UUID>.jsonl`, and that UUID equals `session_meta.payload.id`.
+
+> **Version reconciliation (W2):** the canonical version for this plan is the **installed CLI: `codex --version` → `0.125.0`** (also the value the Task 1 test stubs). The `cli_version: 0.130.0-alpha.5` below is genuine captured data inside one real Codex Desktop transcript header (a different client wrote that rollout) — it is left verbatim as real fixture material, NOT a contradiction of the installed CLI. All event-surface and trust-gate facts in this section were probed against the installed `0.125.0` native binary.
 
 Per-line top-level `type` values observed (one file): `session_meta` (header), `response_item`, `event_msg`, `turn_context`, `compacted`.
 
@@ -104,7 +108,12 @@ Representative lines (real, trimmed):
 | tool calls are `tool_use` blocks with `name`+`input.file_path` | tool calls are separate `response_item` lines `payload.type === 'function_call'`, `name` like `exec_command`/`apply_patch`, args as a **JSON string** in `payload.arguments` | no Edit/Write `tool_use` block exists; anchoring needs a Codex-specific extraction (deferred — see Task 5 scope note) |
 | `obj.cwd` per line | `cwd` only in `session_meta.payload.cwd` | project derivation needs the header |
 
-**Design consequence:** Codex needs a **stateful** parser — read `session_meta` first to capture `{ sessionId, cwd }`, then map each subsequent `response_item`/`event_msg` to a `ParsedEntry` carrying that header's sessionId+cwd. The session id is also recoverable from the filename UUID as a fallback if `session_meta` is absent (resumed/forked sessions still have the header, but the fallback is cheap insurance). To avoid double-counting, we extract prose from **`response_item.message`** lines (the canonical conversation record) and **skip the `event_msg` mirror** (`user_message`/`agent_message` duplicate the same text — confirmed in the sample: identical strings).
+**Design consequence (revised for W4):** the sessionId comes from the **filename UUID** (`sessionIdFromPath`) — it is on EVERY path, present whether or not the read includes the `session_meta` header. This is what makes byte-cursor streaming possible: a resumed read that starts mid-file (past the header) still knows its sessionId. The `cwd` lives ONLY in the `session_meta` header, so the parser captures it when the header is in the read AND the ingest layer **caches it in `kv_meta`** (keyed by transcript path) so a later header-less resume still derives the project. Prose is extracted from **`response_item.message`** lines (the canonical conversation record); the `event_msg` mirror (`user_message`/`agent_message`) is **skipped** (identical strings — confirmed in the sample) to avoid double-counting.
+
+> **W4 — `Stop` fires PER TURN.** If ingest re-parsed the whole file from offset 0 on every `Stop`, and `indexer.write` does NOT dedup (verified: `createObservation` is a plain `INSERT` with no UNIQUE/`ON CONFLICT` — `memory-store.ts:326`), every prior turn would be re-inserted each turn → a **duplicate-observation explosion** linear in turns². The fix is to stream from the persisted byte cursor exactly like Claude (resume, never re-read prior turns). Because the sessionId is from the FILENAME (not the header), a `start > 0` slice is safe — it never needs the header for the id. The header-only `cwd` is recovered from the kv_meta cache. **There is no offset-0 mandate.**
+
+### Trust gate (W3 — real, confirmed in the binary)
+The installed `0.125.0` binary contains the literal strings **`"skipping managed hooks from "`** and **`" is marked as untrusted in "`** (confirmed via `strings`). Codex **silently SKIPS `config.toml`-managed hooks for projects that are not trusted** — `[projects."<cwd>"] trust_level` must be `"trusted"` (the on-disk live `config.toml` shows `[projects.*]` tables carrying `trust_level`). Consequence: `abs install-hooks --harness codex` can wire a perfectly valid `[hooks]` block that **never fires** in an untrusted project — a silent no-op that looks like an `abs` bug but is Codex policy. Task 3 / Task 9 must surface this (detect trust + explicit success-line wording), not bury it in a footnote.
 
 ### W1 collision risk (real, now reachable)
 Both harnesses use UUID session ids. Claude's `sessionId` and Codex's `session_meta.id` are both v7-style UUIDs from independent generators. A collision is astronomically unlikely **by value**, but the store keys sessions by `external_id` with a `UNIQUE`-style lookup (`getSessionByExternalId` → `SELECT … WHERE external_id = ?`), and the **`session-project:<externalId>` binding** is keyed the same way. The design doc (line 117) mandates **namespacing the session id by source**. We do it now (Task 6), the first time two harnesses share one DB, and make it **migration-safe** so every existing Claude `external_id` still resolves.
@@ -115,15 +124,15 @@ Both harnesses use UUID session ids. Claude's `sessionId` and Codex's `session_m
 
 - **Modify** `src/cli/setup.ts` — generalize `registerMcpServer`/`unregisterMcpServer` to a CLI binary + argv builder (Task 1).
 - **Modify** `src/harness/capabilities/mcp-registrar.ts` — `cliMcpRegistrar` accepts the binary (Task 2).
-- **Create** `src/harness/capabilities/codex-lifecycle-installer.ts` — TOML `[hooks]` installer (Task 3).
-- **Create** `src/ingest/codex-jsonl.ts` — Codex transcript parser (Task 4) + tool-anchor follow-on (Task 5 scope note).
-- **Modify** `src/ingest/ingest.ts` — per-format parser seam (Task 5).
-- **Modify** `src/store/memory-store.ts` + `src/ingest/session-binding.ts` + `src/ingest/ingest.ts` — W1 `external_id` namespacing (Task 6).
-- **Create** `src/harness/adapters/codex.ts` — the adapter (Task 7).
-- **Modify** `src/harness/index.ts` — register Codex in `defaultRegistry()` (Task 8).
-- Tests alongside each (`*.test.ts`), plus real-transcript fixtures under `src/ingest/__fixtures__/codex/`.
+- **Create** `src/harness/capabilities/codex-lifecycle-installer.ts` — TOML `[hooks]` installer, proven-idempotent + trust-aware (Task 3); real-config fixture `src/harness/capabilities/__fixtures__/codex/config.toml`; `@iarna/toml` added to **devDependencies** only.
+- **Create** `src/ingest/codex-jsonl.ts` — Codex transcript parser, filename-UUID sessionId + returns observed cwd (Task 4) + tool-anchor follow-on (out of scope).
+- **Create** `src/ingest/namespacing.ts` — `namespacedExternalId` helper (Task 6, W1).
+- **Modify** `src/ingest/ingest.ts` — per-format seam: cursor-streamed Codex branch, kv_meta cwd cache, path-derived `codex:` namespace (Task 5, W4/C1). **No `harnessId` param threaded** — the namespace is derived from `isCodexTranscript(absPath)`, because the real `dispatchHook('session-end')` path carries no harness.
+- **Create** `src/harness/adapters/codex.ts` — the adapter, `mcpBinary: 'codex'` (Task 7).
+- **Modify** `src/harness/index.ts` — register Codex; **`src/harness/types.ts`** — add `mcpBinary?`; **`src/harness/adapters/claude-code.ts`** — set `mcpBinary: 'claude'`; **`src/cli/cli.ts`** — rewrite `cmdUninstall` to be `--harness`-aware + reorder `cmdSetup` MCP-before-hooks (Task 8, C2/W1-warn).
+- Tests alongside each (`*.test.ts`), plus real fixtures under `src/ingest/__fixtures__/codex/` and `src/harness/capabilities/__fixtures__/codex/`.
 
-The core (`src/store` excepting the one namespacing helper, `src/recall`, `src/embedding`, `src/optimize`) stays harness-agnostic; nothing there imports `src/harness`.
+The core (`src/store`, `src/recall`, `src/embedding`, `src/optimize`) stays harness-agnostic; nothing there imports `src/harness`. The W1 helper lives in `src/ingest` (allowed). NOTE: `src/store/memory-store.ts` is NOT modified (an earlier draft listed it for namespacing — the namespace is composed at the ingest boundary, the store stays untouched).
 
 ---
 
@@ -343,6 +352,15 @@ timeout = 10
 >
 > Note on `PreToolUse` matcher: Codex tool names differ (`exec_command`, `apply_patch`). The guard only fires for code-duplication risk; if `Edit|Write` never matches a Codex tool, the guard simply never fires (fail-safe, no error). Set matcher to `""` if a follow-up confirms Codex emits no Edit/Write-named tools — but ship `""` is acceptable here since the guard self-bounds and fails open. **Decision: ship matcher `""` for PreToolUse on Codex** (fires on every tool, the handler itself decides relevance), avoiding a silent never-fire.
 
+**C3 — proven idempotency + real-config fixture + valid-TOML guarantee.** Hand-rolling a TOML splice is only safe if we PROVE three things with tests, not prose:
+> 1. **One normalization function.** ALL newline normalization lives in a single `normalize(toml)` helper used by BOTH `stripManaged` and `install` (no split logic that could drift). The early `next === current` no-op compares fully-normalized strings.
+> 2. **Real-config fixture.** Commit `src/harness/capabilities/__fixtures__/codex/config.toml` — a COPY of the live `~/.codex/config.toml` with secrets stubbed (API keys / tokens / OAuth → `"REDACTED"`; keep every `[projects.*]`, `[mcp_servers.*]`, `[plugins.*]` table, the multiline `notify` array, and `trust_level` keys structurally intact). Mirrors Task 4's real-fixture standard.
+> 3. **Byte-identical across 3 runs + still valid TOML.** A test runs `install()` 3× over the fixture and asserts the on-disk bytes are identical after run 1, 2, and 3. After install it re-parses the result as TOML to assert validity — using a **dev-only** `@iarna/toml` parse in the test (NOT a runtime dep; add to `devDependencies` only, imported solely from the test). The runtime code never imports it.
+>
+> Backup-first + atomic temp+rename, exactly like the Claude installer (ADR-0004).
+
+**W3 — trust detection.** `codexLifecycleInstaller` accepts the parsed/raw config text and exposes whether the install target is in a trusted project. The installer's `install()` result carries a `trustWarning?: string` (or the adapter/CLI computes it) so `abs install-hooks --harness codex` can either WARN (untrusted cwd) or emit an explicit success line: `"hooks wired — they fire only in TRUSTED Codex projects"`. A best-effort check scans the raw TOML for a `[projects."<cwd>"]` block whose `trust_level = "trusted"`; absent/other ⇒ warn. This is a real output behavior with an acceptance assertion (Task 9 Step 2), not a footnote.
+
 - [ ] **Step 1: Write the failing test:**
 
 ```typescript
@@ -416,12 +434,62 @@ describe('codexLifecycleInstaller', () => {
     await expect(codexLifecycleInstaller({ configPath, baseCommand: 'abs hook' }).install())
       .rejects.toThrow(/symlink/);
   });
+
+  // --- C3: real-config fixture, byte-identical 3 runs, still-valid TOML ---
+  it('is byte-identical across 3 consecutive installs over the REAL-config fixture', async () => {
+    const fixture = readFileSync(
+      join(__dirname, '__fixtures__/codex/config.toml'), 'utf8'); // committed real config, secrets stubbed
+    writeFileSync(configPath, fixture);
+    const installer = codexLifecycleInstaller({ configPath, baseCommand: 'abs hook' });
+    await installer.install();
+    const r1 = readFileSync(configPath);
+    await installer.install();
+    const r2 = readFileSync(configPath);
+    await installer.install();
+    const r3 = readFileSync(configPath);
+    expect(r1.equals(r2)).toBe(true);
+    expect(r2.equals(r3)).toBe(true);
+    // Every unrelated table from the real fixture survives verbatim.
+    const out = r3.toString('utf8');
+    expect(out).toContain('[mcp_servers'); // real config has MCP servers
+    expect(out).toContain('trust_level');
+  });
+
+  it('produces output that still parses as valid TOML (dev-only @iarna/toml in the test)', async () => {
+    const { parse } = await import('@iarna/toml'); // devDependency ONLY — never a runtime import
+    const fixture = readFileSync(join(__dirname, '__fixtures__/codex/config.toml'), 'utf8');
+    writeFileSync(configPath, fixture);
+    await codexLifecycleInstaller({ configPath, baseCommand: 'abs hook' }).install();
+    const out = readFileSync(configPath, 'utf8');
+    expect(() => parse(out)).not.toThrow();
+    const parsed = parse(out) as Record<string, unknown>;
+    expect(parsed.hooks).toBeDefined(); // our [hooks] table round-trips
+  });
+
+  // --- W3: trust detection surfaces in the install report ---
+  it('flags an untrusted target cwd via the install report', async () => {
+    writeFileSync(configPath, 'model = "x"\n[projects."/work/foo"]\ntrust_level = "untrusted"\n');
+    const report = await codexLifecycleInstaller({
+      configPath, baseCommand: 'abs hook', projectCwd: '/work/foo',
+    }).install();
+    expect(report.trustWarning).toMatch(/trust/i);
+  });
+
+  it('omits the trust warning when the target cwd is trusted', async () => {
+    writeFileSync(configPath, 'model = "x"\n[projects."/work/foo"]\ntrust_level = "trusted"\n');
+    const report = await codexLifecycleInstaller({
+      configPath, baseCommand: 'abs hook', projectCwd: '/work/foo',
+    }).install();
+    expect(report.trustWarning).toBeUndefined();
+  });
 });
 ```
 
+- [ ] **Step 1b: Create the real-config fixture (C3).** Copy the live `~/.codex/config.toml` to `src/harness/capabilities/__fixtures__/codex/config.toml`, then stub secrets: replace any `api_key`/`token`/OAuth/credential values with `"REDACTED"`. Keep ALL `[projects.*]`, `[mcp_servers.*]`, `[plugins.*]` tables, the multiline `notify` array, and `trust_level` keys structurally intact (these are exactly the shapes the splice must not disturb). Add `@iarna/toml` to **`devDependencies` only** (`npm i -D @iarna/toml`) — it is imported solely from the test, never from runtime code.
+
 - [ ] **Step 2: Run** `npx vitest run src/harness/capabilities/codex-lifecycle-installer.test.ts` → FAIL (module not found).
 
-- [ ] **Step 3: Write the capability.** Mirror `installer.ts`'s safety primitives (symlink refusal, backup-first, atomic temp+rename) but operate on the raw TOML text + a managed sentinel block. Pseudostructure:
+- [ ] **Step 3: Write the capability.** Mirror `installer.ts`'s safety primitives (symlink refusal, backup-first, atomic temp+rename) but operate on the raw TOML text + a managed sentinel block. **All newline normalization lives in ONE `normalize()` helper** used by both `stripManaged` and `install` (C3 — no split logic). The installer takes an optional `projectCwd` and returns a `trustWarning` (W3). Pseudostructure:
 
 ```typescript
 // src/harness/capabilities/codex-lifecycle-installer.ts
@@ -442,10 +510,39 @@ const CODEX_HOOKS: readonly CodexHookSpec[] = [
   { event: 'PreToolUse',       moment: 'guard',   arg: 'pre-tool-use',       matcher: '', timeout: 5  },
 ];
 
-export interface CodexInstallerOptions { configPath?: string; baseCommand?: string; }
-export interface LifecycleInstaller { install(): Promise<InstallReport>; uninstall(): Promise<UninstallReport>; }
+export interface CodexInstallerOptions {
+  configPath?: string;
+  baseCommand?: string;
+  /** Trusted-project check target (W3). When set, install() reports trustWarning if untrusted. */
+  projectCwd?: string;
+}
+/** InstallReport gains an optional W3 trust warning (extend the shared type or widen here). */
+export interface LifecycleInstaller {
+  install(): Promise<InstallReport & { trustWarning?: string }>;
+  uninstall(): Promise<UninstallReport>;
+}
 
 function defaultConfigPath(): string { return join(homedir(), '.codex', 'config.toml'); }
+
+/** SINGLE source of newline normalization (C3) — both stripManaged and install use this. */
+function normalize(toml: string): string {
+  return toml.replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n');
+}
+
+/**
+ * W3: best-effort trust check. Returns a warning string when the target cwd is NOT
+ * a trusted Codex project (so wired hooks would silently never fire), else undefined.
+ * Scans the raw TOML for `[projects."<cwd>"]` … `trust_level = "trusted"`.
+ */
+function trustWarningFor(toml: string, projectCwd: string | undefined): string | undefined {
+  if (!projectCwd) return undefined;
+  // Find the [projects."<cwd>"] table header, then its trust_level within that block.
+  const header = `[projects.${JSON.stringify(projectCwd)}]`;
+  const i = toml.indexOf(header);
+  const block = i >= 0 ? toml.slice(i, toml.indexOf('\n[', i + 1) >= 0 ? toml.indexOf('\n[', i + 1) : undefined) : '';
+  if (/trust_level\s*=\s*"trusted"/.test(block)) return undefined;
+  return `Codex skips managed hooks in untrusted projects — set trust_level = "trusted" for ${projectCwd} or the hooks will never fire.`;
+}
 
 function assertNotSymlink(path: string): void {
   try { if (lstatSync(path).isSymbolicLink()) throw new Error(`config.toml at ${path} is a symlink — refusing to write through it.`); }
@@ -463,15 +560,15 @@ function atomicWrite(path: string, content: string): void {
   catch (e) { try { rmSync(tmp, { force: true }); } catch {} throw e; }
 }
 
-/** Strip an existing managed block (idempotency + uninstall). Returns text with the block + its surrounding blank lines removed. */
+/** Strip an existing managed block (idempotency + uninstall). Normalizes via the SINGLE normalize(). */
 function stripManaged(toml: string): string {
   const b = toml.indexOf(BEGIN);
-  if (b < 0) return toml;
+  if (b < 0) return normalize(toml);
   const e = toml.indexOf(END, b);
-  if (e < 0) return toml; // malformed — leave as-is rather than nuke
-  const before = toml.slice(0, b).replace(/\n+$/, '\n');
-  const after = toml.slice(e + END.length).replace(/^\n+/, '');
-  return `${before}${after ? `\n${after}` : ''}`;
+  if (e < 0) return normalize(toml); // malformed — leave content as-is (just normalize), don't nuke
+  const before = toml.slice(0, b);
+  const after = toml.slice(e + END.length);
+  return normalize(`${before}${after}`);
 }
 
 function renderBlock(baseCommand: string): string {
@@ -493,35 +590,40 @@ export function codexLifecycleInstaller(options: CodexInstallerOptions = {}): Li
   return {
     install: async () => {
       assertNotSymlink(configPath);
-      const current = readText(configPath);
-      const stripped = stripManaged(current);
+      const raw = readText(configPath);
+      const current = normalize(raw);              // normalize once, compare normalized (C3)
+      const trustWarning = trustWarningFor(raw, options.projectCwd); // W3
+      const stripped = stripManaged(raw);          // already normalized inside
       const block = renderBlock(baseCommand);
       const next = stripped.trim().length > 0 ? `${stripped.replace(/\n+$/, '\n')}\n${block}\n` : `${block}\n`;
-      if (next === current) return { wired: MOMENTS };
+      if (next === current) return { wired: MOMENTS, ...(trustWarning ? { trustWarning } : {}) };
       backup(configPath);
       atomicWrite(configPath, next);
-      return { wired: MOMENTS };
+      return { wired: MOMENTS, ...(trustWarning ? { trustWarning } : {}) };
     },
     uninstall: async () => {
       assertNotSymlink(configPath);
-      const current = readText(configPath);
-      if (!current.includes(BEGIN)) return { removed: [] };
+      const raw = readText(configPath);
+      if (!raw.includes(BEGIN)) return { removed: [] };
       backup(configPath);
-      atomicWrite(configPath, stripManaged(current).replace(/\n{3,}/g, '\n\n'));
+      atomicWrite(configPath, stripManaged(raw)); // stripManaged already normalizes
       return { removed: MOMENTS };
     },
   };
 }
 ```
 
-> Idempotency contract: install always strips any prior managed block then re-appends a freshly rendered one. Re-running with the same `baseCommand` reproduces byte-identical text (test 2 asserts this), so the early `next === current` return makes the second run a true no-op (no backup, no write).
+> Idempotency contract (C3, test-proven): `normalize()` is the SINGLE newline authority — both `stripManaged` and the `current`/`next` comparison run through it, so there is no normalization drift between strip and write. Install strips any prior managed block then re-appends a freshly rendered one; re-running with the same `baseCommand` reproduces BYTE-IDENTICAL text (the 3-run fixture test asserts `Buffer.equals`), so the early `next === current` return makes runs 2 and 3 true no-ops (no backup, no write). The `@iarna/toml` re-parse test proves the spliced result is still valid TOML.
 
 - [ ] **Step 4: Run** `npx vitest run src/harness/capabilities/codex-lifecycle-installer.test.ts` → PASS.
 
 - [ ] **Step 5: Commit**
 ```bash
-git add src/harness/capabilities/codex-lifecycle-installer.ts src/harness/capabilities/codex-lifecycle-installer.test.ts
-git commit -m "feat(harness): Codex TOML [hooks] lifecycle installer (#67)"
+git add src/harness/capabilities/codex-lifecycle-installer.ts \
+        src/harness/capabilities/codex-lifecycle-installer.test.ts \
+        src/harness/capabilities/__fixtures__/codex/config.toml \
+        package.json package-lock.json
+git commit -m "feat(harness): Codex TOML [hooks] lifecycle installer — proven-idempotent, trust-aware (#67)"
 ```
 
 ---
@@ -530,7 +632,9 @@ git commit -m "feat(harness): Codex TOML [hooks] lifecycle installer (#67)"
 
 **Files:** Create `src/ingest/codex-jsonl.ts` · Test `src/ingest/codex-jsonl.test.ts` · Fixtures `src/ingest/__fixtures__/codex/*.jsonl`
 
-The parser is **stateful per file**: a `session_meta` line seeds `{ sessionId, cwd }`; conversation prose is taken from `response_item` `message` lines; `event_msg` mirrors and machine lines are skipped. Reuses `ParsedEntry`/`normalizeWorktreePath` from `claude-jsonl.ts` (import them — do not duplicate). Tool-anchor extraction from `function_call`/`apply_patch` lines is **out of scope for this task** (see scope note); `toolAnchors` is always `[]` for now, so Codex contributes prose-only observations (still a full capture/recall win; anchoring is a follow-on).
+The parser takes the transcript text plus the absolute path and an optional `cwdHint`. The **sessionId is derived from the filename UUID** (`sessionIdFromPath`) so it is known on every read, header or not (W4 — enables cursor streaming). The `session_meta` header, when present in the read, refines the `cwd`; otherwise the `cwdHint` (from the kv_meta cache, supplied by the ingest layer) provides it. Conversation prose is taken from `response_item` `message` lines; `event_msg` mirrors and machine lines are skipped. Reuses `ParsedEntry` from `claude-jsonl.ts` (import — do not duplicate). Tool-anchor extraction from `function_call`/`apply_patch` lines is **out of scope for this task** (see scope note); `toolAnchors` is always `[]` for now, so Codex contributes prose-only observations (still a full capture/recall win; anchoring is a follow-on).
+
+> **Returns `{ entries, cwd }`** — the parser also returns the `cwd` it observed in `session_meta` (or undefined), so the ingest layer can WRITE it to the kv_meta cache after a read that included the header. This is the seam that lets a later header-less resume recover the project.
 
 - [ ] **Step 1: Create a real fixture.** Copy ~12 representative lines from a real rollout into `src/ingest/__fixtures__/codex/rollout-sample.jsonl` — at minimum: one `session_meta`, one `response_item`/`message`/`user` (with `input_text`), one `response_item`/`message`/`assistant` (with `output_text`), one `response_item`/`function_call`, one `event_msg`/`user_message`, one `event_msg`/`agent_message`, one `turn_context`. Strip any secrets (auth tokens, full base_instructions text — truncate to a short stub). Keep the structural shapes intact.
 
@@ -545,18 +649,21 @@ import { codexParseTranscript } from './codex-jsonl.js';
 
 const fixture = readFileSync(join(__dirname, '__fixtures__/codex/rollout-sample.jsonl'), 'utf8');
 
+const REAL_PATH = '/abs/rollout-2026-05-14T08-56-53-019e2658-c8b0-7230-9b59-c3646fbf0c7b.jsonl';
+
 describe('codexParseTranscript', () => {
-  it('seeds sessionId + cwd from session_meta and applies them to every entry', () => {
-    const entries = codexParseTranscript(fixture, '/abs/rollout-…-019e2658-c8b0-….jsonl');
+  it('takes sessionId from the FILENAME and cwd from session_meta, applied to every entry', () => {
+    const { entries, cwd } = codexParseTranscript(fixture, REAL_PATH);
     expect(entries.length).toBeGreaterThan(0);
+    expect(cwd).toBe('/Users/.../PGIntegra'); // returned for the kv_meta cache
     for (const e of entries) {
-      expect(e.sessionId).toBe('019e2658-c8b0-7230-9b59-c3646fbf0c7b');
+      expect(e.sessionId).toBe('019e2658-c8b0-7230-9b59-c3646fbf0c7b'); // FROM FILENAME (W4)
       expect(e.cwd).toBe('/Users/.../PGIntegra');
     }
   });
 
   it('extracts user prose from response_item input_text and assistant prose from output_text', () => {
-    const entries = codexParseTranscript(fixture, '/abs/x.jsonl');
+    const { entries } = codexParseTranscript(fixture, REAL_PATH);
     const user = entries.find((e) => e.role === 'user');
     const assistant = entries.find((e) => e.role === 'assistant');
     expect(user?.text).toContain('AGENTS.md instructions'); // or whatever the fixture user text is
@@ -564,20 +671,34 @@ describe('codexParseTranscript', () => {
   });
 
   it('skips event_msg mirrors, turn_context, function_call, and session_meta (no double counting)', () => {
-    const entries = codexParseTranscript(fixture, '/abs/x.jsonl');
+    const { entries } = codexParseTranscript(fixture, REAL_PATH);
     // Only message lines become entries; the agent_message/user_message event_msg twins are dropped.
     const roles = entries.map((e) => e.role).sort();
     expect(roles.every((r) => r === 'user' || r === 'assistant')).toBe(true);
   });
 
-  it('falls back to the filename UUID when session_meta is absent', () => {
+  it('groups by FILENAME UUID even on a header-less slice; uses cwdHint for project (W4 resume)', () => {
+    // Simulate a cursor-resumed slice: drop the session_meta header line entirely.
     const noMeta = fixture.split('\n').filter((l) => !l.includes('"session_meta"')).join('\n');
-    const entries = codexParseTranscript(noMeta, '/x/rollout-2026-05-14T08-56-53-019e2658-c8b0-7230-9b59-c3646fbf0c7b.jsonl');
-    expect(entries[0]?.sessionId).toBe('019e2658-c8b0-7230-9b59-c3646fbf0c7b');
+    const { entries, cwd } = codexParseTranscript(noMeta, REAL_PATH, '/cached/cwd');
+    expect(entries[0]?.sessionId).toBe('019e2658-c8b0-7230-9b59-c3646fbf0c7b'); // filename, no header needed
+    expect(entries[0]?.cwd).toBe('/cached/cwd');                                // from the hint
+    expect(cwd).toBeUndefined();                                                // no header in this slice
+  });
+
+  it('extracts the UUID from REAL rollout filenames (N5 regex regression)', () => {
+    const noMeta = '{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}}\n';
+    // Two real on-disk filenames — the timestamp-anchored regex must capture exactly the trailing UUID.
+    for (const [path, want] of [
+      ['/s/rollout-2026-04-21T13-22-02-019db0d9-471b-7ce0-aa8c-d9e3485a8be1.jsonl', '019db0d9-471b-7ce0-aa8c-d9e3485a8be1'],
+      ['/s/rollout-2026-05-14T08-56-53-019e2658-c8b0-7230-9b59-c3646fbf0c7b.jsonl', '019e2658-c8b0-7230-9b59-c3646fbf0c7b'],
+    ] as const) {
+      expect(codexParseTranscript(noMeta, path).entries[0]?.sessionId).toBe(want);
+    }
   });
 
   it('never throws on malformed lines — a bad line is a skip', () => {
-    expect(() => codexParseTranscript('not json\n{"type":"response_item"}\n', '/x.jsonl')).not.toThrow();
+    expect(() => codexParseTranscript('not json\n{"type":"response_item"}\n', REAL_PATH)).not.toThrow();
   });
 });
 ```
@@ -607,9 +728,17 @@ function asString(v: unknown): string | undefined {
   return typeof v === 'string' ? v : undefined;
 }
 
-/** Extract the session UUID from a `rollout-<ts>-<UUID>.jsonl` filename. */
+/**
+ * Extract the session UUID from a `rollout-<ts>-<UUID>.jsonl` filename (N5).
+ * Anchored on the ISO timestamp shape so the greedy timestamp segment cannot
+ * eat into the UUID. Verified against the REAL filenames
+ * `rollout-2026-04-21T13-22-02-019db0d9-471b-7ce0-aa8c-d9e3485a8be1.jsonl`
+ * and `rollout-2026-05-14T08-56-53-019e2658-c8b0-7230-9b59-c3646fbf0c7b.jsonl`.
+ */
 function sessionIdFromPath(path: string): string | undefined {
-  const m = path.match(/rollout-[\dT-]+-([0-9a-f-]{36})\.jsonl$/i);
+  const m = path.match(
+    /rollout-\d{4}-\d{2}-\d{2}T[\d-]+-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i,
+  );
   return m?.[1];
 }
 
@@ -635,15 +764,30 @@ function extractContent(content: unknown): string {
   return parts.join('\n\n').trim();
 }
 
+/** Result of parsing a Codex rollout slice: the entries + any cwd seen in session_meta. */
+export interface CodexParseResult {
+  entries: ParsedEntry[];
+  /** The cwd from `session_meta` if this slice included the header, else undefined. */
+  cwd: string | undefined;
+}
+
 /**
- * Parse a whole Codex rollout transcript into ParsedEntry[]. Stateful: the
- * leading `session_meta` seeds sessionId+cwd; the filename UUID is the fallback.
- * Never throws — malformed lines are skipped.
+ * Parse a Codex rollout transcript (whole file OR a cursor-resumed slice) into
+ * entries. The sessionId is the FILENAME UUID (always present, even mid-file —
+ * W4), so a `start > 0` slice that skips the header still groups correctly. The
+ * `cwd` comes from `session_meta` when the slice includes it, else from `cwdHint`
+ * (supplied by the ingest layer from its kv_meta cache). Never throws — malformed
+ * lines are skipped.
  */
-export function codexParseTranscript(text: string, absPath: string): ParsedEntry[] {
+export function codexParseTranscript(
+  text: string,
+  absPath: string,
+  cwdHint?: string,
+): CodexParseResult {
   const entries: ParsedEntry[] = [];
-  let sessionId = sessionIdFromPath(absPath);
-  let cwd: string | undefined;
+  const sessionId = sessionIdFromPath(absPath); // FILENAME-derived id (W4)
+  let cwd = cwdHint;
+  let headerCwd: string | undefined;
 
   for (const raw of text.split('\n')) {
     const line = raw.trim();
@@ -655,20 +799,19 @@ export function codexParseTranscript(text: string, absPath: string): ParsedEntry
     const payload = isRecord(obj.payload) ? obj.payload : undefined;
 
     if (type === 'session_meta' && payload) {
-      sessionId = asString(payload.id) ?? sessionId;
-      cwd = asString(payload.cwd) ?? cwd;
-      continue;
+      headerCwd = asString(payload.cwd) ?? headerCwd;
+      cwd = headerCwd ?? cwd;
+      continue; // session_meta.id is NOT used for grouping — the filename UUID is canonical (W4)
     }
     if (type !== 'response_item' || !payload) continue;       // skip event_msg/turn_context/etc
     if (payload.type !== 'message') continue;                  // skip function_call/reasoning/etc
     const role = asString(payload.role);
     if (role !== 'user' && role !== 'assistant') continue;     // skip 'developer' system turns
-    const sid = sessionId;
-    if (!sid) continue;                                        // cannot group without an id
+    if (!sessionId) continue;                                  // cannot group without an id (no UUID in filename)
     const textOut = extractContent(payload.content);
     if (textOut.length === 0) continue;                        // tool-only / empty
     entries.push({
-      sessionId: sid,
+      sessionId,
       role,
       text: textOut,
       toolAnchors: [],
@@ -676,7 +819,7 @@ export function codexParseTranscript(text: string, absPath: string): ParsedEntry
       timestamp: asString(obj.timestamp),
     });
   }
-  return entries;
+  return { entries, cwd: headerCwd };
 }
 ```
 
@@ -698,72 +841,109 @@ git commit -m "feat(ingest): Codex rollout transcript parser (#67)"
 
 **Files:** Modify `src/ingest/ingest.ts` · Test `src/ingest/ingest.test.ts`
 
-`ingestFile` (`ingest.ts:190`) calls `parseLine(line)` per line and groups by `entry.sessionId`. Codex's parser is whole-file + stateful, so we cannot keep the per-line `parseLine` for Codex. Introduce a **format dispatch** keyed by the transcript path: a Codex path (`/.codex/sessions/` or filename `rollout-…`) parses the whole text up front into entries, then the existing per-entry write/seed loop runs over them. Claude's path is **byte-for-byte unchanged** (still streamed line-by-line via `parseLine`).
+`ingestFile` (`ingest.ts:190`) calls `parseLine(line)` per line and groups by `entry.sessionId`. Codex lines never satisfy `parseLine`, so route a Codex path through `codexParseTranscript`. **Two hard requirements drive the design:**
 
-Minimal, regression-safe approach: add a `parseTranscriptFile(absPath, text) → ParsedEntry[]` selector used **only** for Codex; keep Claude on the streaming `parseLine` path. Since `ingestSingleSession` already receives the absolute `transcriptPath`, the selector decides by path.
+1. **W4 — `Stop` fires PER TURN.** `createObservation` (`memory-store.ts:326`) is a plain `INSERT` with NO dedup/UNIQUE/`ON CONFLICT` (verified). So we MUST stream from the persisted byte cursor exactly like Claude — resume from `startOffset`, never re-read prior turns — or each `Stop` re-inserts every earlier turn (quadratic duplicate explosion). Because the Codex sessionId comes from the FILENAME (Task 4), a `start > 0` slice still groups correctly.
+2. **C1 — no harness id on the real path.** `dispatchHook('session-end') → handleSessionEnd → ingestSingleSession(memory, transcriptPath)` carries no harness. So the format AND the namespace are derived INSIDE ingest from the path, via `isCodexTranscript(absPath)`. No `harnessId` param is threaded.
 
-- [ ] **Step 1: Write the failing test** — feed a Codex fixture through `ingestSingleSession` against a temp store and assert observations land grouped under one session:
+Since `ingestFile` already receives `startOffset`, the Codex branch reads the slice from that offset (cursor streaming), feeds it to `codexParseTranscript(slice, absPath, cwdHint)`, then runs each entry through the SAME `resolveSession`/`indexer.write`/`seedAnchors` body the Claude loop uses (extract that body into `writeEntry(...)` so both paths share it — no logic drift). Claude's path stays byte-for-byte unchanged.
+
+- [ ] **Step 1: Write the failing test** — feed a Codex fixture through `ingestSingleSession`, assert one namespaced session + prose observations, AND drive the REAL `handleSessionEnd` path (C1):
 
 ```typescript
-// add to src/ingest/ingest.test.ts
-it('ingests a Codex rollout transcript: one session, prose observations (#67)', async () => {
-  const memory = await openTempMemory(); // existing test helper pattern
+// add to src/ingest/ingest.test.ts (uses the existing newMemory() helper)
+import { handleSessionEnd } from '../hooks/session-end.js';
+
+it('ingests a Codex rollout via ingestSingleSession: one codex:-namespaced session, prose obs (#67)', async () => {
+  const memory = newMemory();
   const src = join(__dirname, '__fixtures__/codex/rollout-sample.jsonl');
-  // Place under a codex-shaped path so the selector picks the Codex parser.
-  const codexPath = join(tmpDir, '.codex/sessions/2026/05/14/rollout-2026-05-14T08-56-53-019e2658-c8b0-7230-9b59-c3646fbf0c7b.jsonl');
+  // codex-shaped path → the selector picks the Codex parser + the codex: namespace.
+  const codexPath = join(dir, '.codex/sessions/2026/05/14/rollout-2026-05-14T08-56-53-019e2658-c8b0-7230-9b59-c3646fbf0c7b.jsonl');
   mkdirSync(dirname(codexPath), { recursive: true });
   copyFileSync(src, codexPath);
   const result = await ingestSingleSession(memory, codexPath);
   expect(result.observationsAdded).toBeGreaterThan(0);
   const sessions = memory.store.listSessions();
   expect(sessions.length).toBe(1);
+  expect(sessions[0]?.externalId).toBe('codex:019e2658-c8b0-7230-9b59-c3646fbf0c7b'); // W1 namespaced
+});
+
+it('the REAL dispatch path (handleSessionEnd) namespaces a Codex transcript codex:, Claude stays bare (C1)', async () => {
+  const memory = newMemory();
+  // Codex transcript at a codex-shaped path.
+  const codexPath = join(dir, '.codex/sessions/2026/05/14/rollout-2026-05-14T08-56-53-019e2658-c8b0-7230-9b59-c3646fbf0c7b.jsonl');
+  mkdirSync(dirname(codexPath), { recursive: true });
+  copyFileSync(join(__dirname, '__fixtures__/codex/rollout-sample.jsonl'), codexPath);
+  // A Claude transcript at a normal projects path.
+  const claudePath = join(projectsDir, '-Users-me-foo/sess.jsonl');
+  mkdirSync(dirname(claudePath), { recursive: true });
+  writeFileSync(claudePath, userLine('claude-sess', '/Users/me/foo', 'hello', 'u1'));
+  // Drive the actual hook handler used by dispatch — inject the same `memory`.
+  await handleSessionEnd({ transcriptPath: codexPath },  { ingest: (p) => ingestSingleSession(memory, p) });
+  await handleSessionEnd({ transcriptPath: claudePath }, { ingest: (p) => ingestSingleSession(memory, p) });
+  const ids = memory.store.listSessions().map((s) => s.externalId).sort();
+  expect(ids).toEqual(['claude-sess', 'codex:019e2658-c8b0-7230-9b59-c3646fbf0c7b']);
 });
 ```
 
-- [ ] **Step 2: Run** → FAIL (Claude `parseLine` rejects every Codex line; 0 observations, 0 sessions).
+> The `handleSessionEnd(payload, { ingest })` injection seam already exists (`session-end.test.ts` uses it). This test proves the namespace flows on the REAL path with ZERO harness-awareness in dispatch/handlers — the whole point of C1.
 
-- [ ] **Step 3: Wire the selector.** In `ingest.ts`:
+- [ ] **Step 2: Run** → FAIL (Claude `parseLine` rejects every Codex line; 0 observations; no namespacing).
+
+- [ ] **Step 3: Wire the selector + cursor streaming + cwd cache + namespacing.** In `ingest.ts`:
 
 ```typescript
+import { readFileSync } from 'node:fs';
 import { codexParseTranscript } from './codex-jsonl.js';
+import { namespacedExternalId } from './namespacing.js';
 
-/** True when the path is a Codex rollout transcript. */
-function isCodexTranscript(absPath: string): boolean {
-  return absPath.includes('/.codex/sessions/') || /\/rollout-[\dT-]+-[0-9a-f-]{36}\.jsonl$/i.test(absPath);
+const CODEX_CWD_PREFIX = 'codex:cwd:'; // kv_meta cache of the header cwd, keyed by transcript path
+
+/** True when the path is a Codex rollout transcript (drives parser + namespace). */
+export function isCodexTranscript(absPath: string): boolean {
+  return absPath.includes('/.codex/sessions/') ||
+    /\/rollout-\d{4}-\d{2}-\d{2}T[\d-]+-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$/i.test(absPath);
 }
 ```
 
-In `ingestFile`, branch once at the top: for a Codex path, `readFileSync` the slice from `startOffset` and run `codexParseTranscript`, then iterate entries through the **same** `resolveSession`/`indexer.write`/`seedAnchors` body the Claude loop uses (extract that body into a small `writeEntry(memory, entry, project, …)` helper so both paths share it and there is no logic drift). For the Claude path, keep the existing `for await (const line of rl)` streaming loop verbatim. Advance the cursor to file size for the Codex path (whole-file parse; the cursor still gives "skip unchanged files" incrementality at the file granularity, which is all `ingestSingleSession` needs — a Codex rollout grows append-only like Claude's, and re-parsing from offset 0 each grow is acceptable for single-session ingest; if byte-precise resume is wanted later, that's a follow-on).
+In `ingestFile`, branch once at the top:
 
-> Honesty note on Codex incrementality: the Claude path resumes mid-file by byte offset; the Codex whole-file parse re-reads from the cursor `start` each run. Because `session_meta` (carrying the id) is at the FILE HEAD, a `start > 0` slice would miss it — so for Codex we always parse from offset 0 and rely on the filename-UUID fallback ONLY if a future change streams. **Decision: for Codex, read from offset 0 (not the cursor) so `session_meta` is always seen, then write the cursor to EOF.** Re-ingesting an unchanged file is still skipped by the `cursor >= size` guard in `ingestOneTranscript` (`ingest.ts:289`), so a grown file re-parses fully but already-written observations are tolerated (the existing at-least-once contract). This is correct for single-session capture; document it.
+- **Codex path:** read the slice `[startOffset, EOF)` via `createReadStream(absPath, { start: startOffset, encoding: 'utf8' })` (cursor streaming, W4 — NOT offset 0; honors the ADR-0001 footprint discipline like Claude). Buffer the slice text (a single rollout file), tracking bytes consumed for the cursor. Recover the cached header cwd: `cwdHint = memory.store.getMeta(CODEX_CWD_PREFIX + absPath) ?? undefined`. Run `const { entries, cwd } = codexParseTranscript(sliceText, absPath, cwdHint)`. If `cwd` is non-undefined (this slice saw the header), cache it: `memory.store.setMeta(CODEX_CWD_PREFIX + absPath, cwd)`. Then iterate `entries` through `writeEntry(...)`, computing `externalId = namespacedExternalId('codex', entry.sessionId)` and `project = entry.cwd ? projectSlug(entry.cwd) : project`. Advance `offset` to EOF (startOffset + bytes read).
+- **Claude path:** the existing `for await (const line of rl)` streaming loop verbatim, calling `writeEntry(...)` with `externalId = namespacedExternalId('claude-code', entry.sessionId)` (= bare id — regression-safe).
 
-- [ ] **Step 4: Run** `npm run check` (full suite — the regression gate). Claude ingest tests MUST stay green (the selector only diverts Codex paths). The new Codex test passes.
+`writeEntry(memory, sessionCache, bindingCache, externalId, project, entry, absPath, tally)` wraps the resolveSession → indexer.write → seedAnchors body unchanged; both paths call it so there is zero logic drift. The cursor advances to the bytes actually consumed (Codex: slice length added to `startOffset`; Claude: per-line as today), so a grown file resumes from where it stopped — no re-read, no duplicates.
+
+> **Why this is correct and dedup-free (W4):** the cursor `>= size` guard in `ingestOneTranscript` (`ingest.ts:289`) skips an unchanged file entirely. When a Codex rollout GROWS (next `Stop`), we read only `[cursor, EOF)` — the new turns — and append them. Prior turns are already past the cursor and are never re-read, so the no-dedup `INSERT` never double-writes them. The filename-UUID sessionId means the header-less tail slice still groups under the right session; the cached cwd gives it the right project. This is the same at-least-once contract Claude already relies on.
+
+> **Dependency:** this step uses `namespacedExternalId` and the path-derived namespace, which Task 6 introduces. **Do Task 6 first** (its helper + unit test), then this step wires it at the seam. The commit below assumes the helper exists.
+
+- [ ] **Step 4: Run** `npm run check` (full suite — the regression gate). Claude ingest tests MUST stay green (the selector only diverts Codex paths). The two new Codex tests pass — including the REAL `handleSessionEnd` C1 test.
 
 - [ ] **Step 5: Commit**
 ```bash
 git add src/ingest/ingest.ts src/ingest/ingest.test.ts
-git commit -m "feat(ingest): per-format parser seam — route Codex rollouts to the Codex parser (#67)"
+git commit -m "feat(ingest): per-format seam + cursor-streamed Codex ingest, path-derived codex: namespace (W4/C1, #67)"
 ```
 
 ---
 
-## Task 6: W1 — per-harness `external_id` namespacing (migration-safe)
+## Task 6: W1 — per-harness `external_id` namespacing (migration-safe, path-derived)
 
-**Files:** Modify `src/store/memory-store.ts`, `src/ingest/session-binding.ts`, `src/ingest/ingest.ts` · Test `src/ingest/namespacing.test.ts`
+**Files:** Create `src/ingest/namespacing.ts` (or add to `src/ingest/session-binding.ts`) · Test `src/ingest/namespacing.test.ts`. **Do this BEFORE Task 5 Step 3** (Task 5 consumes the helper).
 
 **The collision:** `getSessionByExternalId(externalId)` and the `session-project:<externalId>` binding both key by the raw harness session id. With two harnesses on one DB, a Codex `session_meta.id` and a Claude `sessionId` could (theoretically) collide and merge into one store session, mixing two harnesses' transcripts. The design doc (line 117) mandates namespacing the id by source.
 
-**Chosen approach — namespace at the ingest boundary, NOT in the store:** prefix the externalId with the harness id when it enters the store, e.g. `codex:019e2658-…`. The store stays harness-agnostic (it just sees a different opaque string); the binding key composes naturally (`session-project:codex:019e2658-…`).
+**Chosen approach — namespace at the ingest boundary, derived from the PATH (C1):** the harness is NOT threaded as a param (the real `dispatchHook('session-end')` path carries none). Instead `ingestFile` already calls `isCodexTranscript(absPath)` (Task 5) to choose the parser — the SAME classification chooses the namespace. The store stays harness-agnostic (it just sees a different opaque string); the binding key composes naturally (`session-project:codex:019e2658-…`).
 
-**Migration safety (the hard requirement):** every EXISTING Claude session row was written with a RAW (un-prefixed) externalId. Prefixing Claude's ids going forward would orphan all existing rows + bindings. Two ways to stay safe; pick the **leave-Claude-bare** option:
+**Migration safety (the hard requirement):** every EXISTING Claude session row was written with a RAW (un-prefixed) externalId. Prefixing Claude's ids going forward would orphan all existing rows + bindings. Pick the **leave-Claude-bare** option:
 
 - **Claude keeps bare ids** (no prefix) — its existing rows resolve unchanged, zero migration.
 - **Codex (and every future harness) gets a `<harnessId>:` prefix.** Codex is brand-new, so there are no pre-existing bare Codex rows to migrate.
 
-This makes namespacing **additive**: Claude is the un-prefixed "default namespace"; new harnesses are explicitly namespaced. Collision is now impossible (a Codex id is always `codex:…`, never bare). Implement as a pure helper so it is unit-testable and the rule lives in one place:
+This makes namespacing **additive**: Claude is the un-prefixed "default namespace"; new harnesses are explicitly namespaced. Collision is now impossible (a Codex id is always `codex:…`, never bare). A pure helper keeps the rule in one place:
 
 ```typescript
-// src/ingest/session-binding.ts (or a small src/ingest/namespacing.ts — keep it next to the binding)
+// src/ingest/namespacing.ts
 /**
  * Namespace a harness session id for storage (W1, #67). Claude Code keeps its
  * BARE id (migration-safe: existing rows + bindings written before namespacing
@@ -775,14 +955,16 @@ export function namespacedExternalId(harnessId: string, rawSessionId: string): s
 }
 ```
 
-**Where it's applied:** `ingestSingleSession` knows the transcript path → knows the harness. Thread the harness id into ingest. Cleanest seam: `ingestSingleSession(memory, transcriptPath, harnessId?)` — default `'claude-code'` (regression). The Codex adapter's `TranscriptSource` call passes `'codex'`. Inside `ingestFile`, when grouping, call `namespacedExternalId(harnessId, entry.sessionId)` before `resolveSession`/binding lookup. The binding writer (`writeBinding`) and `set_session_project` MCP/CLI path must namespace identically — but those are keyed by the CURRENT session's harness; for now they remain Claude-only callers (`set-session-project` is invoked from Claude flows), so passing the default keeps them correct. Document that a future Codex `set-session-project` must namespace too.
+**How the path drives the harness id:** in `ingestFile`, the Codex branch passes `'codex'` to `namespacedExternalId`; the Claude branch passes `'claude-code'` (= bare). Both branches already KNOW which they are because they were selected by `isCodexTranscript(absPath)` — so the namespace is path-derived, not param-threaded. The binding lookup (`readBinding`) inside `resolveSession` is keyed by the SAME already-namespaced `externalId`, so the binding namespace matches automatically. **No `harnessId` param is added to `ingestSingleSession`/`TranscriptSource`** — that threading was dead on the real capture path (C1).
 
-- [ ] **Step 1: Write the failing test:**
+> Follow-on (out of scope): a future Codex `set-session-project` (the MCP/CLI binding writer invoked from a CURRENT Codex session) must namespace its key the same way. Today `set-session-project` is a Claude-only caller, so it stays bare and correct.
+
+- [ ] **Step 1: Write the failing unit test (the integration test lives in Task 5):**
 
 ```typescript
 // src/ingest/namespacing.test.ts
 import { describe, expect, it } from 'vitest';
-import { namespacedExternalId } from './session-binding.js';
+import { namespacedExternalId } from './namespacing.js';
 
 describe('namespacedExternalId (W1)', () => {
   it('leaves Claude Code ids bare (migration-safe)', () => {
@@ -792,32 +974,20 @@ describe('namespacedExternalId (W1)', () => {
     expect(namespacedExternalId('codex', '019e2658')).toBe('codex:019e2658');
   });
 });
-
-describe('two harnesses, same raw id → distinct store sessions (integration)', () => {
-  it('a Claude session and a Codex session with the SAME raw id do not merge', async () => {
-    const memory = await openTempMemory();
-    // Claude transcript with sessionId "DUPE" → stored bare as "DUPE".
-    // Codex rollout with session_meta.id "DUPE" → stored as "codex:DUPE".
-    // (Build both fixtures with the literal id "DUPE".)
-    await ingestSingleSession(memory, claudeDupePath);           // default harness
-    await ingestSingleSession(memory, codexDupePath, 'codex');
-    const ids = memory.store.listSessions().map((s) => s.externalId).sort();
-    expect(ids).toEqual(['DUPE', 'codex:DUPE']);
-    expect(memory.store.listSessions().length).toBe(2);
-  });
-});
 ```
 
-- [ ] **Step 2: Run** → FAIL (`namespacedExternalId` missing; both ingest into one session "DUPE").
+> The two-harness-same-raw-id integration assertion is the Task 5 C1 test (`handleSessionEnd` drives a Codex path → `codex:`, a Claude path → bare). Migration safety is proven by the EXISTING Claude session/binding suite staying green (they pass bare ids and still resolve).
 
-- [ ] **Step 3: Implement** the helper + thread `harnessId` through `ingestSingleSession` → `ingestOneTranscript` → `ingestFile` → the grouping call. Apply `namespacedExternalId` immediately before `resolveSession` and before any `readBinding` lookup so the binding namespace matches. Claude's default keeps every existing test and row valid.
+- [ ] **Step 2: Run** `npx vitest run src/ingest/namespacing.test.ts` → FAIL (`namespacing.js` missing).
 
-- [ ] **Step 4: Run** `npm run check` — full suite green (existing Claude session/binding tests prove migration safety: they pass un-prefixed ids and still resolve).
+- [ ] **Step 3: Implement** the helper. (It is consumed by Task 5 Step 3 at the `ingestFile` seam.)
+
+- [ ] **Step 4: Run** `npx vitest run src/ingest/namespacing.test.ts` → PASS.
 
 - [ ] **Step 5: Commit**
 ```bash
-git add src/ingest/session-binding.ts src/ingest/ingest.ts src/ingest/namespacing.test.ts
-git commit -m "feat(ingest): per-harness external_id namespacing — Claude bare, others prefixed (W1, #67)"
+git add src/ingest/namespacing.ts src/ingest/namespacing.test.ts
+git commit -m "feat(ingest): namespacedExternalId helper — Claude bare, others prefixed (W1, #67)"
 ```
 
 ---
@@ -890,6 +1060,7 @@ export function codexAdapter(): HarnessAdapter {
   return {
     id: 'codex',
     displayName: 'Codex CLI',
+    mcpBinary: 'codex',                                   // C2: cmdUninstall routes MCP unregister to this binary
     detect: async () => {
       try { await access(join(homedir(), '.codex')); return true; } catch { return false; }
     },
@@ -907,7 +1078,9 @@ export function codexAdapter(): HarnessAdapter {
 }
 ```
 
-> The adapter's `install()`/`uninstall()` map cleanly onto the CLI's `cmdInstallHooks`/`cmdSetup`/`cmdUninstall`, which already iterate `resolveHarnesses(args)` and call `adapter.install()`/`adapter.registerMcp()`/`adapter.uninstall()` (`cli.ts:404,455,459`). No CLI change is needed beyond Task 8 making the adapter resolvable by id. `cmdUninstall` calls `unregisterMcpServer(spawnCapture)` directly with the Claude default — a follow-on should route uninstall MCP through the adapter so `--harness codex` unregisters from Codex; for THIS issue, `abs uninstall --harness codex` removes Codex hooks (via the adapter) but the direct `unregisterMcpServer` still targets `claude`. **Decision: thread the binary into `cmdUninstall`'s MCP unregister too** — small add: resolve the harness, and if it's codex pass `{ binary: 'codex' }` (the generalized `unregisterMcpServer` from Task 1 already supports it). Add this in Task 8 alongside registry wiring.
+> **`HarnessAdapter` gains an optional `mcpBinary?: string`** (the CLI that owns `mcp add/list/remove`). The Claude adapter sets `mcpBinary: 'claude'` (or omits it → defaults to `'claude'` at the call site); Codex sets `'codex'`. This is what `cmdUninstall` reads to route the MCP unregister (C2). Add the field to `src/harness/types.ts` in this task and set it on the Claude adapter (`src/harness/adapters/claude-code.ts`) — a one-line, regression-safe add.
+>
+> **C2 correction — `cmdUninstall` is NOT `--harness`-aware today.** `cmdInstallHooks` (`cli.ts:402`) and `cmdSetup` (`cli.ts:447`) DO call `resolveHarnesses(args)` and loop adapters. But `cmdUninstall` (`cli.ts:523`) does NOT: it hardcodes `defaultRegistry().byId('claude-code')` (`cli.ts:528`) for hooks and calls `unregisterMcpServer(spawnCapture)` (`cli.ts:537`) with the Claude default binary — `abs uninstall --harness codex` would silently uninstall CLAUDE, never Codex. **Task 8 REWRITES `cmdUninstall`** to mirror the install path. This is a real code rewrite, not a footnote follow-on.
 
 - [ ] **Step 4: Run** `npx vitest run src/harness/adapters/codex.test.ts` → PASS.
 
@@ -919,9 +1092,9 @@ git commit -m "feat(harness): Codex CLI adapter — composes capabilities, paylo
 
 ---
 
-## Task 8: Register Codex in `defaultRegistry()` + wire uninstall binary
+## Task 8: Register Codex in `defaultRegistry()` + make `cmdUninstall` `--harness`-aware (C2)
 
-**Files:** Modify `src/harness/index.ts`, `src/cli/cli.ts` · Test `src/harness/index.test.ts`, `src/cli/cli.test.ts`
+**Files:** Modify `src/harness/index.ts`, `src/harness/types.ts`, `src/harness/adapters/claude-code.ts`, `src/cli/cli.ts` · Test `src/harness/index.test.ts`, `src/cli/cli.test.ts`
 
 - [ ] **Step 1: Write the failing tests:**
 
@@ -936,11 +1109,25 @@ it('--harness codex resolves the qualifying Codex adapter', () => {
   const result = resolveHarnesses(['--harness', 'codex']);
   expect(result?.map((a) => a.id)).toEqual(['codex']);
 });
+
+// add to src/cli/cli.test.ts — C2: uninstall must target the SELECTED harness, not always Claude.
+it('cmdUninstall --harness codex uninstalls Codex hooks and unregisters the codex MCP binary', async () => {
+  const calls: string[][] = [];
+  // Inject the run/registry seam the CLI uses for spawn (mirror the existing setup/uninstall test injection).
+  // The codex adapter's uninstall() removes the [hooks] block; the MCP unregister must drive `codex`, not `claude`.
+  await cmdUninstall(['--harness', 'codex'], { run: (cmd, args) => { calls.push([cmd, ...args]); return Promise.resolve({ code: 0, stdout: '', stderr: '' }); } });
+  // Every MCP-unregister invocation targets the codex binary.
+  const mcpCalls = calls.filter((c) => c.includes('mcp'));
+  expect(mcpCalls.length).toBeGreaterThan(0);
+  expect(mcpCalls.every((c) => c[0] === 'codex')).toBe(true);
+});
 ```
 
-- [ ] **Step 2: Run** → FAIL (`codex` not registered).
+> The exact injection shape depends on how the existing `cmdUninstall` test stubs `spawnCapture`. Mirror the established pattern in `cli.test.ts` (the setup/uninstall tests already inject a fake `run`); the assertion that matters is **the MCP unregister binary is `codex`, never `claude`, under `--harness codex`**, and that `adapter.uninstall()` (not the hardcoded Claude one) is what removes the hooks.
 
-- [ ] **Step 3: Register + wire uninstall binary.** In `src/harness/index.ts`:
+- [ ] **Step 2: Run** → FAIL (`codex` not registered; `cmdUninstall` ignores `--harness` and hits the Claude binary).
+
+- [ ] **Step 3a: Register the adapter.** In `src/harness/index.ts`:
 
 ```typescript
 import { codexAdapter } from './adapters/codex.js';
@@ -949,14 +1136,63 @@ import { claudeCodeAdapter } from './adapters/claude-code.js';
 if (!cached) cached = createRegistry([claudeCodeAdapter(), codexAdapter()]);
 ```
 
-In `src/cli/cli.ts` `cmdUninstall` (~`:497`), when the resolved adapter is `codex`, pass `{ binary: 'codex' }` to `unregisterMcpServer` (Task 1 made it binary-aware). Keep the Claude default otherwise. Verify with the existing uninstall test path.
+- [ ] **Step 3b: Add `mcpBinary` to the contract.** In `src/harness/types.ts` add `mcpBinary?: string;` to `HarnessAdapter`. In `src/harness/adapters/claude-code.ts` set `mcpBinary: 'claude'` (regression-safe — it was the implicit default). Codex already sets `'codex'` (Task 7).
 
-- [ ] **Step 4: Run** `npm run check` — full suite green.
+- [ ] **Step 3c: REWRITE `cmdUninstall` to be `--harness`-aware (C2).** Replace the hardcoded `byId('claude-code')` + bare `unregisterMcpServer(spawnCapture)` with the install-path pattern:
+
+```typescript
+async function cmdUninstall(args: string[]): Promise<void> {
+  const purge = args.includes('--purge');
+  const yes = args.includes('--yes');
+
+  const harnesses = resolveHarnesses(args);          // mirrors cmdInstallHooks:402 / cmdSetup:447
+  if (!harnesses) return;
+
+  for (const adapter of harnesses) {
+    // 1. Remove this adapter's lifecycle wiring (TOML for codex, settings.json for claude).
+    const hooks = await adapter.uninstall();
+    out(hooks.removed.length > 0
+      ? `✓ hooks removed (${adapter.displayName}): ${hooks.removed.join(', ')}`
+      : `✓ no abs hooks were present (${adapter.displayName})`);
+
+    // 2. Unregister the MCP server with THIS adapter's CLI binary (C2 — not always claude).
+    const reg = await unregisterMcpServer(spawnCapture, { binary: adapter.mcpBinary ?? 'claude' });
+    switch (reg.status) {
+      case 'removed':        out(`✓ MCP server "${MCP_SERVER_NAME}" unregistered from ${adapter.displayName}`); break;
+      case 'not-registered': out(`✓ MCP server "${MCP_SERVER_NAME}" was not registered (${adapter.displayName})`); break;
+      case 'no-claude':      out(`! ${adapter.mcpBinary ?? 'claude'} CLI not found — unregister manually:`); out(`    ${reg.manualCommand}`); break;
+      case 'error':          out(`! Could not auto-unregister (${reg.message}). Run manually:`); out(`    ${reg.manualCommand}`); break;
+    }
+  }
+
+  // 3. Memory store: preserved by default, hard-deleted only with --purge (unchanged).
+  const config = loadConfig();
+  if (purge) await purgeStore(config.dbPath, yes);
+  // … the rest of the existing post-purge messaging is unchanged.
+}
+```
+
+(The `unregisterMcpServer(run, { binary })` signature is Task 1's generalized form. Keep the no-flag default selecting Claude only, so `abs uninstall` with no `--harness` stays byte-identical for existing users.)
+
+- [ ] **Step 3d: Fix the dual-writer ordering in `cmdSetup` (W1-warn).** For Codex, BOTH `adapter.registerMcp()` (which shells `codex mcp add`, mutating `config.toml`'s `[mcp_servers.*]`) AND `adapter.install()` (our `[hooks]` TOML splice) write the SAME file. Today `cmdSetup` (`cli.ts:455,459`) runs `install()` FIRST, then `registerMcp()`. **Reorder so `registerMcp()` runs FIRST, then `install()`** — so Codex's own writer mutates the file before our splice reads-merges-writes, and our sentinel block is the last thing written (it can't be clobbered by codex's writer):
+
+```typescript
+// cmdSetup — Codex-safe ordering: codex mutates config.toml first, our splice last.
+const cliPath = fileURLToPath(import.meta.url);
+const reg = await adapter.registerMcp(cliPath, spawnCapture);   // codex mcp add → writes [mcp_servers.*]
+// … report reg.status (unchanged switch) …
+const hooks = await adapter.install();                          // our [hooks] splice — reads codex's fresh file
+if (hooks.wired.length > 0) out(`✓ hooks registered: ${hooks.wired.join(', ')}`);
+```
+
+> For Claude this reorder is inert (hooks live in `settings.json`, MCP in a separate registry — no shared file), so the existing Claude `setup` test stays green. **Acceptance (Task 9):** after `setup --harness codex`, run `install-hooks --harness codex` again and assert NO duplicate `[[hooks.Stop]]` — i.e. our sentinels survived codex's writer. If a future codex version's writer STRIPS comments (killing our sentinels), the fallback is a non-comment sentinel (a dedicated `[hooks._abs_managed]` marker table) — note this as a known fragility, not implemented now.
+
+- [ ] **Step 4: Run** `npm run check` — full suite green (existing no-flag uninstall + setup tests still pass; the new `--harness codex` test passes).
 
 - [ ] **Step 5: Commit**
 ```bash
-git add src/harness/index.ts src/harness/index.test.ts src/cli/cli.ts src/cli/cli.test.ts
-git commit -m "feat(harness): register Codex adapter in defaultRegistry + route uninstall to codex binary (#67)"
+git add src/harness/index.ts src/harness/index.test.ts src/harness/types.ts src/harness/adapters/claude-code.ts src/cli/cli.ts src/cli/cli.test.ts
+git commit -m "feat(harness): register Codex + rewrite cmdUninstall to be --harness-aware via adapter.mcpBinary (C2, #67)"
 ```
 
 ---
@@ -966,31 +1202,39 @@ git commit -m "feat(harness): register Codex adapter in defaultRegistry + route 
 **Files:** none (verification). Build first (`npm run build`) — `npm run check` does NOT rebuild `dist`, and the `abs` CLI runs from `dist`.
 
 - [ ] **Step 1:** `npm run build`
-- [ ] **Step 2:** `abs install-hooks --harness codex` → prints `registered hooks (Codex CLI): capture, recall, guard`. Inspect `~/.codex/config.toml`: a single managed block with `[[hooks.Stop]]`/`[[hooks.SessionStart]]`/`[[hooks.UserPromptSubmit]]`/`[[hooks.PreToolUse]]`, and a fresh `.bak` beside it. Re-run → no duplication, no new `.bak` from a no-op.
-- [ ] **Step 3:** `abs setup --harness codex` → installs hooks AND prints the MCP registration result; confirm `codex mcp list` now lists `agentbrainsystem`, and `config.toml` gained a `[mcp_servers.agentbrainsystem]` table (written by `codex mcp add`, not by us).
-- [ ] **Step 4:** Run a short real Codex session in a trusted project, then on `Stop` confirm `abs` captured it: `abs recall "<something you said>"` (or inspect the store) shows the Codex session's prose under the project's cwd. Confirm a new session opens with recalled context injected (recall on `SessionStart`/`UserPromptSubmit`).
-- [ ] **Step 5:** `abs uninstall --harness codex` → removes the managed `[hooks]` block (other tables intact) and unregisters the MCP server from Codex (`codex mcp list` no longer lists it).
-- [ ] **Step 6 (regression):** `abs install-hooks` (no flag) still wires Claude Code exactly as before; `~/.claude/settings.json` unaffected by any Codex work.
+- [ ] **Step 2:** `abs install-hooks --harness codex` → prints `registered hooks (Codex CLI): capture, recall, guard`. **W3:** when the current project is NOT trusted, the output ALSO carries the trust warning (`… set trust_level = "trusted" … or the hooks will never fire`); when trusted, no warning. Inspect `~/.codex/config.toml`: a single managed block with `[[hooks.Stop]]`/`[[hooks.SessionStart]]`/`[[hooks.UserPromptSubmit]]`/`[[hooks.PreToolUse]]`, and a fresh `.bak` beside it. Re-run → no duplication, no new `.bak` from a no-op.
+- [ ] **Step 3:** `abs setup --harness codex` → registers MCP FIRST then installs hooks (W1-warn ordering); confirm `codex mcp list` now lists `agentbrainsystem`, and `config.toml` gained a `[mcp_servers.agentbrainsystem]` table (written by `codex mcp add`, not by us).
+- [ ] **Step 3b (W1-warn):** Immediately re-run `abs install-hooks --harness codex` and grep `~/.codex/config.toml` for `[[hooks.Stop]]` → assert EXACTLY ONE occurrence (our sentinel block survived codex's own `config.toml` writer; no duplicate hooks).
+- [ ] **Step 4:** Run a short real Codex session in a **trusted** project, then on `Stop` confirm `abs` captured it: `abs recall "<something you said>"` (or inspect the store) shows the Codex session's prose under the project's cwd, stored under a `codex:`-prefixed external id. Send a SECOND turn (another `Stop`) and confirm the store does NOT double-count the first turn's observations (W4 — cursor streaming, no re-insert). Confirm a new session opens with recalled context injected (recall on `SessionStart`/`UserPromptSubmit`).
+- [ ] **Step 5:** `abs uninstall --harness codex` → removes the managed `[hooks]` block (other tables intact) AND unregisters the MCP server from CODEX (`codex mcp list` no longer lists it — proving C2: the unregister hit the `codex` binary, not `claude`).
+- [ ] **Step 6 (regression):** `abs install-hooks` (no flag) still wires Claude Code exactly as before; `~/.claude/settings.json` unaffected; `abs uninstall` (no flag) still targets Claude only.
 
-> If `Stop` does not fire capture in practice (e.g. the installed build gates `codex_hooks` behind project trust — the binary string `"Project-local config, hooks, and exec policies are disabled … until the project is trusted"` confirms hooks require a TRUSTED project), document it: the project must be trusted (`config.toml` `[projects."<cwd>"] trust_level = "trusted"`) for hooks to run. This is a Codex policy, not an `abs` bug; note it in the acceptance writeup and (follow-on) in `docs/agent-handbook.md`.
+> **Trust gate (W3, confirmed in the binary).** The installed `0.125.0` binary contains the strings `"skipping managed hooks from "` and `" is marked as untrusted in "` — Codex SILENTLY skips `config.toml`-managed hooks in untrusted projects. So a wired `[hooks]` block in an untrusted project NEVER fires (looks like an `abs` bug; it is Codex policy). The project must be trusted (`config.toml` `[projects."<cwd>"] trust_level = "trusted"`). This is now surfaced as a real output warning at install time (Task 3 W3) and asserted in Step 2. Also note it in `docs/agent-handbook.md` (closure doc update).
 
 ---
 
 ## Self-review checklist (run before declaring #67 done)
 
 - [ ] `npm run check` fully green (lint + typecheck + all tests).
-- [ ] Claude Code path is byte-identical: `abs install-hooks` / `abs setup` (no `--harness`) produce the same `settings.json` and the same `claude mcp add` argv as before (Task 1's regression test + the existing suite prove it).
+- [ ] Claude Code path is byte-identical: `abs install-hooks` / `abs setup` / `abs uninstall` (no `--harness`) produce the same `settings.json`, same `claude mcp add`/`claude mcp remove` argv as before (Task 1 regression test + existing suite prove it).
 - [ ] No core module imports `src/harness` (`git grep -n "from '.*harness" src/store src/recall src/embedding src/optimize` → only the W1 helper lives in `src/ingest`, which is allowed).
-- [ ] The Codex parser is exercised by a REAL transcript fixture (not a synthetic one) — `src/ingest/__fixtures__/codex/rollout-sample.jsonl`.
-- [ ] Namespacing is migration-safe: an existing bare Claude `external_id` still resolves (existing session/binding tests pass unchanged); a Codex id is always `codex:`-prefixed; the two-harness-same-raw-id test shows distinct sessions.
+- [ ] The Codex parser is exercised by a REAL transcript fixture — `src/ingest/__fixtures__/codex/rollout-sample.jsonl`; the TOML installer is exercised by a REAL-config fixture — `src/harness/capabilities/__fixtures__/codex/config.toml`.
+- [ ] **C1:** the REAL `handleSessionEnd` path (no harness param) namespaces a Codex transcript `codex:` and a Claude one bare — proven by the Task 5 integration test driving `handleSessionEnd` directly. No `harnessId` param threaded through `ingestSingleSession`/`TranscriptSource`.
+- [ ] **W4:** Codex ingest streams from the byte cursor (NOT offset 0); a second `Stop` does not re-insert prior turns (verified: `createObservation` has no dedup). sessionId is from the FILENAME; header `cwd` is cached in kv_meta for header-less resumes.
+- [ ] **N5:** the rollout regex is timestamp-anchored and tested against two REAL filenames.
+- [ ] **C2:** `cmdUninstall` is `--harness`-aware (rewritten to `resolveHarnesses` + per-adapter `mcpBinary`); `abs uninstall --harness codex` removes Codex hooks AND unregisters the `codex` MCP binary — proven by a CLI test.
+- [ ] **C3:** TOML install is byte-identical across 3 runs over the real-config fixture and the result re-parses as valid TOML (dev-only `@iarna/toml`, never a runtime dep); ONE `normalize()` owns newline handling.
+- [ ] **W1-warn:** `cmdSetup --harness codex` registers MCP before splicing hooks; a re-`install-hooks` shows no duplicate `[[hooks.Stop]]`.
+- [ ] **W3:** untrusted-project trust warning is surfaced at install time and asserted.
+- [ ] **W2:** `eventMap` and the TOML installer use only the 6 real `0.125.0` events (`Stop`/`SessionStart`/`UserPromptSubmit`/`PreToolUse`/`PermissionRequest`/`PostToolUse`); no phantom PreCompact/Subagent; `Stop` (not `SessionEnd`) is capture.
+- [ ] Namespacing is migration-safe: an existing bare Claude `external_id` still resolves (existing session/binding tests pass unchanged); a Codex id is always `codex:`-prefixed.
 - [ ] `qualifies()` for Codex returns `{ ok: true, missing: [] }`; `resolveSession` is payload-only (no env leak).
-- [ ] `Stop` (not `SessionEnd`) is the capture event in `eventMap` and in the TOML installer.
 
 ---
 
 ## Out of scope (tracked follow-ons, not this issue)
 
 - **Codex tool-anchor extraction** — anchoring code edits from `apply_patch`/`function_call` lines (Codex shape ≠ Claude `tool_use`). Codex ships prose-only capture here; anchoring is a separate plan.
-- **Byte-precise Codex incremental resume** — this issue re-parses the Codex rollout from offset 0 each grow (so `session_meta` is always read). Streaming with a head-cached session id is a perf follow-on.
-- **Codex `set-session-project`** — namespacing the binding for a CURRENT Codex session (the `set_session_project` MCP/CLI path) when invoked from a Codex flow.
+- **Codex `set-session-project`** — namespacing the binding for a CURRENT Codex session (the `set_session_project` MCP/CLI path) when invoked from a Codex flow. Today it is a Claude-only caller (stays bare, correct).
+- **Comment-stripping fallback sentinel** — if a future Codex `config.toml` writer strips comments (killing our `# >>> … >>>` sentinels), switch to a non-comment marker table. Not needed for `0.125.0`.
 - **Auto-detect install** — `abs install-hooks`/`abs setup` with NO flag installing for ALL `detectInstalled()` harnesses (cross-adapter). The framework supports it (`detectInstalled()`); enabling it for both harnesses at once is a cross-cutting UX item.
