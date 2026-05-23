@@ -22,6 +22,7 @@ export function claudeCodeAdapter(): HarnessAdapter {
   return {
     id: 'claude-code',
     displayName: 'Claude Code',
+    mcpBinary: 'claude', // C2: regression-safe — the implicit default at the call site
     detect: async () => {
       try {
         await access(join(homedir(), '.claude'));

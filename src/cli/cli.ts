@@ -41,7 +41,7 @@ import {
 import { projectSlug } from '../optimize/targets.js';
 import { startUiServer } from '../ui/index.js';
 import { VERSION } from '../version.js';
-import { MCP_SERVER_NAME, type RunResult, unregisterMcpServer } from './setup.js';
+import { MCP_SERVER_NAME, type RunFn, type RunResult, unregisterMcpServer } from './setup.js';
 
 const USAGE = `agentbrainsystem (abs) v${VERSION} — local-first memory for AI coding agents
 
@@ -417,6 +417,9 @@ async function cmdInstallHooks(args: string[]): Promise<void> {
     } else {
       out(`no hooks to register (${adapter.displayName})`);
     }
+    // W3 (#67): Codex silently skips config.toml-managed hooks in untrusted projects,
+    // so a perfectly valid [hooks] block can never fire — surface that here.
+    if ('trustWarning' in report && report.trustWarning) out(`! ${report.trustWarning}`);
   }
 }
 
@@ -461,20 +464,22 @@ async function cmdSetup(args: string[]): Promise<void> {
     return;
   }
 
-  const hooks = await adapter.install();
-  if (hooks.wired.length > 0) out(`✓ hooks registered: ${hooks.wired.join(', ')}`);
-
+  // Register MCP FIRST, then install hooks (W1-warn ordering): for Codex BOTH steps
+  // write the SAME config.toml — `codex mcp add` mutates [mcp_servers.*], our splice
+  // writes [hooks]. Running MCP first means codex's own writer touches the file before
+  // our splice reads-merges-writes, so our sentinel block is the last thing written and
+  // can't be clobbered. For Claude this reorder is inert (separate files).
   const cliPath = fileURLToPath(import.meta.url);
   const reg = await adapter.registerMcp(cliPath, spawnCapture);
   switch (reg.status) {
     case 'registered':
-      out(`✓ MCP server registered with Claude Code as "${MCP_SERVER_NAME}"`);
+      out(`✓ MCP server registered with ${adapter.displayName} as "${MCP_SERVER_NAME}"`);
       break;
     case 'already':
       out(`✓ MCP server already registered as "${MCP_SERVER_NAME}"`);
       break;
     case 'unavailable':
-      out('! Claude CLI not found — register the MCP server manually:');
+      out(`! ${adapter.mcpBinary ?? 'claude'} CLI not found — register the MCP server manually:`);
       out(`    ${reg.manualCommand}`);
       break;
     case 'error':
@@ -483,8 +488,13 @@ async function cmdSetup(args: string[]): Promise<void> {
       break;
   }
 
+  const hooks = await adapter.install();
+  if (hooks.wired.length > 0) out(`✓ hooks registered: ${hooks.wired.join(', ')}`);
+  // W3: surface the trust warning when wiring Codex hooks into an untrusted project.
+  if ('trustWarning' in hooks && hooks.trustWarning) out(`! ${hooks.trustWarning}`);
+
   out('');
-  out('Done. Restart Claude Code — it will recall + remember automatically.');
+  out(`Done. Restart ${adapter.displayName} — it will recall + remember automatically.`);
   out('Explore your memory anytime with:  abs ui');
 }
 
@@ -529,36 +539,50 @@ async function purgeStore(dbPath: string, yes: boolean): Promise<void> {
  * itself is NOT removed here — a process can't reliably delete the binary it's
  * running from — so we print the final `npm uninstall -g` line to run afterwards.
  */
-async function cmdUninstall(args: string[]): Promise<void> {
+/** Injection seam for `cmdUninstall` (tests stub the MCP `run`). */
+export interface UninstallDeps {
+  run?: RunFn;
+}
+
+export async function cmdUninstall(args: string[], deps: UninstallDeps = {}): Promise<void> {
   const purge = args.includes('--purge');
   const yes = args.includes('--yes');
+  const run = deps.run ?? spawnCapture;
 
-  // 1. Remove our hooks from settings.json (symlink-safe, backup-first, atomic).
-  const adapter = defaultRegistry().byId('claude-code');
-  const hooks = adapter ? await adapter.uninstall() : { removed: [] };
-  if (hooks.removed.length > 0) {
-    out(`✓ hooks removed: ${hooks.removed.join(', ')}`);
-  } else {
-    out('✓ no abs hooks were present in settings.json');
-  }
+  // Resolve the SELECTED harness(es) — `--harness codex` must uninstall Codex, not
+  // always Claude (C2). No flag → the Claude Code default (byte-identical for
+  // existing users).
+  const harnesses = resolveHarnesses(args);
+  if (!harnesses) return;
 
-  // 2. Unregister the MCP server with Claude Code.
-  const reg = await unregisterMcpServer(spawnCapture);
-  switch (reg.status) {
-    case 'removed':
-      out(`✓ MCP server "${MCP_SERVER_NAME}" unregistered from Claude Code`);
-      break;
-    case 'not-registered':
-      out(`✓ MCP server "${MCP_SERVER_NAME}" was not registered (nothing to do)`);
-      break;
-    case 'no-claude':
-      out('! Claude CLI not found — unregister the MCP server manually:');
-      out(`    ${reg.manualCommand}`);
-      break;
-    case 'error':
-      out(`! Could not auto-unregister the MCP server (${reg.message}). Run manually:`);
-      out(`    ${reg.manualCommand}`);
-      break;
+  for (const adapter of harnesses) {
+    // 1. Remove this adapter's lifecycle wiring (TOML for codex, settings.json for claude).
+    const hooks = await adapter.uninstall();
+    out(
+      hooks.removed.length > 0
+        ? `✓ hooks removed (${adapter.displayName}): ${hooks.removed.join(', ')}`
+        : `✓ no abs hooks were present (${adapter.displayName})`,
+    );
+
+    // 2. Unregister the MCP server with THIS adapter's CLI binary (C2 — not always claude).
+    const binary = adapter.mcpBinary ?? 'claude';
+    const reg = await unregisterMcpServer(run, { binary });
+    switch (reg.status) {
+      case 'removed':
+        out(`✓ MCP server "${MCP_SERVER_NAME}" unregistered from ${adapter.displayName}`);
+        break;
+      case 'not-registered':
+        out(`✓ MCP server "${MCP_SERVER_NAME}" was not registered (${adapter.displayName})`);
+        break;
+      case 'no-claude':
+        out(`! ${binary} CLI not found — unregister the MCP server manually:`);
+        out(`    ${reg.manualCommand}`);
+        break;
+      case 'error':
+        out(`! Could not auto-unregister the MCP server (${reg.message}). Run manually:`);
+        out(`    ${reg.manualCommand}`);
+        break;
+    }
   }
 
   // 3. Memory store: preserved by default, hard-deleted only with --purge.

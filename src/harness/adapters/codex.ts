@@ -17,7 +17,9 @@ import type { HarnessAdapter } from '../types.js';
  */
 export function codexAdapter(): HarnessAdapter {
   const resolve = payloadFirstResolver(); // payload-only — Codex has no session-id env var
-  const installer = codexLifecycleInstaller();
+  // W3: pass the current working dir so install() can warn when the target project
+  // is not a trusted Codex project (Codex silently skips managed hooks otherwise).
+  const installer = codexLifecycleInstaller({ projectCwd: process.cwd() });
   const registrar = cliMcpRegistrar({ binary: 'codex' });
   return {
     id: 'codex',

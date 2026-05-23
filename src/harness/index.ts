@@ -1,12 +1,13 @@
 // src/harness/index.ts
 import { claudeCodeAdapter } from './adapters/claude-code.js';
+import { codexAdapter } from './adapters/codex.js';
 import { createRegistry, type HarnessRegistry } from './registry.js';
 
 let cached: HarnessRegistry | null = null;
 
 /** The process-wide registry of known harness adapters. */
 export function defaultRegistry(): HarnessRegistry {
-  if (!cached) cached = createRegistry([claudeCodeAdapter()]);
+  if (!cached) cached = createRegistry([claudeCodeAdapter(), codexAdapter()]);
   return cached;
 }
 

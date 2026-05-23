@@ -22,6 +22,7 @@ import {
   cmdProject,
   cmdPromote,
   cmdRemember,
+  cmdUninstall,
   parseForgetSelector,
   parseIds,
   parseProjectAction,
@@ -539,12 +540,76 @@ describe('resolveHarnesses — --harness flag resolution (install-hooks path)', 
     expect(outLines.join('')).toContain('--harness requires a harness id value');
   });
 
+  it('--harness codex resolves the qualifying Codex adapter (#67)', () => {
+    const result = resolveHarnesses(['--harness', 'codex']);
+    expect(result?.map((a) => a.id)).toEqual(['codex']);
+    expect(process.exitCode).toBe(0);
+  });
+
   // NOTE: the qualify-fail branch (`!qualifies()` → "does not qualify" + exit 1) is
   // NOT unit-testable in Phase 0: defaultRegistry() holds only the claude-code adapter,
   // whose qualifies() is hard-wired to { ok: true }, and resolveHarnesses reads that
   // registry directly (no injection seam). This branch is exercised in Phase 1 when a
   // second, non-qualifying adapter exists. Production code is intentionally left
   // unrefactored — adding a registry-injection seam purely for this test is not warranted.
+});
+
+describe('cmdUninstall — --harness-aware MCP unregister (C2, #67)', () => {
+  let dir: string;
+  let outLines: string[];
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'abs-cli-uninstall-'));
+    process.env.ABS_HOME = dir;
+    process.env.ABS_EMBED_DIM = '8';
+    outLines = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk: string | Uint8Array) => {
+      outLines.push(String(chunk));
+      return true;
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete process.env.ABS_HOME;
+    delete process.env.ABS_EMBED_DIM;
+    process.exitCode = 0;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('--harness codex unregisters the codex MCP binary, never claude', async () => {
+    const calls: string[][] = [];
+    await cmdUninstall(['--harness', 'codex'], {
+      run: (cmd, args) => {
+        calls.push([cmd, ...args]);
+        if (args.includes('--version'))
+          return Promise.resolve({ code: 0, stdout: 'codex', stderr: '' });
+        if (args.includes('list'))
+          return Promise.resolve({ code: 0, stdout: 'agentbrainsystem: x', stderr: '' });
+        return Promise.resolve({ code: 0, stdout: '', stderr: '' });
+      },
+    });
+    const mcpCalls = calls.filter((c) => c.includes('mcp'));
+    expect(mcpCalls.length).toBeGreaterThan(0);
+    // Every MCP-unregister invocation targets the codex binary (C2), never claude.
+    expect(mcpCalls.every((c) => c[0] === 'codex')).toBe(true);
+    expect(outLines.join('')).toContain('Codex CLI');
+  });
+
+  it('no --harness flag targets Claude only (regression)', async () => {
+    const calls: string[][] = [];
+    await cmdUninstall([], {
+      run: (cmd, args) => {
+        calls.push([cmd, ...args]);
+        if (args.includes('--version'))
+          return Promise.resolve({ code: 0, stdout: 'claude', stderr: '' });
+        if (args.includes('list')) return Promise.resolve({ code: 0, stdout: '', stderr: '' });
+        return Promise.resolve({ code: 0, stdout: '', stderr: '' });
+      },
+    });
+    const mcpCalls = calls.filter((c) => c.includes('mcp'));
+    expect(mcpCalls.every((c) => c[0] === 'claude')).toBe(true);
+  });
 });
 
 describe('cmdRemember — global authoring (hermetic, tmp ABS_HOME, real local provider)', () => {
