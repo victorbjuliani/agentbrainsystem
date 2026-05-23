@@ -18,8 +18,17 @@ import { consolidate } from '../consolidate/index.js';
 import { type DeleteSelector, executeIds, previewSelector } from '../delete/index.js';
 import { exportStore, importStore } from '../export/index.js';
 import { GLOBAL_PROJECT, getOrCreateGlobalSession } from '../global.js';
+import type { OpencodeInstallReport } from '../harness/capabilities/opencode-plugin-installer.js';
+import { sqliteTranscriptSource } from '../harness/capabilities/sqlite-transcript-source.js';
 import { defaultRegistry, type HarnessAdapter } from '../harness/index.js';
 import { dispatchHook } from '../hooks/index.js';
+import { renderNotice } from '../hooks/session-start.js';
+import {
+  consumeFirstPromptFlag,
+  fenceHeader,
+  renderRecallBlock,
+  TOP_K,
+} from '../hooks/user-prompt-submit.js';
 import {
   defaultClaudeProjectsDir,
   ingestClaudeProjects,
@@ -39,6 +48,7 @@ import {
   type OptimizeCandidate,
 } from '../optimize/index.js';
 import { projectSlug } from '../optimize/targets.js';
+import { type RecallHit, resolveRecallProject } from '../recall/index.js';
 import { startUiServer } from '../ui/index.js';
 import { VERSION } from '../version.js';
 import { MCP_SERVER_NAME, type RunFn, type RunResult, unregisterMcpServer } from './setup.js';
@@ -78,6 +88,13 @@ Commands:
   hook <event>          Internal: run a lifecycle hook (what install-hooks registers).
                         event ∈ session-end | session-start | user-prompt-submit.
                         Reads the hook payload on stdin; non-fatal (always exits 0).
+  opencode-capture --session <ses> [--db PATH]
+                        Internal: ingest one OpenCode session from opencode.db into
+                        memory (what the OpenCode plugin shells on session.idle).
+                        --db overrides the default ~/.local/share/opencode/opencode.db.
+  opencode-recall --session <ses> --cwd <dir>
+                        Internal: print the project-recent recall block for an OpenCode
+                        session (what the OpenCode plugin injects into the system prompt).
   optimize [opts]       Turn distilled memory into evidence-backed diffs for this
                         project's CLAUDE.md / Claude Code auto-memory.
                         Options: --project PATH (default: cwd), --limit N,
@@ -369,6 +386,70 @@ async function cmdHook(args: string[]): Promise<void> {
 }
 
 /**
+ * `abs opencode-capture --session <ses_…>` (#72) — the OpenCode capture entry the
+ * in-process plugin shells to on `session.idle`/`session.compacted`. Ingests that
+ * session from opencode.db (read-only) into memory, riding the id-anchored watermark.
+ * openMemory with the default ensure gate (a drifted index self-heals, same as
+ * SessionEnd). The PLUGIN is the fail-open boundary (`.nothrow()`), so a hard error
+ * here cleanly exits 1 (the plugin swallows it); success is silent (plugin `.quiet()`s).
+ */
+export async function cmdOpencodeCapture(args: string[]): Promise<void> {
+  const sessionId = optionValue(args, '--session');
+  if (!sessionId) {
+    err('opencode-capture: --session <ses_…> is required');
+    process.exitCode = 1;
+    return;
+  }
+  const dbPath = optionValue(args, '--db'); // optional override (tests / non-default store)
+  const memory = await openMemory(loadConfig());
+  try {
+    await sqliteTranscriptSource(dbPath ? { dbPath } : {}).ingestSession(memory, sessionId);
+  } catch (e) {
+    err(`opencode-capture: ${e instanceof Error ? e.message : String(e)}`);
+    process.exitCode = 1;
+  } finally {
+    memory.close();
+  }
+}
+
+/**
+ * `abs opencode-recall --session <ses_…> --cwd <dir>` (#72) — the OpenCode recall
+ * entry the plugin shells to in `experimental.chat.system.transform`, reading stdout
+ * into `output.system[]`. The system-transform hook has NO user prompt, so recall is
+ * a PROJECT-RECENT pull (W2: `MemoryStore.listObservations({ project, order:'desc',
+ * limit:TOP_K })` — a real, no-model-load indexed read), NOT prompt-scoped FTS.
+ * Opened `{ ensure: false }` (read-only fast path, no model cold-load — ADR-0005).
+ *
+ * C3 consent: opencode never calls `abs hook`, so the SessionStart notice never
+ * fires. On the FIRST recall per session we PREPEND `renderNotice` via the EXACT
+ * `consumeFirstPromptFlag` machinery (keyed `opencode:<ses>`, can't collide with a
+ * Claude key). Second+ recall → flag consumed → no notice.
+ */
+export async function cmdOpencodeRecall(args: string[]): Promise<void> {
+  const sessionId = optionValue(args, '--session');
+  const cwd = optionValue(args, '--cwd');
+  if (!sessionId || !cwd) {
+    err('opencode-recall: --session <ses_…> and --cwd <dir> are required');
+    process.exitCode = 1;
+    return;
+  }
+  const sid = `opencode:${sessionId}`;
+  const memory = await openMemory(loadConfig(), { ensure: false });
+  try {
+    const project = resolveRecallProject(memory.store, { scope: 'project', sessionId: sid, cwd });
+    const obs = memory.store.listObservations({ project, order: 'desc', limit: TOP_K });
+    const hits: RecallHit[] = obs.map((observation) => ({ observation, score: 0 }));
+    const recallBlock = renderRecallBlock(hits, fenceHeader(project));
+    // C3: one-time consent notice on the session's first recall.
+    const noticeBlock = consumeFirstPromptFlag(memory.store, sid) ? renderNotice(sid, cwd) : '';
+    const combined = [noticeBlock, recallBlock].filter((b) => b.length > 0).join('\n\n');
+    if (combined.length > 0) out(combined);
+  } finally {
+    memory.close();
+  }
+}
+
+/**
  * Resolve the harness adapter(s) to act on from a `--harness <id>` flag. With the
  * flag, the named adapter must exist and `qualifies()`; otherwise we refuse with a
  * non-zero exit. With no flag, the Claude Code reference adapter is used (Phase 0;
@@ -406,12 +487,30 @@ export function resolveHarnesses(args: string[]): HarnessAdapter[] | null {
   return claude ? [claude] : [];
 }
 
+/**
+ * C1 (opencode): when `install()` couldn't losslessly edit a JSONC config, it returns
+ * a manual-merge snippet (config left byte-unchanged). Print it so the user can paste.
+ * The four shell-hook adapters never set this — it's a no-op for them.
+ */
+function surfaceJsoncManual(displayName: string, report: OpencodeInstallReport): void {
+  if (!report.manual) return;
+  out(
+    `! ${displayName} config is JSONC — add this to ${report.targetPath ?? 'your config'} manually:`,
+  );
+  out(report.manual);
+}
+
 /** `abs install-hooks` — register the memory hooks in settings.json (opt-in). */
 async function cmdInstallHooks(args: string[]): Promise<void> {
   const harnesses = resolveHarnesses(args);
   if (!harnesses) return;
+  // C2: thread the CLI entrypoint path (this module's import.meta.url) into install()
+  // so the OpenCode adapter can bake the absolute `node <cli.js>` into its plugin file.
+  // The four shell-hook adapters accept-and-ignore it.
+  const cliPath = fileURLToPath(import.meta.url);
   for (const adapter of harnesses) {
-    const report = await adapter.install();
+    const report = await adapter.install(cliPath);
+    surfaceJsoncManual(adapter.displayName, report);
     if (report.wired.length > 0) {
       out(`registered hooks (${adapter.displayName}): ${report.wired.join(', ')}`);
     } else {
@@ -488,10 +587,11 @@ async function cmdSetup(args: string[]): Promise<void> {
       break;
   }
 
-  const hooks = await adapter.install();
+  const hooks = await adapter.install(cliPath);
   if (hooks.wired.length > 0) out(`✓ hooks registered: ${hooks.wired.join(', ')}`);
   // W3: surface the trust warning when wiring Codex hooks into an untrusted project.
   if ('trustWarning' in hooks && hooks.trustWarning) out(`! ${hooks.trustWarning}`);
+  surfaceJsoncManual(adapter.displayName, hooks);
 
   out('');
   out(`Done. Restart ${adapter.displayName} — it will recall + remember automatically.`);
@@ -558,13 +658,29 @@ export async function cmdUninstall(args: string[], deps: UninstallDeps = {}): Pr
   for (const adapter of harnesses) {
     // 1. Remove this adapter's lifecycle wiring (TOML for codex, settings.json for claude).
     const hooks = await adapter.uninstall();
+    // JSONC abort (#89): a file-managed adapter could not edit its config, so NOTHING
+    // (hooks OR the MCP entry) was removed — surface what to delete by hand and skip
+    // the success lines + the CLI/file MCP step, instead of falsely reporting removal.
+    if (hooks.manual) {
+      out(
+        `! ${adapter.displayName} config is JSONC (comments / trailing commas) — could not auto-remove.`,
+      );
+      out(`  In ${hooks.targetPath ?? 'your config'}, ${hooks.manual}.`);
+      continue;
+    }
     out(
       hooks.removed.length > 0
         ? `✓ hooks removed (${adapter.displayName}): ${hooks.removed.join(', ')}`
         : `✓ no abs hooks were present (${adapter.displayName})`,
     );
 
-    // 2. Unregister the MCP server with THIS adapter's CLI binary (C2 — not always claude).
+    // 2. Unregister the MCP server. File-managed adapters (opencode) already removed
+    // their config entry in step 1's uninstall() — `opencode mcp` has no
+    // non-interactive remove, so the CLI path would hang/fail. Skip it for them.
+    if (adapter.mcpFileManaged) {
+      out(`✓ MCP server entry removed from ${adapter.displayName} config`);
+      continue;
+    }
     const binary = adapter.mcpBinary ?? 'claude';
     const reg = await unregisterMcpServer(run, {
       binary,
@@ -1147,6 +1263,10 @@ async function main(): Promise<void> {
       return cmdConsolidate(rest);
     case 'hook':
       return cmdHook(rest);
+    case 'opencode-capture':
+      return cmdOpencodeCapture(rest);
+    case 'opencode-recall':
+      return cmdOpencodeRecall(rest);
     case 'install-hooks':
       return cmdInstallHooks(rest);
     case 'setup':

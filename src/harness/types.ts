@@ -37,6 +37,14 @@ export interface InstallReport {
 }
 export interface UninstallReport {
   removed: readonly LifecycleMoment[];
+  /**
+   * Set when a file-managed adapter could NOT auto-remove its config entry (OpenCode
+   * JSONC abort, #89): nothing was removed, `manual` carries what to delete by hand
+   * and `targetPath` the untouched file. `cmdUninstall` prints both and must NOT
+   * report success. Absent on the happy path.
+   */
+  manual?: string;
+  targetPath?: string;
 }
 
 /** Process-spawn result — declared locally so `src/harness` needs no `src/cli` type import. */
@@ -74,14 +82,29 @@ export interface HarnessAdapter {
   mcpArgStyle?: 'separator' | 'positional';
   /** MCP scope for the positional arg style (`--scope user|project`); see `mcpArgStyle`. */
   mcpScope?: 'user' | 'project';
+  /**
+   * True when this adapter registers its MCP server by editing a config FILE (not via
+   * the harness CLI's `mcp add`). OpenCode is the only such adapter — `opencode mcp`
+   * has no non-interactive add/remove, so both register AND unregister are file-only.
+   * `cmdUninstall` reads this to SKIP the CLI `mcp remove` path (which would hang /
+   * fail) — the adapter's own `uninstall()` already removed the config entry.
+   */
+  mcpFileManaged?: boolean;
   /** Is this harness installed on the current machine? Never throws. */
   detect(): Promise<boolean>;
   /** The parity gate — does this harness expose all four pillars? */
   qualifies(): QualifyResult;
   /** Native-event → canonical-moment map. */
   eventMap: EventMap;
-  /** Wire the lifecycle (idempotent, backup-first). */
-  install(): Promise<InstallReport>;
+  /**
+   * Wire the lifecycle (idempotent, backup-first). `cliPath` is the absolute path to
+   * the installed CLI entrypoint (`fileURLToPath(import.meta.url)` from `cli.ts`,
+   * threaded by the caller exactly as `registerMcp(cliPath, …)` already is, C2). The
+   * four shell-hook adapters accept-and-ignore it (their settings.json / config.toml
+   * installers bake no CLI path); the OpenCode adapter bakes it into the absolute
+   * `node <cli.js>` invocation in its generated plugin file.
+   */
+  install(cliPath: string): Promise<InstallReport>;
   /** Remove the lifecycle wiring. */
   uninstall(): Promise<UninstallReport>;
   /** Register the MCP server. `run` is injected by the CLI (no harness→cli coupling). */

@@ -37,7 +37,7 @@ export function claudeCodeAdapter(): HarnessAdapter {
       recall: ['SessionStart', 'UserPromptSubmit'],
       guard: ['PreToolUse'],
     },
-    install: () => installer.install(),
+    install: (_cliPath) => installer.install(),
     uninstall: () => installer.uninstall(),
     registerMcp: (cliPath, run) => registrar.register(cliPath, run),
     resolveSession: (input) => resolve(input),

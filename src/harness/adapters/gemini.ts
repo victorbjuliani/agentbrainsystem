@@ -45,7 +45,7 @@ export function geminiAdapter(): HarnessAdapter {
       recall: ['SessionStart', 'BeforeAgent'],
       guard: ['BeforeTool'],
     },
-    install: () => installer.install(),
+    install: (_cliPath) => installer.install(),
     uninstall: () => installer.uninstall(),
     registerMcp: (cliPath, run) => registrar.register(cliPath, run),
     resolveSession: (input) => resolve(input),
