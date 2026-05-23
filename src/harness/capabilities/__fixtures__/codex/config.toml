@@ -1,0 +1,141 @@
+personality = "pragmatic"
+model = "gpt-5.5"
+model_reasoning_effort = "xhigh"
+
+
+notify = ["/Users/vbjuliani/.codex/computer-use/Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient", "turn-ended"]
+
+[marketplaces.openai-bundled]
+last_updated = "2026-05-19T19:42:33Z"
+source_type = "local"
+source = "/Users/vbjuliani/.codex/.tmp/bundled-marketplaces/openai-bundled"
+
+[plugins."outlook-email@openai-curated"]
+enabled = true
+
+[plugins."computer-use@openai-bundled"]
+enabled = true
+
+[plugins."github@openai-curated"]
+enabled = true
+
+[projects."/Users/vbjuliani/Devs/Widget"]
+trust_level = "trusted"
+
+[projects."/Users/vbjuliani/Devs/Travelpoints"]
+trust_level = "trusted"
+
+[projects."/Users/vbjuliani/Devs/Vortis"]
+trust_level = "trusted"
+
+[projects."/Users/vbjuliani/Documents/Codex/2026-04-21-verifique-nas-orquestra-es-globais-workflow"]
+trust_level = "trusted"
+
+[projects."/Users/vbjuliani/Devs/RegianeDocesBolos"]
+trust_level = "trusted"
+
+[projects."/Users/vbjuliani/Documents/Codex/2026-04-22-crie-uma-skill-chamada-init-que"]
+trust_level = "trusted"
+
+[projects."/Users/vbjuliani/Documents/Codex/2026-04-22-voc-consegue-me-ajudar-a-gerenciar"]
+trust_level = "trusted"
+
+[projects."/Users/vbjuliani/Documents/Codex/2026-04-23-preciso-que-edite-o-feature-workflow"]
+trust_level = "trusted"
+
+[projects."/Users/vbjuliani/Documents/Codex/2026-04-23/consegue-criar-uma-skill-de-limpeza"]
+trust_level = "trusted"
+
+[projects."/Users/vbjuliani/Documents/Codex/2026-04-23/atualize-a-skill-cleanup-local-git"]
+trust_level = "trusted"
+
+[projects."/Users/vbjuliani/Devs/ChessTrainer"]
+trust_level = "trusted"
+
+[projects."/Users/vbjuliani/Documents/Codex/2026-05-05/files-mentioned-by-the-user-handoff"]
+trust_level = "trusted"
+
+[projects."/Users/vbjuliani/Documents/Codex/2026-05-07/files-mentioned-by-the-user-template"]
+trust_level = "trusted"
+
+[projects."/Users/vbjuliani/Documents/Codex/2026-05-07/um-primo-meu-est-come-ando"]
+trust_level = "trusted"
+
+[projects."/Users/vbjuliani/Devs/Murilo"]
+trust_level = "trusted"
+
+[projects."/Users/vbjuliani/Documents/Codex/2026-05-11/n"]
+trust_level = "trusted"
+
+[projects."/Users/vbjuliani/Devs/OpenClaw"]
+trust_level = "trusted"
+
+[projects."/Users/vbjuliani/Devs/VBJOffice"]
+trust_level = "trusted"
+
+[projects."/Users/vbjuliani/Meu Mac/Profissional/demo-corp/AI_Team/AcmeApp"]
+trust_level = "trusted"
+
+[projects."/Users/vbjuliani/Documents/Codex/2026-05-12/copie-e-migre-a-skill-do"]
+trust_level = "trusted"
+
+[projects."/Users/vbjuliani/Meu Mac/Profissional/demo-corp/AI_Team/OpenClawPG"]
+trust_level = "trusted"
+
+[projects."/Users/vbjuliani/Meu Mac/Profissional/demo-corp/AI_Team/codex-bridge"]
+trust_level = "trusted"
+
+[projects."/Users/vbjuliani/Documents/Codex/2026-05-13/pode-me-explicar-como-funciona-o"]
+trust_level = "trusted"
+
+[features]
+memories = true
+goals = true
+
+[apps.connector_76869538009648d5b282a4bb21c3d157.tools.github_remove_issue_label]
+approval_mode = "approve"
+
+[apps.connector_76869538009648d5b282a4bb21c3d157.tools.github_add_issue_labels]
+approval_mode = "approve"
+[marketplaces.caveman-repo]
+source_type = "local"
+source = "/Users/vbjuliani/Devs/caveman"
+
+[marketplaces.openai-primary-runtime]
+last_updated = "2026-05-17T05:21:24Z"
+source_type = "local"
+source = "/Users/vbjuliani/.cache/codex-runtimes/codex-primary-runtime/plugins/openai-primary-runtime"
+
+[plugins."caveman@caveman-repo"]
+enabled = true
+
+[plugins."superpowers@openai-curated"]
+enabled = true
+
+[plugins."slack@openai-curated"]
+enabled = true
+
+[plugins."documents@openai-primary-runtime"]
+enabled = true
+
+[plugins."spreadsheets@openai-primary-runtime"]
+enabled = true
+
+[plugins."presentations@openai-primary-runtime"]
+enabled = true
+
+[plugins."browser@openai-bundled"]
+enabled = true
+
+[plugins."chrome@openai-bundled"]
+enabled = true
+
+[mcp_servers.agentmemory]
+command = "npx"
+args = ["-y", "@agentmemory/mcp"]
+
+[mcp_servers.agentmemory.env]
+AGENTMEMORY_URL = "http://localhost:3111"
+
+[projects."/Users/vbjuliani/Devs/agentbrainsystem"]
+trust_level = "trusted"
