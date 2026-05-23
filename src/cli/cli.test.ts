@@ -525,6 +525,20 @@ describe('resolveHarnesses — --harness flag resolution (install-hooks path)', 
     expect(process.exitCode).toBe(0);
   });
 
+  it('a --harness flag with a missing value is an error, not a silent claude-code fallback', () => {
+    const result = resolveHarnesses(['setup', '--harness']);
+    expect(result).toBeNull();
+    expect(process.exitCode).toBe(1);
+    expect(outLines.join('')).toContain('--harness requires a harness id value');
+  });
+
+  it('a --harness flag followed by another flag is an error (flag-shaped value)', () => {
+    const result = resolveHarnesses(['--harness', '--yes']);
+    expect(result).toBeNull();
+    expect(process.exitCode).toBe(1);
+    expect(outLines.join('')).toContain('--harness requires a harness id value');
+  });
+
   // NOTE: the qualify-fail branch (`!qualifies()` → "does not qualify" + exit 1) is
   // NOT unit-testable in Phase 0: defaultRegistry() holds only the claude-code adapter,
   // whose qualifies() is hard-wired to { ok: true }, and resolveHarnesses reads that

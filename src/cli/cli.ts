@@ -376,8 +376,17 @@ async function cmdHook(args: string[]): Promise<void> {
  * printing an error + setting a non-zero exit code.
  */
 export function resolveHarnesses(args: string[]): HarnessAdapter[] | null {
-  const id = optionValue(args, '--harness');
-  if (id !== undefined) {
+  // A `--harness` flag with a missing/flag-shaped value is an ERROR, not a silent
+  // fall-back to the default Claude adapter (Codex review on #77): falling through
+  // would run real setup (settings.json / MCP registration) on a typo like
+  // `abs setup --harness`. Mirrors the `--session` strict-parse contract.
+  if (args.includes('--harness')) {
+    const id = optionValue(args, '--harness');
+    if (id === undefined || id.startsWith('-')) {
+      out('! --harness requires a harness id value');
+      process.exitCode = 1;
+      return null;
+    }
     const adapter = defaultRegistry().byId(id);
     if (!adapter) {
       out(`! unknown harness '${id}'`);
