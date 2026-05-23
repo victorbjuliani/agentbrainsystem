@@ -99,6 +99,66 @@ describe('registerMcpServer — idempotent, non-fatal', () => {
   });
 });
 
+describe('registerMcpServer — generalized to any CLI binary', () => {
+  it('drives a codex binary: probes "codex --version", lists, then "codex mcp add … -- node <cli> start"', async () => {
+    const calls: string[][] = [];
+    const run = async (cmd: string, args: string[]) => {
+      calls.push([cmd, ...args]);
+      if (args.includes('--version')) return { code: 0, stdout: 'codex-cli 0.125.0', stderr: '' };
+      if (args.includes('list')) return { code: 0, stdout: '', stderr: '' }; // not registered yet
+      return { code: 0, stdout: '', stderr: '' };
+    };
+    const res = await registerMcpServer('/abs/cli.js', run, { binary: 'codex' });
+    expect(res.status).toBe('registered');
+    expect(calls[0]).toEqual(['codex', '--version']);
+    expect(calls.at(-1)).toEqual([
+      'codex',
+      'mcp',
+      'add',
+      'agentbrainsystem',
+      '--',
+      'node',
+      '/abs/cli.js',
+      'start',
+    ]);
+  });
+
+  it('defaults to the claude binary when no options are passed (regression)', async () => {
+    const calls: string[][] = [];
+    const run = async (cmd: string, args: string[]) => {
+      calls.push([cmd, ...args]);
+      if (args.includes('--version')) return { code: 0, stdout: 'claude', stderr: '' };
+      return { code: 0, stdout: '', stderr: '' };
+    };
+    await registerMcpServer('/abs/cli.js', run);
+    expect(calls[0]).toEqual(['claude', '--version']);
+    expect(calls.at(-1)).toEqual([
+      'claude',
+      'mcp',
+      'add',
+      'agentbrainsystem',
+      '--',
+      'node',
+      '/abs/cli.js',
+      'start',
+    ]);
+  });
+
+  it('unregisterMcpServer drives the codex binary when given { binary: "codex" }', async () => {
+    const calls: string[][] = [];
+    const run = async (cmd: string, args: string[]) => {
+      calls.push([cmd, ...args]);
+      if (args.includes('--version')) return { code: 0, stdout: 'codex', stderr: '' };
+      if (args.includes('list')) return { code: 0, stdout: 'agentbrainsystem: x', stderr: '' };
+      return { code: 0, stdout: '', stderr: '' };
+    };
+    const res = await unregisterMcpServer(run, { binary: 'codex' });
+    expect(res.status).toBe('removed');
+    expect(calls.every((c) => c[0] === 'codex')).toBe(true);
+    expect(calls.at(-1)).toEqual(['codex', 'mcp', 'remove', 'agentbrainsystem']);
+  });
+});
+
 describe('unregister core — argv + manual command', () => {
   it('builds the claude mcp remove argv (no cli path needed)', () => {
     expect(buildClaudeMcpRemoveArgs()).toEqual(['mcp', 'remove', MCP_SERVER_NAME]);
