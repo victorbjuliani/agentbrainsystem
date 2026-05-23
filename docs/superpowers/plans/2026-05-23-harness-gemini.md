@@ -41,10 +41,17 @@ where it does not:
    probe/list/add control flow.
 4. **Transcript source**: Gemini transcripts are a **single JSON file** (NOT
    JSONL) — `~/.gemini/tmp/<project>/chats/session-*.json` holding one
-   `ConversationRecord` object. `jsonlTranscriptSource`/`ingestSingleSession`
-   stream line-by-line and cannot parse it. → **Gemini variant**: a
-   `gemini-chat.ts` parser + a routing branch in `ingestFile` that reads the
-   whole file as JSON.
+   `ConversationRecord` object that Gemini **rewrites whole on every message**
+   (`chatRecordingService.js:360`, full overwrite). `jsonlTranscriptSource`/
+   `ingestSingleSession` stream line-by-line and cannot parse it. → **Gemini
+   variant**: a `gemini-chat.ts` parser + a routing branch in `ingestFile` that
+   reads the whole file as JSON **and gates re-ingest by a persistent
+   per-session MESSAGE-COUNT watermark** (NOT byte size — see C1 below). A byte
+   cursor is meaningless for a whole-file rewrite: a resumed session re-fires
+   `SessionEnd` on the grown file, `cursor < size` re-reads from 0, and because
+   `createObservation` (`memory-store.ts:326`) is a **plain INSERT with no
+   unique constraint and no `ON CONFLICT`**, every prior message is re-stored —
+   a duplicate explosion. The watermark skips the already-ingested prefix.
 5. **Adapter** (`src/harness/adapters/gemini.ts`): composes the above + detect
    (`~/.gemini`), `qualifies` (all four pillars present), `eventMap`,
    `resolveSession` (payload-first; Gemini has no session-id env var).
@@ -103,9 +110,13 @@ gemini mcp enable|disable <name>
   → prints the help text (yargs parse failure), writes nothing. So the existing
   `buildMcpAddArgs` (`['mcp','add',NAME,'--','node',cli,'start']`) is incompatible.
 - `gemini mcp add` **fails fast on missing auth** unless `GEMINI_API_KEY` (or
-  `GOOGLE_GENAI_USE_VERTEXAI`/`GOOGLE_GENAI_USE_GCA`) is set — but with a dummy
-  key it still writes settings.json correctly (the auth gate is checked, the key
-  is not exercised for a local config write).
+  `GOOGLE_GENAI_USE_VERTEXAI`/`GOOGLE_GENAI_USE_GCA`) is set — it exits non-zero
+  BEFORE writing. The PRODUCT path handles this cleanly with no new code: the
+  non-zero exit becomes `status:'error'` → `cmdSetup` prints the (now positional,
+  via W2) manual command non-fatally. **No dummy key in product code.** A dummy
+  key happens to satisfy the local-write gate, but that is a TEST-ONLY
+  convenience for generating fixtures under a throwaway `$HOME` — the product
+  must NOT inject one (see W3 in Task 5).
 
 ### Hooks — event names + config shape + payload (read from gemini-cli-core dist)
 
@@ -309,13 +320,18 @@ Decision (verified necessary): `installHooks`/`HOOK_REGISTRY`
 
 **Choose (B)** — mirrors the established Codex precedent (a non-Claude harness
 owning its own installer), keeps the Claude hot path untouched, and the JSON
-machinery is ~40 lines. Factor the *shared* JSON-merge helpers
-(`assertNotSymlink`, `backupSettings`, `atomicWriteFile`, `readSettings`) — these
-already exist privately in `installer.ts`. **Refactor step**: export them from a
-new `src/hooks/settings-io.ts` (move, re-export from `installer.ts` for
-back-compat) so both installers share ONE atomic-write/symlink-refusal/backup
-implementation rather than copy-pasting. This keeps ADR-0004's safety contract
-single-sourced.
+machinery is ~40 lines. **Copy the four tiny safety helpers
+(`assertNotSymlink`, `backupSettings`, `atomicWriteFile`, `readSettings`)
+PRIVATELY into `gemini-lifecycle-installer.ts`** — exactly as
+`codex-lifecycle-installer.ts` copied its own `assertNotSymlink`/`backup`/
+`atomicWrite`/`readText` privately (it did NOT move anything out of
+`installer.ts`). **`src/hooks/installer.ts` stays BYTE-IDENTICAL** — no move, no
+re-export, no new `settings-io.ts`. This deliberately follows the Codex
+precedent and honours this plan's own regression-avoidance principle: touching
+`installer.ts` (risk=high, 87 files within 2 hops, the most-used harness path)
+to single-source ~16 lines of helper is a worse trade than a small private copy.
+If single-sourcing into a shared `settings-io.ts` is wanted later, it is a
+separate, isolated refactor PR — out of scope for #68.
 
 RED — test the event table + arg mapping (pure):
 
@@ -395,33 +411,87 @@ it('uninstall removes only our entries and leaves the file otherwise intact', as
 
 The current `ingestFile` streams `createReadStream`+`createInterface` (JSONL).
 Gemini's transcript is **one JSON object**, so it must be read whole. Add a
-branch BEFORE the readline stream:
+branch BEFORE the readline stream. (Imports to add to `ingest.ts`: `readFile`
+from `node:fs/promises` — currently only `readdir, stat` are imported; and
+`isGeminiTranscript` onto the existing `./namespacing.js` import alongside
+`isCodexTranscript`.)
 
 ```ts
 if (isGeminiTranscript(absPath)) {
-  // Whole-file JSON, not line-delimited. Cursor still gates re-ingest (file size).
-  const raw = await readFile(absPath, 'utf8');               // from node:fs/promises
-  const entries = parseGeminiChat(raw, absPath);             // ParsedEntry[]
-  for (const entry of entries) {
+  // Whole-file JSON, NOT line-delimited and NOT incremental: Gemini rewrites the
+  // ENTIRE file on every message. A byte cursor is meaningless here — re-ingest
+  // is gated by a persistent per-session MESSAGE-COUNT watermark in kv_meta.
+  const raw = await readFile(absPath, 'utf8');               // node:fs/promises
+  const entries = parseGeminiChat(raw, absPath);             // ParsedEntry[], in order
+  const wmKey = `${GEMINI_MSGCOUNT_PREFIX}${absPath}`;
+  const already = readGeminiWatermark(memory, wmKey);        // N already ingested (default 0)
+  // Skip the first `already` parsed entries; write only the new tail.
+  for (let i = already; i < entries.length; i++) {
+    const entry = entries[i];
     const externalId = namespacedExternalId('gemini', entry.sessionId);
     const effectiveProject = entry.cwd ? projectSlug(entry.cwd) : project;
     await writeEntry(memory, sessionCache, bindingCache, externalId, effectiveProject, entry, absPath, tally);
   }
-  writeCursor(memory, absPath, size);  // advance cursor to full size; whole file consumed
-  result.observationsAdded += tally.added; /* …skipped, seeded */ 
+  // Advance the watermark to the new total — only forward, never below `already`
+  // (a shorter parse on a transient malformed read must not "rewind" + re-ingest).
+  if (entries.length > already) writeGeminiWatermark(memory, wmKey, entries.length);
+  result.observationsAdded += tally.added;
+  result.observationsSkipped += tally.skipped;
+  result.anchorsSeeded += tally.seeded;
   return;
 }
 ```
 
-Cursor semantics for a whole-file rewrite: Gemini **rewrites the file** on every
-message append (`lastUpdated` bumps, `messages` grows), so a byte-offset cursor is
-the wrong granularity for *incremental* lines. For the `#62` SessionEnd path this
-is fine — `ingestSingleSession` runs once at session end on the final file, and
-`writeEntry` is idempotent per (session, normalized-text) so a re-ingest of a
-grown file does not double-count already-stored prose. **Set the cursor to the
-file size after a full read** so an unchanged file is skipped (`cursor >= size`),
-and a grown file re-reads from 0 and relies on `writeEntry` de-dup. Document this
-explicitly in the parser header (it differs from the streaming JSONL cursor).
+**C1 — persistent per-message count watermark (the core dedup fix).**
+Gemini rewrites the whole JSON on every message, so a byte cursor
+(`writeCursor(size)`) is the wrong granularity: a resumed session re-fires
+`SessionEnd` on the grown file, `cursor < size` triggers a re-read from 0, and
+`createObservation` (`memory-store.ts:326`) is a **plain INSERT — no unique
+constraint, no `ON CONFLICT`** — so every prior message is re-stored. The `seen`
+set inside any parser is **per-ingest-run** (fresh each call), so it gives no
+cross-run dedup (the Codex parser documents exactly this at
+`codex-jsonl.ts:96-99`). There is **no** `(session, normalized-text)`
+idempotency anywhere; the earlier claim was false.
+
+Fix: because `messages[]` is an **ordered, append-only array** and each message
+carries a stable `id` (UUID), track the **count of already-ingested messages**
+per session-file:
+
+- **kv_meta key**: `GEMINI_MSGCOUNT_PREFIX + absPath` where
+  `GEMINI_MSGCOUNT_PREFIX = 'gemini:msgcount:'` (keyed by `absPath`, parallel to
+  the existing `CURSOR_PREFIX`/`CODEX_CWD_PREFIX` convention; the file path is
+  1:1 with the session, and survives across runs in the same `kv_meta` store).
+- **read** (`readGeminiWatermark`): `Number.parseInt(getMeta(key))`, default `0`
+  when absent/NaN/negative — mirrors `readCursor`.
+- **write** (`writeGeminiWatermark`): `setMeta(key, String(total))` — mirrors
+  `writeCursor`. Note this watermark indexes into the **parsed** (`user`/`gemini`
+  prose) entry list, which is what `parseGeminiChat` returns and what we skip
+  over — NOT the raw `messages[]` length (info/error/warning chrome is dropped
+  before counting), so `entries.length` is the correct total to persist.
+- **skip logic**: parse ALL messages, write only `entries[already..]`, then set
+  the watermark to `entries.length`. Idempotent re-ingest of an unchanged file
+  writes 0 new observations (`already === entries.length`).
+
+Define the two helpers next to `readCursor`/`writeCursor` in `ingest.ts`:
+
+```ts
+const GEMINI_MSGCOUNT_PREFIX = 'gemini:msgcount:';
+function readGeminiWatermark(memory: Memory, key: string): number {
+  const raw = memory.store.getMeta(key);
+  if (raw === null) return 0;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n >= 0 ? n : 0;
+}
+function writeGeminiWatermark(memory: Memory, key: string, count: number): void {
+  memory.store.setMeta(key, String(count));
+}
+```
+
+(Optional robustness, not required for the fix: also dedup by message `id` to
+survive reordering. The count watermark is the load-bearing fix and is enough
+for the append-only rewrite reality.) Document the count-watermark semantics in
+the parser header — it deliberately differs from the streaming JSONL byte
+cursor, and the whole-file branch **must not** call `writeCursor`.
 
 `parseGeminiChat(raw, path)` → `ParsedEntry[]` (the same `ParsedEntry` shape the
 Codex parser emits — `{ sessionId, cwd?, role, text, toolAnchors }`):
@@ -478,6 +548,46 @@ it('skips info/error chrome and malformed JSON', () => {
 });
 ```
 
+RED — **C1 RESUME test (the duplicate-explosion regression guard)**. This is an
+`ingestSingleSession`-level test (the real SessionEnd path), modeled EXACTLY on
+the existing Codex W4 test `'a second Stop on a GROWN Codex rollout appends only
+new turns'` (`ingest.test.ts:652`). It writes a real
+`.gemini/tmp/<proj>/chats/session-*.json` file (so `isGeminiTranscript` matches),
+ingests, then **rewrites the whole file** with one extra message, re-ingests, and
+asserts only the new tail landed — using the same `newMemory()` /
+`memory.store.counts().observations` / `memory.store.listSessions()` harness:
+
+```ts
+it('a second SessionEnd on a REWRITTEN Gemini file ingests only the new message (count watermark, not bytes)', async () => {
+  const memory = newMemory();
+  const GEM_UUID = '78432a44-385f-41f6-8a71-646d51996f8a';
+  const geminiPath = join(dir, '.gemini/tmp/myproj/chats/session-2026-05-23T04-24-78432a44.json');
+  mkdirSync(dirname(geminiPath), { recursive: true });
+  const doc = (msgs: object[]) => JSON.stringify({
+    sessionId: GEM_UUID, projectHash: 'h', startTime: 't', lastUpdated: 't', messages: msgs, kind: 'main',
+  });
+  const userMsg = (i: number) => ({ id: `u${i}`, timestamp: 't', type: 'user',   content: [{ text: `q${i}` }] });
+  const asstMsg = (i: number) => ({ id: `a${i}`, timestamp: 't', type: 'gemini', content: [{ text: `r${i}` }] });
+
+  // SessionEnd #1 — a 2-message file → exactly 2 observations.
+  writeFileSync(geminiPath, doc([userMsg(1), asstMsg(1)]));
+  await ingestSingleSession(memory, geminiPath);
+  expect(memory.store.counts().observations).toBe(2);
+
+  // Gemini REWRITES THE WHOLE FILE with a 3rd message appended. SessionEnd #2.
+  writeFileSync(geminiPath, doc([userMsg(1), asstMsg(1), userMsg(2)]));
+  await ingestSingleSession(memory, geminiPath);
+  expect(memory.store.counts().observations).toBe(3);          // +1 ONLY — not +3 (would be 5)
+  expect(memory.store.listSessions().length).toBe(1);          // still one gemini: session
+  expect(memory.store.listSessions()[0]?.externalId).toBe(`gemini:${GEM_UUID}`);
+
+  // Idempotent: a SessionEnd on the UNCHANGED file adds nothing.
+  await ingestSingleSession(memory, geminiPath);
+  expect(memory.store.counts().observations).toBe(3);
+  memory.close();
+});
+```
+
 ### Task 5 — MCP registrar: positional `--scope user` form (NO `--`)
 
 **Files**: `src/cli/setup.ts` (minimal extension) + `src/harness/capabilities/mcp-registrar.ts`
@@ -501,14 +611,54 @@ export function buildMcpAddArgs(cliPath: string, opts: { argStyle?: 'separator'|
 }
 ```
 
-Thread `argStyle`/`scope` through `registerMcpServer` into the `buildMcpAddArgs`
-call and into `manualMcpCommand` (so the printed fallback matches). `mcp list`
-already lists `agentbrainsystem` (verified: `gemini mcp list` prints the name),
-so the existing `already`-detection works unchanged.
+**W2 — `manualMcpCommand` must thread the same arg style.** The current
+`manualMcpCommand` (`setup.ts:51`) hardcodes the `-- node` form. That string is
+what `cmdSetup` PRINTS when auto-registration degrades (`status:'error'` or
+`unavailable`, `cli.ts:474,478`). So a Gemini user is told to run
+`gemini mcp add agentbrainsystem -- node <cli> start` — which **Gemini rejects**
+(yargs parse failure, writes nothing). Thread `argStyle`/`scope` through it too,
+keeping the Claude/Codex `--` form byte-identical as the default:
+
+```ts
+export function manualMcpCommand(
+  cliPath: string,
+  binary = 'claude',
+  opts: { argStyle?: 'separator' | 'positional'; scope?: string } = {},
+): string {
+  if (opts.argStyle === 'positional') {
+    return `${binary} mcp add ${MCP_SERVER_NAME} --scope ${opts.scope ?? 'user'} node ${cliPath} start`;
+  }
+  return `${binary} mcp add ${MCP_SERVER_NAME} -- node ${cliPath} start`; // unchanged default
+}
+```
+
+Thread `argStyle`/`scope` through `registerMcpServer` into BOTH the
+`buildMcpAddArgs(cliPath, {argStyle, scope})` call AND
+`manualMcpCommand(cliPath, binary, {argStyle, scope})` (so the printed fallback
+is a command Gemini actually accepts). `mcp list` already lists
+`agentbrainsystem` (verified: `gemini mcp list` prints the name), so the existing
+`already`-detection works unchanged.
+
+RED — `manualMcpCommand` arg-style tests:
+
+```ts
+it('manual command for Gemini is POSITIONAL — no -- separator (Gemini rejects --)', () => {
+  expect(manualMcpCommand('/cli.js', 'gemini', { argStyle: 'positional', scope: 'user' }))
+    .toBe('gemini mcp add agentbrainsystem --scope user node /cli.js start');
+});
+it('manual command default keeps the -- form (claude/codex byte-identical)', () => {
+  expect(manualMcpCommand('/cli.js')).toBe('claude mcp add agentbrainsystem -- node /cli.js start');
+  expect(manualMcpCommand('/cli.js', 'codex')).toBe('codex mcp add agentbrainsystem -- node /cli.js start');
+});
+```
 
 `mcp-registrar.ts`: extend `CliMcpRegistrarOptions` with `argStyle`/`scope`, pass
-through to `registerMcpServer`. The Gemini adapter constructs
-`cliMcpRegistrar({ binary: 'gemini', argStyle: 'positional', scope: 'user' })`.
+all three (`binary`, `argStyle`, `scope`) through to `registerMcpServer` (which
+forwards them to both `buildMcpAddArgs` and `manualMcpCommand`). The Gemini
+adapter constructs `cliMcpRegistrar({ binary: 'gemini', argStyle: 'positional',
+scope: 'user' })`. Extend `McpRegisterOptions` (`setup.ts`) with `argStyle?` and
+`scope?` so `registerMcpServer` can read them — the default (`undefined` →
+`'separator'`) keeps Claude/Codex byte-identical.
 
 RED tests:
 
@@ -528,6 +678,35 @@ it('gemini registrar drives the gemini binary with positional args', async () =>
   expect(r.status).toBe('registered');
   expect(seen.find(s=>s.args.includes('add'))?.args).not.toContain('--');
   expect(seen.every(s=>s.cmd==='gemini')).toBe(true);
+});
+```
+
+**W3 — missing-auth degrades cleanly in the PRODUCT path (option a), no dummy
+key.** Real `abs setup --harness gemini` runs `gemini mcp add` via `execFile`
+with the user's ambient env. If Gemini is unauthenticated (no `GEMINI_API_KEY` /
+no GCA), `gemini mcp add` exits **non-zero** before writing. This is **already
+handled cleanly** by the existing flow with NO new code: the non-zero `add` exit
+maps to `status:'error'` in `registerMcpServer` (`setup.ts:88`), and `cmdSetup`
+(`cli.ts:476-479`) already PRINTS that as a non-fatal
+`! Could not auto-register the MCP server (<message>). Run manually:` followed by
+the manual command. So missing-auth degrades to a printed manual command exactly
+like `unavailable` — option (a) from the finding, and it is already detectable.
+
+The ONLY product gap was that the printed manual command was the broken `--`
+form — fixed by W2 (`manualMcpCommand` now threads `positional`). **Do NOT inject
+a dummy key in product code** (test-only, unsafe). Add a product-path test
+asserting that on a non-zero `add` the Gemini manual command surfaced is the
+positional form:
+
+```ts
+it('on a failed gemini mcp add (e.g. unauthed), the surfaced manual command is positional', async () => {
+  const run = async (cmd: string, args: string[]): Promise<RunResult> =>
+    args.includes('--version') ? { code: 0, stdout: 'gemini 0.35.0', stderr: '' }
+    : args.includes('list')    ? { code: 0, stdout: '', stderr: '' }
+    : { code: 1, stdout: '', stderr: 'authentication required' };   // add fails (unauthed)
+  const r = await registerMcpServer('/cli.js', run, { binary: 'gemini', argStyle: 'positional', scope: 'user' });
+  expect(r.status).toBe('error');
+  if (r.status === 'error') expect(r.manualCommand).toBe('gemini mcp add agentbrainsystem --scope user node /cli.js start');
 });
 ```
 
@@ -618,28 +797,38 @@ it('chokepoint namespaces a Gemini payload with gemini:', async () => {
 After `npm run build` (dist is stale otherwise — memory rule):
 
 1. **Isolated env** — run against a throwaway `$HOME` so real `~/.gemini` is never
-   mutated:
+   mutated. The `GEMINI_API_KEY=dummy` below is a **test-harness convenience**
+   (it satisfies Gemini's local-write auth gate so `mcp add` writes settings.json
+   and `gemini -p` writes a transcript fixture) — the product code never injects
+   it (W3):
    ```bash
    T=$(mktemp -d); mkdir -p "$T/.gemini"
-   HOME="$T" GEMINI_API_KEY=dummy node dist/cli.js install-hooks --harness gemini
+   HOME="$T" node dist/cli.js install-hooks --harness gemini   # hooks: no auth needed
    HOME="$T" GEMINI_API_KEY=dummy node dist/cli.js setup --harness gemini
    cat "$T/.gemini/settings.json"   # expect hooks.{SessionEnd,SessionStart,BeforeAgent,BeforeTool} + mcpServers.agentbrainsystem
    HOME="$T" GEMINI_API_KEY=dummy gemini mcp list   # expect agentbrainsystem listed
    ```
+   Also verify the **unauthed product degrade** (W3): run
+   `HOME="$T" node dist/cli.js setup --harness gemini` with NO key — expect a
+   non-fatal `! Could not auto-register …` line printing the POSITIONAL manual
+   command (`gemini mcp add agentbrainsystem --scope user node <cli> start`), no
+   crash, hooks still installed.
 2. Verify the written `settings.json` `hooks` keys + commands match Task 3, and
    `mcpServers.agentbrainsystem` = `{command:"node", args:[<cli>, "start"]}`.
 3. Generate a real transcript (`HOME="$T" GEMINI_API_KEY=dummy gemini -p "x" -o json`
    — the run errors on the dummy key but STILL writes the `chats/session-*.json`
-   file, verified), then run `abs ingest` (or the SessionEnd path) against that
-   file under the temp HOME and confirm a `gemini:`-namespaced observation lands.
-4. **Confirm `abs install-hooks --harness gemini` + `abs setup --harness gemini`
-   flags are wired** — if the CLI's `--harness` flag does not yet dispatch to the
-   registry adapter for these subcommands, add that dispatch (check
-   `src/cli/*` for how `--harness codex` is routed; reuse the same routing).
+   file, verified), then run the SessionEnd path against that file under the temp
+   HOME and confirm a `gemini:`-namespaced observation lands.
 
-> Acceptance gate: real Gemini `settings.json` shows all four hook keys + the
-> MCP server, `gemini mcp list` shows `agentbrainsystem`, and a Gemini transcript
-> ingests as a `gemini:`-prefixed session — all under a temp `$HOME`, real
+> `--harness gemini` already dispatches for `install-hooks`/`setup`/`uninstall`
+> via `resolveHarnesses` (`cli.ts:378`) once `geminiAdapter()` is in
+> `defaultRegistry()` (Task 6) — no extra CLI wiring needed; verified
+> `--harness codex` routes through the identical path.
+
+> Acceptance gate: Gemini `settings.json` (under temp `$HOME`) shows all four
+> hook keys + the MCP server, `gemini mcp list` shows `agentbrainsystem`, the
+> unauthed `setup` degrades to a printed positional manual command (no crash),
+> and a Gemini transcript ingests as a `gemini:`-prefixed session — real
 > `~/.gemini` untouched.
 
 ---
@@ -649,7 +838,9 @@ After `npm run build` (dist is stale otherwise — memory rule):
 - `npm run check` green (lint + typecheck + all new + existing tests).
 - `npm run build` then Task 8 live acceptance under a temp `$HOME`.
 - Claude + Codex adapters/tests unchanged and still green (regression: the
-  `buildMcpAddArgs` default and the Claude `installHooks` path are untouched).
+  `buildMcpAddArgs` default is untouched, `manualMcpCommand` defaults to the
+  Claude `--` form, and `src/hooks/installer.ts` is BYTE-IDENTICAL — the Gemini
+  installer copies the safety helpers privately, never moving them out).
 
 ## Reuse summary
 
@@ -658,9 +849,9 @@ After `npm run build` (dist is stale otherwise — memory rule):
 | Namespacing chokepoint | **REUSE** verbatim (just extend `harnessForPayload` + add `isGeminiTranscript`). |
 | Hook payload parser | **REUSE** verbatim (`session_id`/`transcript_path` already read). |
 | Canonical hook handler args | **REUSE** verbatim (`session-end`/`session-start`/`user-prompt-submit`/`pre-tool-use`). |
-| settings.json safety machinery | **REUSE** (refactor `assertNotSymlink`/`backup`/`atomicWrite`/`readSettings` into shared `settings-io.ts`). |
+| settings.json safety machinery | **COPY PRIVATELY** (the four tiny helpers `assertNotSymlink`/`backupSettings`/`atomicWriteFile`/`readSettings` are copied into `gemini-lifecycle-installer.ts`, exactly like the Codex installer copied its own — `installer.ts` stays byte-identical, NO `settings-io.ts`). |
 | Lifecycle installer | **VARIANT** — Gemini event names differ; new `gemini-lifecycle-installer.ts` (Codex precedent). |
 | Transcript source | **VARIANT** — single JSON, not JSONL; new `gemini-chat.ts` + `ingestFile` branch. `jsonlTranscriptSource` NOT usable. |
-| MCP registrar | **REUSE control flow + minimal `setup.ts` extension** — Gemini rejects `--`; positional `--scope user` arg style. |
+| MCP registrar | **REUSE control flow + minimal `setup.ts` extension** — Gemini rejects `--`; positional `--scope user` arg style threaded through BOTH `buildMcpAddArgs` AND `manualMcpCommand` (W2) so the printed fallback is also positional. Defaults keep claude/codex `--` byte-identical. |
 | Session resolver | **REUSE** `payloadFirstResolver()` (no env var, like Codex). |
 | Registry | **REUSE** — one line in `defaultRegistry()`. |
