@@ -7,6 +7,7 @@
 
 export type { ParsedEntry } from './claude-jsonl.js';
 export { parseLine } from './claude-jsonl.js';
+export { harnessForPayload, isCodexTranscript, namespacedExternalId } from './namespacing.js';
 export type { ProjectSurvey } from './ingest.js';
 export {
   defaultClaudeProjectsDir,
