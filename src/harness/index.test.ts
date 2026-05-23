@@ -15,8 +15,12 @@ describe('defaultRegistry', () => {
     expect(defaultRegistry().byId('gemini')?.displayName).toBe('Gemini CLI');
   });
 
-  it('registers all three qualifying adapters (#68)', () => {
-    expect(defaultRegistry().all().length).toBe(3);
+  it('includes the Copilot adapter (#69)', () => {
+    expect(defaultRegistry().byId('copilot')?.displayName).toBe('GitHub Copilot CLI');
+  });
+
+  it('registers all four qualifying adapters (#69)', () => {
+    expect(defaultRegistry().all().length).toBe(4);
   });
 
   it('the Claude adapter carries mcpBinary = claude (C2)', () => {

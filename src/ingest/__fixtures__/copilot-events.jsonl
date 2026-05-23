@@ -1,0 +1,7 @@
+{"id":"evt-001","timestamp":"2026-05-23T10:00:00.000Z","parentId":null,"agentId":"a1","type":"session.info","data":{"model":{"id":"claude-sonnet"},"startedAt":"2026-05-23T10:00:00.000Z"}}
+{"id":"evt-002","timestamp":"2026-05-23T10:00:01.000Z","parentId":"evt-001","agentId":"a1","type":"session.context_changed","data":{"cwd":"/Users/me/Devs/agentbrainsystem","reason":"init"}}
+{"id":"evt-003","timestamp":"2026-05-23T10:00:02.000Z","parentId":"evt-002","agentId":"a1","type":"user.message","data":{"content":"Add a byte cursor to the copilot parser","source":"input","interactionId":"i1"}}
+{"id":"evt-004","timestamp":"2026-05-23T10:00:03.000Z","parentId":"evt-003","agentId":"a1","type":"assistant.message_delta","data":{"content":"Sure, ","messageId":"m1"}}
+{"id":"evt-005","timestamp":"2026-05-23T10:00:04.000Z","parentId":"evt-003","agentId":"a1","type":"assistant.message","data":{"content":"I will localize the cursor logic and add it.","model":"claude-sonnet","messageId":"m1","outputTokens":12,"turnId":"t1","toolRequests":[{"name":"Write","arguments":{"file_path":"/Users/me/Devs/agentbrainsystem/src/ingest/copilot-jsonl.ts","content":"export function createCopilotLineParser() {}"}}]}}
+{"id":"evt-003","timestamp":"2026-05-23T10:00:05.000Z","parentId":"evt-002","agentId":"a1","type":"user.message","data":{"content":"DUPLICATE — same event id, must be deduped","source":"input"}}
+{"id":"evt-006","timestamp":"2026-05-23T10:00:06.000Z","parentId":"evt-005","agentId":"a1","type":"user.message","data":{"content":"","source":"input"}}

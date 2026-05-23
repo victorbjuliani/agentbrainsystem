@@ -43,6 +43,17 @@ export function isGeminiTranscript(absPath: string): boolean {
   return /\/chats\/session-[\dT-]+-[0-9a-f]{8}\.json$/i.test(toPosixPath(absPath));
 }
 
+/** True when the path is a Copilot CLI session transcript (drives parser + namespace, #69). */
+export function isCopilotTranscript(absPath: string): boolean {
+  const p = toPosixPath(absPath); // normalize Windows separators (#86)
+  return (
+    p.includes('/.copilot/session-state/') &&
+    /\/session-state\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/events\.jsonl$/i.test(
+      p,
+    )
+  );
+}
+
 /**
  * Namespace a harness session id for storage (W1, #67). Claude Code keeps its
  * BARE id (migration-safe: existing rows + bindings written before namespacing
@@ -65,5 +76,6 @@ export function harnessForPayload(payload: { transcriptPath?: string }): string 
   if (!p) return 'claude-code'; // safe default (existing contract)
   if (isCodexTranscript(p)) return 'codex'; // codex first — minimises the diff to the existing branch
   if (isGeminiTranscript(p)) return 'gemini';
+  if (isCopilotTranscript(p)) return 'copilot';
   return 'claude-code';
 }
