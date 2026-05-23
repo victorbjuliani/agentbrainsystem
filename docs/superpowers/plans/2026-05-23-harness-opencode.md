@@ -62,9 +62,12 @@ export type Plugin = (input: PluginInput, options?: PluginOptions) => Promise<Ho
 A plugin file therefore looks like `export const AbsPlugin: Plugin = async ({ $,
 directory }) => ({ /* hooks */ })`. The bundled `dist/example-workspace.js` uses a
 **default export** (`export default FolderWorkspacePlugin`); `dist/example.js` uses a
-**named export** (`export const ExamplePlugin`). OpenCode accepts either — it imports
-the module and reads every exported value that is a function. We will ship a single
-**default export** for unambiguity.
+**named export** (`export const ExamplePlugin`) — both shapes ship in the SDK
+examples, so we **ship both a named (`AbsPlugin`) and a default export for loader
+compatibility** rather than betting on one. The exact rule the (minified) opencode
+loader uses to pick exported plugin functions is **not verified** from the bundle, so
+we do not assert it as fact; the dual export is the safe hedge and is **smoke-tested
+in Task 8 acceptance** against the real runtime.
 
 **Discovery / load:** the config carries a `plugin` array. The SDK base config
 (`@opencode-ai/sdk/dist/gen/types.gen.d.ts:1067`) types it as:
@@ -185,6 +188,86 @@ Verified real rows:
   (the `, part.id` tiebreak makes the watermark deterministic when two parts share a
   millisecond). Map `role`/timestamp from the parent `message.data`/`message.time_created`.
 
+### Config file is JSONC — resolution order + parse rule (CRITICAL, verified in the binary)
+
+OpenCode's config is **JSONC**, not plain JSON. Read straight out of the 1.15.10
+binary (`strings /opt/homebrew/bin/opencode`):
+
+```js
+// config resolution — JSONC FIRST, then .json, then config.json:
+["opencode.jsonc","opencode.json","config.json"].map((Z)=>P2.join(l.Path.config,Z));
+for (let Z of $) if (rW(Z)) return Z;   // rW = existsSync
+return $[0]                              // none exist → DEFAULT is "opencode.jsonc"
+```
+
+Two hard facts this proves:
+
+1. **Precedence is `opencode.jsonc` → `opencode.json` → `config.json`.** If the user
+   has an `opencode.jsonc`, it WINS. Writing `opencode.json` in that case means our
+   `mcp`/`plugin` keys are written to a file opencode never reads → MCP + plugin
+   silently never load. (And the "create if none exist" default is `opencode.jsonc`,
+   not `.json`.)
+2. **Any resolved config is parsed as JSONC, not `JSON.parse`.** The binary bundles
+   the full `jsonc-parser` library: the tokenizer with `allowTrailingComma`, the
+   `ParseErrorCode` enum (`InvalidSymbol`/`PropertyNameExpected`/…), and the
+   `modify`/`applyEdits` editor (`nx`/`ox`/`px` with
+   `formattingOptions:{insertSpaces,tabSize}`) that opencode uses to edit its OWN
+   config in place while preserving comments. So a user's `opencode.json` may legally
+   contain `// comments` and trailing commas — and `JSON.parse` THROWS on it.
+
+**Why the Gemini "malformed → start fresh (preserve via backup)" rule is WRONG here.**
+The Gemini installer (`gemini-lifecycle-installer.ts:90-97`) does
+`try { JSON.parse(...) } catch { return {} }` — a comment/trailing-comma config falls
+into the `catch`, so the installer would serialize a fresh `{}`-derived object and
+**overwrite the user's entire JSONC config** (a `.bak` exists, but the live file is
+clobbered — exactly what C1 forbids). Gemini's `settings.json` is plain JSON so the
+rule is safe there; opencode's is not. We need a JSONC-aware, **abort-not-clobber**
+write path (defined under "Config write strategy" below and used by Tasks 3 + 5).
+
+> **Dep decision (dep-free default).** opencode itself uses `jsonc-parser` for
+> lossless edit-preservation, and adding it (a tiny, zero-dep, widely-vetted package)
+> would let us *edit* a JSONC config without clobbering. But the project ethos is
+> minimal deps (CLAUDE.md / ADR-0001), and the safe behaviour does NOT require it:
+> we can strict-`JSON.parse` the happy path and **abort to a printed manual-merge
+> snippet** on any JSONC file we can't losslessly round-trip. So **v1 ships dep-free**
+> (no `jsonc-parser`); the abort path is the correctness guarantee. A future task MAY
+> add `jsonc-parser` to upgrade abort→auto-edit, but it is explicitly out of #72.
+
+### Config write strategy (shared by the plugin-array edit AND the MCP edit)
+
+Both `opencode.json`-touching edits (plugin array, Task 3; `mcp` key, Task 5) go
+through ONE shared helper `editOpencodeConfig(configDir, mutate)` in the installer
+module. Steps:
+
+1. **Target-file detection — match opencode's precedence.** In `configDir`, pick the
+   FIRST that exists of `opencode.jsonc`, `opencode.json`, `config.json`; if none
+   exists, target `opencode.json` (we deliberately create plain `.json`, not
+   `.jsonc` — we only ever write strict JSON, see step 3). The chosen path is the
+   read+write target; `assertNotSymlink` it first (refuse symlinks, Gemini precedent).
+2. **Read + parse strategy.**
+   - Empty/absent file → start from `{}` (safe: nothing to lose).
+   - Non-empty file → **strict `JSON.parse`**.
+     - **Parse SUCCEEDS** (plain JSON) → run `mutate(config)` (adds/merges our
+       `mcp.agentbrainsystem` and/or `plugin[]` entry, preserving every other key),
+       then backup-first + atomic temp+rename write of `JSON.stringify(next,null,2)+'\n'`
+       (mode 0o600), exactly like the Gemini installer's safe path. No-op detection:
+       if the serialized output equals the bytes read, return without backup/write.
+     - **Parse FAILS** (the file is JSONC: comments / trailing commas / JSON5) →
+       **DO NOT WRITE.** Take a backup (defensive), then ABORT with a structured
+       result `{ status: 'manual', targetPath, snippet }` whose `snippet` is the
+       exact JSON to paste — e.g. for MCP:
+       `"mcp": { "agentbrainsystem": { "type": "local", "command": ["node","<cliPath>","start"], "enabled": true } }`
+       and for the plugin: `"plugin": ["./plugin/agentbrainsystem.js"]`. The caller
+       (installer / `fileMcpRegister`) surfaces this as a printed manual-merge
+       instruction — the SAME degrade-to-manual pattern the MCP registrar already
+       uses for the `unavailable`/printed-command case. The user's config is left
+       **byte-for-byte unchanged**.
+
+This is the project's minimal-deps-honoring, lossless-or-abort contract: we never
+overwrite a non-empty config we cannot round-trip. (If a later task adds
+`jsonc-parser`, only the "Parse FAILS" branch changes — abort becomes a
+`modify`/`applyEdits` in-place edit; everything else stays.)
+
 ### MCP registration method — FILE-ONLY (not the CLI)
 
 `opencode mcp add` exists but is **interactive** — `opencode mcp add --help` shows
@@ -208,10 +291,13 @@ export type McpLocalConfig = {
 ```
 
 We write `config.mcp.agentbrainsystem = { type: "local", command: ["node",
-"<cliPath>", "start"], enabled: true }` into `~/.config/opencode/opencode.json`
-(matching how the other adapters spawn the server: `node <cli> start`). Current
-real file is `{ "$schema": "https://opencode.ai/config.json" }` — we merge, never
-clobber.
+"<cliPath>", "start"], enabled: true }` (matching how the other adapters spawn the
+server: `node <cli> start`) into the **resolved** config file via
+`editOpencodeConfig` (see "Config write strategy" above) — `opencode.jsonc` if it
+exists, else `opencode.json`, else create `opencode.json`. We merge plain-JSON
+configs in place (never clobber other keys); a JSONC config aborts to a printed
+manual snippet. The current real file is plain JSON
+(`{ "$schema": "https://opencode.ai/config.json" }`) so the happy path applies.
 
 ### Instruction file
 
@@ -235,18 +321,22 @@ Two NEW capabilities (parallel to the existing `*-lifecycle-installer.ts` and
    `jsonlTranscriptSource`+`ingestSingleSession(path)` model for OpenCode.
 
 2. **`PluginEventInstaller`** (`src/harness/capabilities/opencode-plugin-installer.ts`)
-   — writes the plugin file into `~/.config/opencode/plugin/` and registers it in the
-   `plugin` array of `opencode.json` (idempotent, backup-first, atomic, symlink-refusing
-   — same safety machinery as the Gemini installer). Also owns the **file-only MCP
-   registrar variant** (writes `config.mcp.agentbrainsystem`), since both edits touch
-   the same `opencode.json` and must share one read-modify-atomic-write.
+   — writes the plugin file (with the ABSOLUTE `node <cliPath>` invocation baked in,
+   C2) into `~/.config/opencode/plugin/` and registers it in the `plugin` array of the
+   **resolved** opencode config (idempotent, backup-first, atomic, symlink-refusing).
+   Also owns the **file-only MCP registrar variant** (writes
+   `config.mcp.agentbrainsystem`), since both edits touch the same config file and
+   share ONE `editOpencodeConfig` helper — the **JSONC-aware, abort-not-clobber**
+   write path (precedence-ordered target detection + strict-parse-or-abort, C1; see
+   "Config write strategy"), NOT the Gemini "malformed → start fresh" rule.
 
 Two NEW `abs` subcommands the plugin shells to:
 
 3. **`abs opencode-capture --session <ses_…>`** — ingest that session from the DB
    (the capture entry; calls capability #1).
 4. **`abs opencode-recall --session <ses_…> --cwd <dir>`** — print the injected recall
-   block to stdout (the recall entry; reuses `recallFts` + `renderRecallBlock`).
+   block to stdout (the recall entry; project-recent `listObservations` +
+   `renderRecallBlock`, plus a once-per-session consent notice — see Task 4).
 
 Plus the adapter (`src/harness/adapters/opencode.ts`) and registry wiring.
 
@@ -262,7 +352,8 @@ opencode (Bun process)
   │
   └─ experimental.chat.system.transform({sessionID})
         └─$──▶ abs opencode-recall --session ses_… --cwd <directory>
-                 └─▶ recallFts(prompt-less, project-scoped) → renderRecallBlock → stdout
+                 └─▶ listObservations({project, order:desc, limit:TOP_K})
+                       → [once/session] renderNotice prepend → renderRecallBlock → stdout
                        └─◀ output.system.push(text)   (mutable system array)
 ```
 
@@ -396,17 +487,37 @@ the existing capability interface). Owns BOTH the plugin file AND the
 `opencode.json` `plugin`-array edit (and Task 5's MCP edit shares the same writer).
 
 Options: `configDir` (default `~/.config/opencode`), `pluginFileName` (default
-`agentbrainsystem.js`), `absBinary` (default `'abs'` — the command the plugin
-shells; injectable for tests/non-PATH installs).
+`agentbrainsystem.js`), and the **absolute invocation** the plugin shells —
+`nodePath` (default `process.execPath`) + `cliPath` (default the resolved
+`fileURLToPath(import.meta.url)`-derived absolute `cli.js`, the SAME source the MCP
+registrar already uses, `cli.ts:463`). Also an `absCommand` override (default
+`undefined`) so a test can inject a single fake command string; **the shipped
+default is the absolute `node <cliPath>` pair, NEVER bare `abs`** — see C2 below.
+
+> **C2 — the plugin MUST bake the ABSOLUTE invocation, not bare `abs`.** The plugin
+> runs inside opencode's own **Bun** process, which is frequently launched from a
+> GUI / launchd context whose `PATH` does NOT include the npm-global bin dir. A bare
+> ``$`abs …` `` then resolves to nothing, and because every shell-out is `.nothrow()`,
+> the failure is **silently swallowed** → capture + recall are dead with no error.
+> The installer already knows the real absolute path to abs's `cli.js` via
+> `fileURLToPath(import.meta.url)` (this is exactly what `registerMcp` writes into
+> `command: ["node","<cliPath>","start"]`, `cli.ts:463-464`). We capture `nodePath =
+> process.execPath` and that `cliPath` **at install time** and write them into the
+> plugin file as string literals, so the generated plugin shells the absolute
+> ``$`${nodePath} ${cliPath} opencode-capture --session ${id}` ``. No PATH dependency.
 
 **Install:**
 1. `assertNotSymlink` + atomic-write the plugin file to
    `<configDir>/plugin/<pluginFileName>` (create `plugin/` dir if missing). The file
-   body is the template below, with `__ABS__` substituted by `absBinary`.
-2. Read `<configDir>/opencode.json` (or `{}` if absent/malformed → preserve user
-   bytes via backup), parse JSON, ensure `plugin` array contains
-   `"./plugin/<pluginFileName>"` (relative module specifier — opencode resolves it
-   from the config dir). Idempotent: skip if already present.
+   body is the template below, with `__NODE__`/`__CLI__` substituted by `nodePath`/
+   `cliPath` (or, if `absCommand` is given for a test, the single token replaces the
+   `${nodePath} ${cliPath}` pair). Both substituted values are wrapped in
+   `JSON.stringify(...)` so a path containing spaces is a valid, correctly-quoted JS
+   string literal in the emitted module.
+2. Edit the resolved config file via `editOpencodeConfig` (see "Config write
+   strategy"): ensure `plugin` array contains `"./plugin/<pluginFileName>"` (relative
+   module specifier — opencode resolves it from the config dir). Idempotent: skip if
+   already present. JSONC config → abort to printed manual snippet (config unchanged).
 3. Backup-first (only when something changed), atomic temp+rename, mode 0o600.
 4. Return `{ wired: ['capture', 'recall'] }` (guard is implicit — handled in-plugin
    via `session.deleted`, not a separate wired moment).
@@ -424,9 +535,22 @@ runtime, not ours):
 // agentbrainsystem — OpenCode capture + recall bridge (managed by `abs`; do not edit).
 // Capture: on session.idle, ingest the session from opencode.db into abs memory.
 // Recall : on system-prompt transform, inject abs-recalled memory into the system array.
+// CONSENT: opencode never calls `abs hook`, so the user is told their sessions are
+//   being captured INSIDE the recall block — the abs CLI prepends a one-time memory
+//   notice on the first recall of each session (see opencode-recall, Task 4). Opt out
+//   with `abs project --session opencode:<id> --skip` (run from the session's project
+//   dir — see the adapter doc for the cwd note).
+// Absolute invocation: the plugin runs in opencode's Bun process whose PATH may lack
+//   the npm-global bin, so it shells the ABSOLUTE `node <cli.js>` pair baked at
+//   install time (NOT bare `abs`) — otherwise .nothrow() would silently swallow a
+//   PATH miss and capture/recall would be dead.
+// Tested against opencode 1.15.x (plugin API 1.14.24; experimental.* surface).
 // Fail-open: every shell-out is .nothrow() so a non-zero `abs` exit never blocks opencode.
 export const AbsPlugin = async ({ $, directory }) => {
   const deleted = new Set();
+  const lastCap = new Map();                               // sessionID → last capture epoch ms (W1 debounce)
+  const NODE = __NODE__;                                   // process.execPath, JSON-stringified literal
+  const CLI = __CLI__;                                     // absolute cli.js path, JSON-stringified literal
   return {
     event: async ({ event }) => {
       if (event.type === "session.deleted") {
@@ -436,12 +560,15 @@ export const AbsPlugin = async ({ $, directory }) => {
       if (event.type === "session.idle" || event.type === "session.compacted") {
         const id = event.properties.sessionID;
         if (deleted.has(id)) return;                       // GUARD: never ingest a tombstoned session
-        await $`__ABS__ opencode-capture --session ${id}`.nothrow().quiet();
+        const now = Date.now();                            // W1: debounce idle storm — skip if <10s since last
+        if (now - (lastCap.get(id) ?? 0) < 10000) return;  //     capture for this id (avoids per-idle cold-load)
+        lastCap.set(id, now);
+        await $`${NODE} ${CLI} opencode-capture --session ${id}`.nothrow().quiet();
       }
     },
     "experimental.chat.system.transform": async (input, output) => {
       if (!input.sessionID) return;
-      const text = await $`__ABS__ opencode-recall --session ${input.sessionID} --cwd ${directory}`
+      const text = await $`${NODE} ${CLI} opencode-recall --session ${input.sessionID} --cwd ${directory}`
         .nothrow().quiet().text();
       const block = text.trim();
       if (block) output.system.push(block);                // RECALL inject (mutable system[])
@@ -451,17 +578,32 @@ export const AbsPlugin = async ({ $, directory }) => {
 export default AbsPlugin;
 ```
 
-(`$` auto-escapes `${id}`/`${directory}`/`${input.sessionID}` — no manual quoting.
-`.quiet()` suppresses echo; `.text()` reads stdout for the recall block.)
+(`$` auto-escapes `${NODE}`/`${CLI}`/`${id}`/`${directory}`/`${input.sessionID}` — no
+manual quoting. `.quiet()` suppresses echo; `.text()` reads stdout for the recall
+block. The W1 in-plugin debounce — track last-capture epoch per session in a `Map`,
+skip a re-fire within 10 s — keeps a `session.idle` storm from cold-loading the
+embedding model on a fresh node process every few seconds; capture is already
+off-the-critical-path (`.nothrow().quiet()`) so the worst case is a delayed capture,
+never a block. W3: this module ships BOTH a named (`AbsPlugin`) and a default export
+for loader compatibility (the minified opencode loader's exact value-enumeration
+rule is unverified); the live smoke-test in Task 8 is what actually proves the export
+shape against real opencode.)
 
 - **Tests** (`opencode-plugin-installer.test.ts`): point `configDir` at a temp dir.
   Cover: (a) install writes `plugin/agentbrainsystem.js` containing the template with
-  `absBinary` substituted, and adds `"./plugin/agentbrainsystem.js"` to
-  `opencode.json` `plugin[]`; (b) **idempotency** — second install is a no-op (no dup
-  array entry, byte-stable file, no extra backup); (c) preserves an existing
-  unrelated plugin entry + the `$schema` key; (d) uninstall removes our entry + file,
-  leaves the user's plugin; (e) symlink `opencode.json` → refuse to write;
-  (f) malformed `opencode.json` → backup taken, fresh write, user bytes recoverable.
+  the ABSOLUTE `node <cliPath>` pair substituted (assert the file contains the
+  resolved `process.execPath` + cli.js path, **NOT** bare `abs` — C2 regression
+  guard); (b) **idempotency** — second install is a no-op (no dup array entry,
+  byte-stable file, no extra backup); (c) preserves an existing unrelated plugin entry
+  + the `$schema` key in a **plain-JSON** `opencode.json`; (d) uninstall removes our
+  entry + file, leaves the user's plugin; (e) symlink config → refuse to write;
+  (f) **C1 — plain `opencode.json`** with other keys → `mcp`/`plugin` added, other
+  keys preserved; (g) **C1 — `opencode.jsonc` present** (alongside or instead of
+  `.json`) → THAT file is the edit target (assert the `.jsonc` file changed and a
+  sibling `.json` was not created/clobbered); (h) **C1 — JSONC `.json`** (a `.json`
+  file containing `// comment` + trailing comma) → installer ABORTS: file
+  byte-UNCHANGED (not clobbered), a `.bak` was taken, and the printed manual snippet
+  contains the exact `plugin[]` (and, via Task 5, `mcp.agentbrainsystem`) JSON.
 
 ### Task 4 — New `abs` subcommands: `opencode-capture` + `opencode-recall`
 
@@ -484,31 +626,74 @@ export default AbsPlugin;
 - `const memory = await openMemory(config, { ensure: false })` (read-only fast path,
   NO model cold-load — same discipline as `handleUserPromptSubmit`, ADR-0005).
 - The system-transform hook has **no user prompt** (it shapes the system prompt, not
-  a turn query). So recall is a **project-broad** pull, not prompt-scoped: resolve the
-  project from `--cwd` via `resolveRecallProject(store, { cwd, sessionId:
-  'opencode:'+ses, scope })` and pull the project's most-recent/most-relevant
-  observations. v1: `recallFts` needs a query string; with no prompt we pull the
-  project's recent durable observations directly (a thin `store.recentByProject(project,
-  TOP_K)` read, or reuse `recallFts` with the project slug words as the query). Render
-  with the existing `renderRecallBlock(hits, fenceHeader(project))` so the injected
-  text is byte-compatible with the per-prompt hook's fenced block (prompt-injection
-  hygiene preserved).
-- Print the rendered block to **stdout** (the plugin reads it via `.text()`); empty →
-  print nothing. Always `memory.close()` in `finally`.
+  a turn query), so recall is a **project-recent** pull, not prompt-scoped.
+- **W2 — commit to ONE real recall mechanism (no `recentByProject`, no slug-words
+  hedge).** `store.recentByProject` does NOT exist; FTS-with-project-slug-words is a
+  degenerate query. The real method is `MemoryStore.listObservations`
+  (`memory-store.ts:363`), which takes `{ project, order, limit }`:
+  1. `const project = resolveRecallProject(memory.store, { scope: 'project',
+     sessionId: 'opencode:' + ses, cwd })` (binding/stored-project wins, else
+     `projectSlug(cwd)` — `scope.ts:42-60`).
+  2. `const obs = memory.store.listObservations({ project, order: 'desc',
+     limit: TOP_K })` — the project's most-recent observations, newest first, no
+     model load (FTS/vector untouched; this is a plain indexed `SELECT … ORDER BY id
+     DESC LIMIT`). Reuse the existing recall `TOP_K` constant.
+  3. Map to the renderer's hit shape: `const hits = obs.map((observation) =>
+     ({ observation, score: 0 }))` (`RecallHit` requires `observation` + `score`,
+     `recall.ts:31-34`; `score` is unused by `renderRecallBlock`).
+  4. `renderRecallBlock(hits, fenceHeader(project))` (`user-prompt-submit.ts:105`)
+     so the injected text is byte-compatible with the per-prompt hook's fenced block
+     (prompt-injection hygiene preserved).
+- **C3 — consent notice, injected once per session.** opencode never calls `abs
+  hook`, so `renderNotice` (`session-start.ts:98`) never fires and the user is never
+  told their sessions are captured. Fix: on the FIRST `opencode-recall` for a session,
+  PREPEND the notice to the returned block. Reuse the first-prompt-flag machinery
+  (`consumeFirstPromptFlag`/`NOTICE_FLAG_PREFIX`, `user-prompt-submit.ts:53,61`):
+  `consumeFirstPromptFlag` keys `kv_meta['notice-shown:' + sid]` and returns true
+  exactly once per `sid` — so calling it with `sid = 'opencode:' + ses` reuses the
+  EXACT same helper (no parallel copy needed) and the opencode `notice-shown:opencode:<ses>`
+  key cannot collide with a Claude key. When it returns true, call
+  `renderNotice('opencode:' + ses, cwd)` and prepend the notice (a blank line between
+  notice and recall block). Second+ recall for the same session → flag already set →
+  no notice. (If the store is opened `{ ensure: false }` read-only, the one-time
+  `setMeta` write inside `consumeFirstPromptFlag` still works — `kv_meta` is a normal
+  table; confirm the read-only open still permits the meta write, else open the meta
+  write path explicitly. Tested below.)
+- Print the rendered block (notice + recall) to **stdout** (the plugin reads it via
+  `.text()`); empty (no notice this turn AND no observations) → print nothing.
+  Always `memory.close()` in `finally`.
 
-> **Design note (recall query source):** the cleanest v1 is project-recent recall
+> **Opt-out (document explicitly — adapter header + this plan).** The skip command
+> works for opencode: `abs project --session opencode:<id> --skip` (`cmdProject`
+> accepts `--session` to override the ambient id, `cli.ts:864`). **Caveat:**
+> `cmdProject` hard-codes `const cwd = process.cwd()` (`cli.ts:926`) and `--cwd` is
+> already taken as an ACTION flag there (`cli.ts:888` — "file this session under its
+> folder"), so adding a `--cwd <path>` *override* would collide with the existing
+> action surface. **Decision: do NOT add `--cwd` to `cmdProject` in #72** (the
+> collision makes it not-cheap and risks regressing the existing skip/file UX). Instead
+> **document the requirement**: the user must run `abs project --session opencode:<id>
+> --skip` **from the session's project directory** (so `process.cwd()` resolves to the
+> right project). The renderNotice text already names the project folder, and the
+> consent block will state this cwd requirement for opencode. (A clean `--cwd`
+> override is a candidate follow-up, tracked separately.)
+
+> **Design note (recall query source):** project-recent recall is the v1 mechanism
 > (no prompt available at system-transform time). If a future opencode API exposes
-> the pending user message to the transform hook, switch to prompt-scoped `recallFts`
-> — the subcommand surface (`--session`/`--cwd` + optional `--prompt`) is forward-
-> compatible. Add `--prompt` now as optional: when present, `recallFts(prompt, …)`;
-> when absent, project-recent. The plugin omits it in v1.
+> the pending user message to the transform hook, add an optional `--prompt` and
+> switch to prompt-scoped `recallFts(prompt, { project })` when present — the
+> subcommand surface stays forward-compatible. v1 does not add `--prompt`.
 
 - **Tests** (`src/cli/cli.test.ts`, append): (a) `opencode-capture` with a temp DB +
   temp store → observations land under `opencode:ses_…`; (b) `opencode-capture`
   missing `--session` → exit 1; (c) `opencode-recall --cwd <proj>` with seeded
-  observations → prints a fenced `<recalled-memory>` block scoped to the project;
-  (d) `opencode-recall` empty store → prints nothing, exit 0; (e) `opencode-recall`
-  missing `--session`/`--cwd` → exit 1.
+  observations → prints a fenced `<recalled-memory>` block scoped to the project, via
+  `listObservations({ project, order:'desc', limit:TOP_K })` (assert it returns the
+  project's recent observations); (d) `opencode-recall` empty store → prints nothing,
+  exit 0; (e) `opencode-recall` missing `--session`/`--cwd` → exit 1; (f) **consent**:
+  the FIRST `opencode-recall` for a session includes the `renderNotice` text prepended
+  to the block; a SECOND call for the same session does NOT (flag consumed); (g) the
+  notice fires even on an otherwise-empty recall (notice alone is printed on the first
+  turn).
 
 ### Task 5 — `src/harness/adapters/opencode.ts` + file-only MCP registrar
 
@@ -541,16 +726,19 @@ export function opencodeAdapter(): HarnessAdapter {
 }
 ```
 
-**`fileMcpRegister()`** (lives in the installer module, shares its `opencode.json`
-read-modify-atomic-write): merge `config.mcp.agentbrainsystem = { type: 'local',
-command: ['node', cliPath, 'start'], enabled: true }`. Idempotent: if an identical
+**`fileMcpRegister(cliPath)`** (lives in the installer module, goes through the SAME
+`editOpencodeConfig` helper as the plugin-array edit — JSONC-aware, abort-not-clobber,
+C1): merge `config.mcp.agentbrainsystem = { type: 'local', command: ['node', cliPath,
+'start'], enabled: true }` into the resolved config file. Idempotent: if an identical
 entry exists → `{ status: 'already' }`; if a *different* server already owns the
 `agentbrainsystem` key → leave it, return `{ status: 'already' }` (never clobber);
-on write → `{ status: 'registered' }`; symlink/permission error →
-`{ status: 'error', message, manualCommand }` where `manualCommand` is a
-copy-pasteable JSON snippet (NOT a `opencode mcp add` line — that's interactive).
-The adapter's `registerMcp(cliPath, run)` ignores `run` (no subprocess) and calls
-this; `cliPath` is threaded so the command array points at the real installed CLI.
+on write → `{ status: 'registered' }`; **JSONC config that strict-parse fails** →
+`{ status: 'manual', message, manualCommand }` where `manualCommand` is the
+copy-pasteable `mcp.agentbrainsystem` JSON snippet to paste (NOT an `opencode mcp add`
+line — that's interactive), config left byte-unchanged; symlink/permission error →
+`{ status: 'error', message }`. The adapter's `registerMcp(cliPath, run)` ignores
+`run` (no subprocess) and calls this; `cliPath` is threaded so the command array
+points at the real installed CLI.
 
 > The `HarnessAdapter.registerMcp(cliPath, run)` signature is unchanged — OpenCode
 > simply doesn't use `run`. This is a clean fit: the contract abstracts *intent*
@@ -561,7 +749,10 @@ this; `cliPath` is threaded so the command array points at the real installed CL
   `eventMap` shape; (b) `qualifies()` ok; (c) `detect()` true when `~/.config/opencode`
   exists (temp HOME), false otherwise; (d) `resolveSession` returns `{sessionId}` from
   payload, null without; (e) `registerMcp` writes `config.mcp.agentbrainsystem` into a
-  temp `opencode.json`, idempotent on second call, never clobbers a foreign entry.
+  temp plain `opencode.json`, idempotent on second call, never clobbers a foreign
+  entry; (f) **C1** — `registerMcp` against a JSONC `.json` (comment/trailing comma)
+  → `{ status: 'manual' }`, config byte-unchanged, snippet contains the mcp entry;
+  (g) **C1** — when `opencode.jsonc` exists, `registerMcp` targets it (not `.json`).
 
 ### Task 6 — Register in `defaultRegistry()`
 
@@ -591,9 +782,12 @@ install/uninstall/setup — they already dispatch by `--harness <id>`.
 feasible:
 
 1. **Install:** `abs install-hooks --harness opencode` + `abs setup --harness opencode`
-   → assert `~/.config/opencode/plugin/agentbrainsystem.js` exists with the substituted
-   `abs` binary, `opencode.json` has both the `plugin` entry and
+   → assert `~/.config/opencode/plugin/agentbrainsystem.js` exists with the ABSOLUTE
+   `node <abs-cli.js>` invocation baked in (NOT bare `abs` — C2), and the resolved
+   config file (`opencode.json` here, plain JSON) has both the `plugin` entry and
    `mcp.agentbrainsystem`. Back up the real `opencode.json` first; restore after.
+   (The live file is plain JSON, so this exercises the happy path; the JSONC abort
+   path is unit-tested in Tasks 3/5.)
 2. **Capture (DB→memory) without driving a live LLM session:** point
    `abs opencode-capture --session <an existing real ses_… from opencode.db>` at the
    live DB → assert observations land under `opencode:ses_…` with the project derived
@@ -606,9 +800,12 @@ feasible:
    (`auth.json` present, but model/network out of scope for an offline acceptance).
    Document this as the one manual step; the DB-direct capture (step 2) + recall
    (step 3) prove every seam EXCEPT opencode's own event firing, which is the
-   plugin-template + `$` bridge already unit-tested in Task 3. Note the
-   `experimental.` namespace pin (ADR-0011 watch-out) — add a comment in the plugin
-   file recording the tested opencode version range (1.15.x).
+   plugin-template + `$` bridge already unit-tested in Task 3. When the manual loop is
+   run, it is also the **live smoke-test of the dual export shape** (W3 — confirm the
+   real opencode loader actually loads the `AbsPlugin`/default-export module and fires
+   the hooks) and of the **consent notice** appearing on the session's first injected
+   system prompt (C3). Note the `experimental.` namespace pin (ADR-0011 watch-out) —
+   the plugin file already records the tested opencode version range (1.15.x).
 5. **Cleanup:** `abs uninstall --harness opencode` → plugin file + config entries
    removed; restore the backed-up `opencode.json`.
 
@@ -634,6 +831,38 @@ feasible:
   for the project (Task 2). Tested via the fixture's `directory` column.
 - **Do not regress the chokepoint.** Adding an opencode path branch to
   `harnessForPayload` would be wrong (Break #1) — Task 1's regression test guards it.
+- **Config is JSONC, not JSON (C1).** Resolution precedence is
+  `opencode.jsonc → opencode.json → config.json` (verified in the binary), and any
+  resolved config is parsed as JSONC (comments + trailing commas legal). The Gemini
+  "malformed → start fresh" rule would CLOBBER a JSONC config; we use the
+  strict-parse-or-abort `editOpencodeConfig` helper instead (Tasks 3/5). Tested:
+  plain JSON merges in place, `.jsonc` is the target when present, a JSONC `.json`
+  aborts to a printed manual snippet with the file unchanged.
+- **Plugin shells the ABSOLUTE `node <cli.js>`, never bare `abs` (C2).** opencode's
+  Bun process PATH may lack the npm-global bin; bare `abs` + `.nothrow()` = silent
+  dead capture/recall. The absolute pair is baked at install time. Tested: generated
+  plugin contains the absolute command, not `abs`.
+- **Consent for opencode (C3).** opencode never calls `abs hook` → `renderNotice`
+  never fires natively. The notice is injected once per session by `opencode-recall`
+  (first-transform, via `consumeFirstPromptFlag` keyed `opencode:<ses>`). Opt-out is
+  `abs project --session opencode:<id> --skip` run from the session's project dir
+  (cwd requirement documented; no `--cwd` override added — collides with the existing
+  action flag). Tested: first recall shows the notice, second does not.
+- **Capture cold-loads the embedding model per `session.idle` (W1).** Each capture is
+  a fresh node process that can't memoize the transformers.js pipeline, so a
+  `session.idle` storm would reload it repeatedly. Capture is off the critical path
+  (`.nothrow().quiet()`), so this is tolerable, but the plugin DEBOUNCES: skip a
+  re-capture within 10 s of the last for that session (per-session `Map` of last-cap
+  epoch). Worst case is a delayed capture, never a block.
+- **One real recall method (W2).** Recall uses `MemoryStore.listObservations({
+  project, order:'desc', limit:TOP_K })` (`memory-store.ts:363`) — a real,
+  no-model-load indexed read — NOT the non-existent `store.recentByProject` and NOT a
+  degenerate slug-words FTS query. Mapped to `RecallHit[]` (`{observation, score:0}`)
+  for `renderRecallBlock`.
+- **Dual export is a hedge, not a verified fact (W3).** The plugin ships both a named
+  (`AbsPlugin`) and a default export for loader compatibility; the exact rule the
+  minified opencode loader uses is unverified, so the real proof is the Task 8 live
+  smoke-test, not an assertion.
 
 ## Done when
 
@@ -642,9 +871,20 @@ feasible:
   uninstall --harness opencode` reverses it.
 - `abs opencode-capture` ingests a real opencode.db session under `opencode:ses_…`
   scoped to the session's real `directory`; re-running adds nothing (watermark holds).
-- `abs opencode-recall` prints a project-scoped fenced recall block.
+- `abs opencode-recall` prints a project-scoped fenced recall block via
+  `listObservations` (W2), with the consent notice prepended on the session's first
+  recall and suppressed thereafter (C3).
+- The generated plugin shells the absolute `node <cli.js>` invocation, not bare `abs`
+  (C2); config writes are JSONC-safe — plain JSON merges in place, JSONC aborts to a
+  printed manual snippet with the user's file unchanged (C1).
 - `defaultRegistry()` returns 5 adapters; `--harness opencode` resolves.
 - Adapter + two capabilities + plugin template documented (header comments) with the
-  on-disk facts + the tested opencode version range.
+  on-disk facts, the consent/opt-out story, and the tested opencode version range.
 
 ## Task count: 8
+
+(8 tasks unchanged; the plan-critic fixes added tests inside existing tasks — Task 3
+gains the C1 JSONC + C2 absolute-path cases [+3], Task 4 gains the C3 consent cases
+[+2] and the W2 real-method assertion, Task 5 gains the C1 JSONC/precedence MCP cases
+[+2]. Net new test cases: 7. No new task introduced; the W1 debounce and the dual-
+export hedge live in the existing plugin template + Task 8 smoke.)
