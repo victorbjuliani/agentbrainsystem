@@ -18,6 +18,7 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { NodeType } from '../graph-types.js';
 import { beadParam, recencyNorm, tentacleAngle, tentacleLength } from './creature-geometry.js';
 import { colorForType } from './palette.js';
@@ -103,6 +104,21 @@ export function createRenderer(mount: HTMLElement, cb: RendererCallbacks): Rende
   composer.addPass(new RenderPass(scene, camera));
   composer.addPass(bloom);
   composer.addPass(new OutputPass());
+
+  // Free exploration (DESIGN §11 "zoom/pan livres"): scroll = zoom, drag = orbit,
+  // right-drag = pan. Damping for the organic feel; clamped so you can't fly away
+  // or invert under the creature. Listens on the canvas so the overlays stay clickable.
+  const controls = new OrbitControls(camera, canvas);
+  controls.target.set(0, -0.9, 0);
+  controls.enableDamping = !REDUCED_MOTION;
+  controls.dampingFactor = 0.08;
+  controls.rotateSpeed = 0.6;
+  controls.zoomSpeed = 0.8;
+  controls.minDistance = 4;
+  controls.maxDistance = 32;
+  controls.maxPolarAngle = Math.PI * 0.92;
+  // Under reduced motion the rAF loop is off, so repaint on each control change.
+  if (REDUCED_MOTION) controls.addEventListener('change', () => frame(performance.now()));
 
   const GLOW = glowTexture();
   const root = new THREE.Group();
@@ -488,15 +504,23 @@ export function createRenderer(mount: HTMLElement, cb: RendererCallbacks): Rende
   });
 
   // --- camera framing ---------------------------------------------------------
-  function frameCamera(): void {
+  let framedOnce = false;
+  function frameCamera(force = false): void {
     // The creature spans roughly y ∈ [-7, 4.3]; frame it for the current aspect.
+    // Once framed, OrbitControls owns the camera — only a forced fit re-centres it
+    // (so a window resize never yanks the view out from under the user).
+    controls.target.set(0, -0.9, 0);
+    if (framedOnce && !force) {
+      controls.update();
+      return;
+    }
     const halfH = 5.7;
-    const aspect = camera.aspect;
     const vFovFit = halfH / Math.tan((camera.fov * Math.PI) / 360);
-    const hFovFit = halfH / aspect / Math.tan((camera.fov * Math.PI) / 360);
+    const hFovFit = halfH / camera.aspect / Math.tan((camera.fov * Math.PI) / 360);
     const dist = Math.max(vFovFit, hFovFit) * 1.04;
     camera.position.set(0, -0.85, dist);
-    camera.lookAt(0, -0.9, 0);
+    controls.update();
+    framedOnce = true;
   }
 
   // --- animation loop ---------------------------------------------------------
@@ -507,6 +531,7 @@ export function createRenderer(mount: HTMLElement, cb: RendererCallbacks): Rende
   function frame(now: number): void {
     const time = REDUCED_MOTION ? 0 : (now - t0) / 1000;
     lastTime = time;
+    controls.update();
 
     const breath = 1 + Math.sin(time * 0.8) * 0.022;
     bell.scale.set(breath, 1 / Math.sqrt(breath), breath);
@@ -577,7 +602,7 @@ export function createRenderer(mount: HTMLElement, cb: RendererCallbacks): Rende
       if (REDUCED_MOTION) frame(performance.now());
     },
     fit(): void {
-      frameCamera();
+      frameCamera(true);
     },
     resize(w: number, h: number): void {
       renderer.setSize(w, h);
