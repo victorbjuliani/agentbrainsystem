@@ -613,6 +613,33 @@ describe('cmdUninstall — --harness-aware MCP unregister (C2, #67)', () => {
     const mcpCalls = calls.filter((c) => c.includes('mcp'));
     expect(mcpCalls.every((c) => c[0] === 'claude')).toBe(true);
   });
+
+  // Regression lock for the `adapter.mcpFileManaged` skip branch in cmdUninstall.
+  // OpenCode's MCP entry is FILE-managed: its uninstall() removes the config key,
+  // and `opencode mcp` has no non-interactive remove — so the CLI unregister path
+  // MUST be skipped. The codex/claude tests above only exercise non-file-managed
+  // adapters (CLI path), so without this test a future refactor could delete the
+  // guard and all other tests would still pass while opencode silently hangs on the
+  // interactive `opencode mcp remove`. This pins the guard's three observable effects.
+  it('--harness opencode skips the CLI mcp path (file-managed) yet still removes the config entry', async () => {
+    const calls: string[][] = [];
+    await cmdUninstall(['--harness', 'opencode'], {
+      run: (cmd, args) => {
+        calls.push([cmd, ...args]);
+        // Should never be reached for a file-managed adapter; default benign result.
+        return Promise.resolve({ code: 0, stdout: '', stderr: '' });
+      },
+    });
+    // 1. ZERO CLI `mcp` invocations — the CLI unregister path is skipped entirely
+    //    (no `opencode mcp remove`, no `claude mcp ...`, nothing).
+    const mcpCalls = calls.filter((c) => c.includes('mcp'));
+    expect(mcpCalls).toEqual([]);
+    // 2. The file-managed branch's confirmation line is printed.
+    expect(outLines.join('')).toContain('MCP server entry removed from OpenCode config');
+    // 3. The adapter's uninstall() still ran — its file path reports the removed
+    //    capabilities, which only print AFTER `await adapter.uninstall()` returns.
+    expect(outLines.join('')).toContain('hooks removed (OpenCode): capture, recall');
+  });
 });
 
 describe('cmdRemember — global authoring (hermetic, tmp ABS_HOME, real local provider)', () => {
