@@ -21,6 +21,7 @@ import { z } from 'zod';
 import { loadConfig } from '../config.js';
 import { DeleteRefusalError, type DeleteSelector, execute, preview } from '../delete/index.js';
 import { getOrCreateGlobalSession } from '../global.js';
+import { defaultRegistry } from '../harness/index.js';
 import { clearBinding, defaultClaudeProjectsDir, writeBinding } from '../ingest/index.js';
 import { type Memory, openMemory } from '../memory.js';
 import {
@@ -90,7 +91,8 @@ export function createMcpServer(memory: Memory): McpServer {
         explicit ??
         resolveRecallProject(memory.store, {
           scope: loadConfig().recallScope,
-          sessionId: process.env.CLAUDE_CODE_SESSION_ID,
+          sessionId: defaultRegistry().byId('claude-code')?.resolveSession({ env: process.env })
+            ?.sessionId,
           cwd: process.cwd(),
         });
       // includeGlobal: the curated cross-project global brain is recalled alongside
@@ -443,7 +445,9 @@ export function setSessionProjectAction(
   memory: Memory,
   { action, session, confirmDelete }: SetSessionProjectArgs,
 ): Record<string, unknown> {
-  const sid = session ?? process.env.CLAUDE_CODE_SESSION_ID;
+  const sid =
+    session ??
+    defaultRegistry().byId('claude-code')?.resolveSession({ env: process.env })?.sessionId;
   if (!sid) {
     return {
       error:
