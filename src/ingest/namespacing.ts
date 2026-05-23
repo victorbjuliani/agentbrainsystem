@@ -45,10 +45,11 @@ export function isGeminiTranscript(absPath: string): boolean {
 
 /** True when the path is a Copilot CLI session transcript (drives parser + namespace, #69). */
 export function isCopilotTranscript(absPath: string): boolean {
+  const p = toPosixPath(absPath); // normalize Windows separators (#86)
   return (
-    absPath.includes('/.copilot/session-state/') &&
+    p.includes('/.copilot/session-state/') &&
     /\/session-state\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/events\.jsonl$/i.test(
-      absPath,
+      p,
     )
   );
 }
