@@ -375,7 +375,7 @@ async function cmdHook(args: string[]): Promise<void> {
  * cross-adapter auto-detect lands with the second adapter). Returns null after
  * printing an error + setting a non-zero exit code.
  */
-function resolveHarnesses(args: string[]): HarnessAdapter[] | null {
+export function resolveHarnesses(args: string[]): HarnessAdapter[] | null {
   const id = optionValue(args, '--harness');
   if (id !== undefined) {
     const adapter = defaultRegistry().byId(id);

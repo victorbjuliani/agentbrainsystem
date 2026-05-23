@@ -25,6 +25,7 @@ import {
   parseForgetSelector,
   parseIds,
   parseProjectAction,
+  resolveHarnesses,
   resolveSessionId,
 } from './cli.js';
 
@@ -481,6 +482,55 @@ describe('cmdProject — set / cwd / skip / status (hermetic, tmp ABS_HOME)', ()
     expect(mem2.store.getSessionByExternalId('sess-ingested')?.project).toBe(cwdSlug);
     mem2.close();
   });
+});
+
+describe('resolveHarnesses — --harness flag resolution (install-hooks path)', () => {
+  // resolveHarnesses prints the refusal via out()→process.stdout and sets
+  // process.exitCode; spy on stdout and reset exitCode like the other cmd suites.
+  let outLines: string[];
+
+  beforeEach(() => {
+    outLines = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk: string | Uint8Array) => {
+      outLines.push(String(chunk));
+      return true;
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    process.exitCode = 0;
+  });
+
+  it('an unknown --harness id refuses with a non-zero exit and an "unknown harness" message', () => {
+    const result = resolveHarnesses(['--harness', 'no-such-harness']);
+    expect(result).toBeNull();
+    expect(process.exitCode).toBe(1);
+    expect(outLines.join('')).toContain("unknown harness 'no-such-harness'");
+  });
+
+  it('no --harness flag resolves to the default Claude Code adapter (no error, no exit code)', () => {
+    const result = resolveHarnesses([]);
+    expect(result).not.toBeNull();
+    expect(result).toHaveLength(1);
+    expect(result?.[0]?.id).toBe('claude-code');
+    // Default path neither prints nor sets a failing exit code.
+    expect(outLines.join('')).toBe('');
+    expect(process.exitCode).toBe(0);
+  });
+
+  it('an explicit --harness claude-code resolves the same qualifying adapter', () => {
+    const result = resolveHarnesses(['--harness', 'claude-code']);
+    expect(result?.[0]?.id).toBe('claude-code');
+    expect(process.exitCode).toBe(0);
+  });
+
+  // NOTE: the qualify-fail branch (`!qualifies()` → "does not qualify" + exit 1) is
+  // NOT unit-testable in Phase 0: defaultRegistry() holds only the claude-code adapter,
+  // whose qualifies() is hard-wired to { ok: true }, and resolveHarnesses reads that
+  // registry directly (no injection seam). This branch is exercised in Phase 1 when a
+  // second, non-qualifying adapter exists. Production code is intentionally left
+  // unrefactored — adding a registry-injection seam purely for this test is not warranted.
 });
 
 describe('cmdRemember — global authoring (hermetic, tmp ABS_HOME, real local provider)', () => {
