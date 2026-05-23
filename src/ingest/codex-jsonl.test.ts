@@ -9,7 +9,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const fixture = readFileSync(join(__dirname, '__fixtures__/codex/rollout-sample.jsonl'), 'utf8');
 
 const REAL_PATH = '/abs/rollout-2026-05-14T08-56-53-019e2658-c8b0-7230-9b59-c3646fbf0c7b.jsonl';
-const CWD = '/Users/vbjuliani/Meu Mac/Profissional/PG_Consultoria/AI_Team/PGIntegra';
+const CWD = '/Users/dev/Meu Mac/work/sample-project';
 
 describe('codexParseTranscript', () => {
   it('takes sessionId from the FILENAME and cwd from session_meta, applied to every entry', () => {
@@ -52,6 +52,37 @@ describe('codexParseTranscript', () => {
     expect(entries.filter((e) => e.role === 'assistant').length).toBeGreaterThanOrEqual(1);
     // (c) The event_msg-ONLY turn (no response_item/message twin) is still captured.
     expect(texts.some((t) => t.includes('no response_item twin'))).toBe(true);
+  });
+
+  it('keeps two LEGITIMATE identical turns; only the immediate event_msg twin is dropped (#85)', () => {
+    const slice = [
+      // turn 1: user "ok" + its event_msg twin (dropped)
+      {
+        type: 'response_item',
+        payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'ok' }] },
+      },
+      { type: 'event_msg', payload: { type: 'user_message', message: 'ok' } },
+      // turn 2: assistant reply (no twin)
+      {
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: 'done' }],
+        },
+      },
+      // turn 3: user "ok" AGAIN — a real repeat, must NOT be collapsed into turn 1
+      {
+        type: 'response_item',
+        payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'ok' }] },
+      },
+    ]
+      .map((o) => JSON.stringify(o))
+      .join('\n');
+    const { entries } = codexParseTranscript(`${slice}\n`, REAL_PATH);
+    const users = entries.filter((e) => e.role === 'user');
+    expect(users).toHaveLength(2); // both real "ok" turns kept; twin de-duped
+    expect(users.every((e) => e.text === 'ok')).toBe(true);
   });
 
   it('groups by FILENAME UUID even on a header-less slice; uses cwdHint for project (W4 resume)', () => {
@@ -110,14 +141,14 @@ describe('codexParseTranscript', () => {
         content: [
           {
             type: 'input_text',
-            text: '# AGENTS.md instructions for /work/proj\n\n<INSTRUCTIONS>\nAlways run npm run check.\n</INSTRUCTIONS>\n\nInicie o serviço local do PGIntegra.',
+            text: '# AGENTS.md instructions for /work/proj\n\n<INSTRUCTIONS>\nAlways run npm run check.\n</INSTRUCTIONS>\n\nInicie o serviço local do sample-project.',
           },
         ],
       },
     });
     const kept = codexParseTranscript(`${withProse}\n`, REAL_PATH).entries;
     expect(kept).toHaveLength(1);
-    expect(kept[0]?.text).toBe('Inicie o serviço local do PGIntegra.');
+    expect(kept[0]?.text).toBe('Inicie o serviço local do sample-project.');
     expect(kept[0]?.text).not.toContain('AGENTS.md instructions');
     expect(kept[0]?.text).not.toContain('INSTRUCTIONS');
     expect(kept[0]?.text).not.toContain('npm run check');

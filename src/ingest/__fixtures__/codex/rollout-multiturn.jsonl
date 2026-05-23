@@ -1,4 +1,4 @@
-{"timestamp": "2026-05-14T12:00:00.000Z", "type": "session_meta", "payload": {"id": "019e2658-c8b0-7230-9b59-c3646fbf0c7b", "cwd": "/Users/vbjuliani/Meu Mac/Profissional/PG_Consultoria/AI_Team/PGIntegra", "originator": "Codex Desktop", "cli_version": "0.130.0-alpha.5"}}
+{"timestamp": "2026-05-14T12:00:00.000Z", "type": "session_meta", "payload": {"id": "019e2658-c8b0-7230-9b59-c3646fbf0c7b", "cwd": "/Users/dev/Meu Mac/work/sample-project", "originator": "Codex Desktop", "cli_version": "0.130.0-alpha.5"}}
 {"timestamp": "2026-05-14T12:00:01.000Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Turn one user question about the build"}]}}
 {"timestamp": "2026-05-14T12:00:01.100Z", "type": "event_msg", "payload": {"type": "user_message", "message": "Turn one user question about the build"}}
 {"timestamp": "2026-05-14T12:00:02.000Z", "type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Turn one assistant answer about the build"}]}}

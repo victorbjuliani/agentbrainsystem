@@ -93,32 +93,32 @@ export interface CodexLineParser {
 
 export function createCodexLineParser(absPath: string, cwdHint?: string): CodexLineParser {
   const sessionId = sessionIdFromPath(absPath); // FILENAME-derived id (W4)
-  // De-dup is per-ingest-run (this parser instance only). A cursor-resume boundary
-  // that falls BETWEEN a response_item and its event_msg twin can yield one duplicate
-  // observation — accepted at-least-once tolerance, the same class as the Claude path.
-  // A persistent (cross-run) dedup is a follow-up (W2, #67).
-  const seen = new Set<string>(); // normalized "role text" already captured — de-dup event_msg twins
+  // De-dup is ONE-SHOT against the immediately-preceding response_item, NOT a global
+  // set (#85). A Codex turn is a response_item/message OPTIONALLY mirrored by an
+  // event_msg twin that directly follows it; the twin carries identical role+text.
+  // We suppress only that twin — keyed on the LAST emitted response_item and consumed
+  // by the next event_msg — so two LEGITIMATE identical turns (e.g. a user typing "ok"
+  // twice) are never collapsed. A cursor-resume boundary can still re-emit one turn
+  // cross-run (accepted at-least-once tolerance; persistent dedup is W2, #67).
+  let lastResponseItemKey: string | undefined;
   let cwd = cwdHint;
   let headerCwd: string | undefined;
 
-  /** Build an entry unless its normalized text was already captured (de-dup twins). */
-  const make = (
+  const keyOf = (role: 'user' | 'assistant', text: string): string =>
+    `${role} ${text.replace(/\s+/g, ' ').trim().toLowerCase()}`;
+
+  const build = (
     role: 'user' | 'assistant',
     text: string,
     timestamp: string | undefined,
-  ): ParsedEntry | undefined => {
-    const key = `${role} ${text.replace(/\s+/g, ' ').trim().toLowerCase()}`;
-    if (seen.has(key)) return undefined; // a response_item already captured this turn
-    seen.add(key);
-    return {
-      sessionId: sessionId as string,
-      role,
-      text,
-      toolAnchors: [],
-      ...(cwd ? { cwd } : {}),
-      ...(timestamp ? { timestamp } : {}),
-    };
-  };
+  ): ParsedEntry => ({
+    sessionId: sessionId as string,
+    role,
+    text,
+    toolAnchors: [],
+    ...(cwd ? { cwd } : {}),
+    ...(timestamp ? { timestamp } : {}),
+  });
 
   return {
     observedCwd: () => headerCwd,
@@ -148,7 +148,8 @@ export function createCodexLineParser(absPath: string, cwdHint?: string): CodexL
         if (role !== 'user' && role !== 'assistant') return undefined; // skip 'developer' system turns
         const textOut = extractContent(payload.content);
         if (textOut.length === 0) return undefined; // tool-only / empty
-        return make(role, textOut, asString(obj.timestamp));
+        lastResponseItemKey = keyOf(role, textOut); // arm the one-shot twin guard
+        return build(role, textOut, asString(obj.timestamp));
       }
 
       // --- Fallback source: event_msg with NO response_item/message twin (W-NEW-4) ---
@@ -159,7 +160,14 @@ export function createCodexLineParser(absPath: string, cwdHint?: string): CodexL
         if (!role) return undefined; // skip token_count/task_*/patch_apply_end/etc.
         const textOut = clean(asString(payload.message) ?? '');
         if (textOut.length === 0) return undefined;
-        return make(role, textOut, asString(obj.timestamp)); // de-dup guard inside make() drops twins
+        // One-shot twin guard: an event_msg matching the LAST response_item is its
+        // mirror → drop. The guard is consumed either way, so a later identical
+        // event-only turn (and legit repeats) still emit (#85).
+        const key = keyOf(role, textOut);
+        const isTwin = key === lastResponseItemKey;
+        lastResponseItemKey = undefined;
+        if (isTwin) return undefined;
+        return build(role, textOut, asString(obj.timestamp));
       }
       // everything else (turn_context, function_call, reasoning, …) is skipped
       return undefined;

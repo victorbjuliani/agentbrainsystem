@@ -13,6 +13,13 @@ describe('isCodexTranscript (W-R3-1 — leaf classifier)', () => {
   it('rejects a Claude projects path', () => {
     expect(isCodexTranscript('/u/.claude/projects/-x/sess.jsonl')).toBe(false);
   });
+  it('matches a Windows backslash-separated codex path (#86)', () => {
+    expect(
+      isCodexTranscript(
+        'C:\\Users\\dev\\.codex\\sessions\\2026\\05\\14\\rollout-2026-05-14T08-56-53-019e2658-c8b0-7230-9b59-c3646fbf0c7b.jsonl',
+      ),
+    ).toBe(true);
+  });
 });
 
 describe('namespacedExternalId (W1)', () => {
