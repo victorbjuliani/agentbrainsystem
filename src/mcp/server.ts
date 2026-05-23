@@ -474,6 +474,25 @@ export function setSessionProjectAction(
   return { session: sid, action: 'skip', deleted: storedCount, applied: true };
 }
 
+/** Result of the startup index gate, derived from the indexer (no extra import). */
+type EnsureResult = Awaited<ReturnType<Memory['indexer']['ensureIndex']>>;
+
+/**
+ * Run the startup index gate as a NON-REJECTING promise: on failure it logs and
+ * resolves to void (degraded — the store rows still serve), so callers that
+ * `await memory.ready` never inherit a rejection. Without this, a one-off rebuild
+ * error (e.g. an embed-provider hiccup) would make every later `recall`/`remember`
+ * re-throw it — turning a degraded index into a persistent tool outage until
+ * restart (Codex P1 on #76).
+ */
+export function backgroundEnsure(
+  indexer: Pick<Memory['indexer'], 'ensureIndex'>,
+): Promise<EnsureResult | void> {
+  return indexer.ensureIndex().catch((err) => {
+    process.stderr.write(`[abs] background index rebuild failed: ${String(err)}\n`);
+  });
+}
+
 /** Boot the full stack and serve it over stdio. Used by the CLI / MCP packaging. */
 export async function startStdio(): Promise<void> {
   // Open the stack WITHOUT the startup rebuild gate so the stdio `initialize`
@@ -483,12 +502,9 @@ export async function startStdio(): Promise<void> {
   // "✗ Failed to connect" even though the server is healthy.
   const memory = await openMemory(undefined, { ensure: false });
   // Bring the index up to date in the BACKGROUND; recall/remember await `ready` so
-  // they never read or write a half-built index. A failure is non-fatal — the store
-  // rows are intact and degraded recall still beats a dead server — so log to stderr.
-  memory.ready = memory.indexer.ensureIndex();
-  memory.ready.catch((err) => {
-    process.stderr.write(`[abs] background index rebuild failed: ${String(err)}\n`);
-  });
+  // they never read or write a half-built index. `backgroundEnsure` never rejects,
+  // so a rebuild failure stays non-fatal instead of poisoning every later call.
+  memory.ready = backgroundEnsure(memory.indexer);
 
   const server = createMcpServer(memory);
   const transport = new StdioServerTransport();

@@ -8,7 +8,7 @@ import type { AppConfig } from '../config.js';
 import { __clearDeleteCacheForTests } from '../delete/delete.js';
 import type { EnsureResult } from '../indexer/index.js';
 import { type Memory, openMemory } from '../memory.js';
-import { createMcpServer, rememberAction } from './server.js';
+import { backgroundEnsure, createMcpServer, rememberAction } from './server.js';
 
 let dir: string;
 let mem: Memory;
@@ -281,5 +281,19 @@ describe('background startup rebuild (MCP boot latency)', () => {
     const out = await pending;
     expect(out.id).toBeGreaterThan(0);
     expect(mem.store.counts().observations).toBe(1);
+  });
+
+  it('backgroundEnsure resolves on rebuild failure (never poisons memory.ready)', async () => {
+    // A rejected ensureIndex must NOT propagate: callers await memory.ready, so a
+    // rejection would turn a one-off rebuild error into a persistent tool outage.
+    const failing = {
+      ensureIndex: () => Promise.reject(new Error('embed provider down')),
+    };
+    await expect(backgroundEnsure(failing)).resolves.toBeUndefined();
+  });
+
+  it('backgroundEnsure forwards the result on success', async () => {
+    const ok = await backgroundEnsure(mem.indexer);
+    expect(ok).toMatchObject({ reason: expect.any(String) });
   });
 });
