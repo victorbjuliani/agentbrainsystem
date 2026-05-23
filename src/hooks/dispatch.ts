@@ -8,6 +8,7 @@
  * the session (ADR-0004). Unknown events are a silent no-op (exit 0).
  */
 
+import { harnessForPayload, namespacedExternalId } from '../ingest/index.js';
 import { type HookPayload, parseHookPayload, readStdin } from './payload.js';
 import { handlePreToolUse } from './pre-tool-use.js';
 import { runHookSafely } from './runner.js';
@@ -46,6 +47,13 @@ export async function dispatchHook(eventArg: string, options: DispatchOptions = 
       if (!handler) return undefined; // unknown event — no-op, non-fatal
       const raw = await readStdin(options.stdin);
       const payload = parseHookPayload(raw);
+      // CHOKEPOINT (C-NEW-1/R4, #67): namespace the session id ONCE so the bare id
+      // never reaches a handler. Claude → bare (migration-safe); Codex → codex:<uuid>.
+      // Path-derived from transcriptPath. Every downstream consumer (session-start,
+      // user-prompt-submit, scope, set_session_project) treats it as opaque.
+      if (payload.sessionId) {
+        payload.sessionId = namespacedExternalId(harnessForPayload(payload), payload.sessionId);
+      }
       return handler(payload);
     },
     {

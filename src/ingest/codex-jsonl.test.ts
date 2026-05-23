@@ -8,8 +8,7 @@ import { codexParseTranscript } from './codex-jsonl.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const fixture = readFileSync(join(__dirname, '__fixtures__/codex/rollout-sample.jsonl'), 'utf8');
 
-const REAL_PATH =
-  '/abs/rollout-2026-05-14T08-56-53-019e2658-c8b0-7230-9b59-c3646fbf0c7b.jsonl';
+const REAL_PATH = '/abs/rollout-2026-05-14T08-56-53-019e2658-c8b0-7230-9b59-c3646fbf0c7b.jsonl';
 const CWD = '/Users/vbjuliani/Meu Mac/Profissional/demo-corp/AI_Team/AcmeApp';
 
 describe('codexParseTranscript', () => {

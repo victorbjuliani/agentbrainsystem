@@ -2,8 +2,8 @@ import { execFile } from 'node:child_process';
 import {
   copyFileSync,
   mkdtempSync,
-  readFileSync,
   readdirSync,
+  readFileSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -178,8 +178,9 @@ describe('codexLifecycleInstaller', () => {
     writeFileSync(configPath, fixture);
     const m = fixture.match(/\[projects\.("[^"]+")\]\s*\n(?:[^[]*?)trust_level\s*=\s*"(\w+)"/);
     expect(m).not.toBeNull();
-    const realCwd = JSON.parse((m as RegExpMatchArray)[1]) as string;
-    const realTrust = (m as RegExpMatchArray)[2];
+    const groups = m as RegExpMatchArray;
+    const realCwd = JSON.parse(groups[1] as string) as string;
+    const realTrust = groups[2] as string;
     const report = await codexLifecycleInstaller({
       configPath,
       baseCommand: 'abs hook',

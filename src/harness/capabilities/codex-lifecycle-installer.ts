@@ -42,7 +42,13 @@ interface CodexHookSpec {
 const CODEX_HOOKS: readonly CodexHookSpec[] = [
   { event: 'Stop', moment: 'capture', arg: 'session-end', matcher: '', timeout: 30 },
   { event: 'SessionStart', moment: 'recall', arg: 'session-start', matcher: '', timeout: 10 },
-  { event: 'UserPromptSubmit', moment: 'recall', arg: 'user-prompt-submit', matcher: '', timeout: 10 },
+  {
+    event: 'UserPromptSubmit',
+    moment: 'recall',
+    arg: 'user-prompt-submit',
+    matcher: '',
+    timeout: 10,
+  },
   { event: 'PreToolUse', moment: 'guard', arg: 'pre-tool-use', matcher: '', timeout: 5 },
 ];
 

@@ -87,4 +87,13 @@ describe('resolveRecallProject (#47)', () => {
       }),
     ).toBe('-Users-me-Devs-bar');
   });
+
+  it('looks up the (already-namespaced) sessionId verbatim — no re-derivation (R4, #67)', () => {
+    store.createSession({ externalId: 'codex:019e2658', project: 'proj' });
+    const project = resolveRecallProject(store, {
+      scope: 'project',
+      sessionId: 'codex:019e2658', // the chokepoint already prefixed it
+    });
+    expect(project).toBe('proj'); // hits the codex: row directly
+  });
 });
