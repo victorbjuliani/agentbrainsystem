@@ -29,6 +29,8 @@ export function geminiAdapter(): HarnessAdapter {
     id: 'gemini',
     displayName: 'Gemini CLI',
     mcpBinary: 'gemini',
+    mcpArgStyle: 'positional', // Gemini rejects `--`; registers/removes with --scope (#68)
+    mcpScope: 'user', // user-scoped add → uninstall must remove with --scope user (#87)
     detect: async () => {
       try {
         await access(join(homedir(), '.gemini'));

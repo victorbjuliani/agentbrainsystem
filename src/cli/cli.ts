@@ -566,7 +566,11 @@ export async function cmdUninstall(args: string[], deps: UninstallDeps = {}): Pr
 
     // 2. Unregister the MCP server with THIS adapter's CLI binary (C2 — not always claude).
     const binary = adapter.mcpBinary ?? 'claude';
-    const reg = await unregisterMcpServer(run, { binary });
+    const reg = await unregisterMcpServer(run, {
+      binary,
+      argStyle: adapter.mcpArgStyle,
+      scope: adapter.mcpScope,
+    });
     switch (reg.status) {
       case 'removed':
         out(`✓ MCP server "${MCP_SERVER_NAME}" unregistered from ${adapter.displayName}`);

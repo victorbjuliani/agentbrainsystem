@@ -65,7 +65,13 @@ export function buildMcpAddArgs(cliPath: string, opts: ArgStyleOptions = {}): st
 export function buildMcpListArgs(): string[] {
   return ['mcp', 'list'];
 }
-export function buildMcpRemoveArgs(): string[] {
+export function buildMcpRemoveArgs(opts: ArgStyleOptions = {}): string[] {
+  // The positional/scoped harnesses (Gemini) register with `--scope user`; the
+  // remove MUST carry the same scope or it defaults to project scope and leaves the
+  // user-scoped server behind (#87). The default (claude/codex) is byte-identical.
+  if (opts.argStyle === 'positional') {
+    return ['mcp', 'remove', MCP_SERVER_NAME, '--scope', opts.scope ?? 'user'];
+  }
   return ['mcp', 'remove', MCP_SERVER_NAME];
 }
 
@@ -129,7 +135,10 @@ export async function registerMcpServer(
 }
 
 /** The copy-pasteable command shown when auto-unregistration isn't possible. */
-export function manualMcpRemoveCommand(binary = 'claude'): string {
+export function manualMcpRemoveCommand(binary = 'claude', opts: ArgStyleOptions = {}): string {
+  if (opts.argStyle === 'positional') {
+    return `${binary} mcp remove ${MCP_SERVER_NAME} --scope ${opts.scope ?? 'user'}`;
+  }
   return `${binary} mcp remove ${MCP_SERVER_NAME}`;
 }
 
@@ -151,7 +160,8 @@ export async function unregisterMcpServer(
   options: McpRegisterOptions = {},
 ): Promise<UnregisterResult> {
   const binary = options.binary ?? 'claude';
-  const manualCommand = manualMcpRemoveCommand(binary);
+  const argStyleOpts: ArgStyleOptions = { argStyle: options.argStyle, scope: options.scope };
+  const manualCommand = manualMcpRemoveCommand(binary, argStyleOpts);
 
   let probe: RunResult;
   try {
@@ -170,7 +180,7 @@ export async function unregisterMcpServer(
     // listing failed — fall through and attempt the remove anyway
   }
 
-  const removed = await run(binary, buildMcpRemoveArgs());
+  const removed = await run(binary, buildMcpRemoveArgs(argStyleOpts));
   if (removed.code === 0) return { status: 'removed' };
   const message = (removed.stderr || removed.stdout).trim() || `exit ${removed.code}`;
   return { status: 'error', message, manualCommand };
