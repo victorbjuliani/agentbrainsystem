@@ -99,6 +99,39 @@ describe('sqliteTranscriptSource (#72)', () => {
     }
   });
 
+  it('(a2) two parts of ONE message are stamped from part time, not message time (#90c)', async () => {
+    const dbPath = buildOpencodeDb(join(home, 'opencode.db'), [
+      {
+        id: SES,
+        directory: DIR,
+        messages: [
+          {
+            id: 'msg_1',
+            role: 'assistant',
+            time: 5_000, // message time — the OLD code stamped BOTH parts with this
+            parts: [
+              { id: 'prt_1', text: 'first chunk', time: 5_000 },
+              { id: 'prt_2', text: 'later chunk emitted much later', time: 9_000 },
+            ],
+          },
+        ],
+      },
+    ]);
+    const memory = await open();
+    try {
+      await sqliteTranscriptSource({ dbPath }).ingestSession(memory, SES);
+      const session = memory.store.getSessionByExternalId(`opencode:${SES}`);
+      const obs = memory.store.listObservations({ project: session?.project, order: 'asc' });
+      expect(obs).toHaveLength(2);
+      // Distinct part times → distinct createdAt (the bug collapsed both to msg time).
+      expect(obs[0]?.createdAt).toBe(new Date(5_000).toISOString());
+      expect(obs[1]?.createdAt).toBe(new Date(9_000).toISOString());
+      expect(obs[0]?.createdAt).not.toBe(obs[1]?.createdAt);
+    } finally {
+      memory.close();
+    }
+  });
+
   it('(b) at-least-once watermark: re-run with no new parts adds 0', async () => {
     const dbPath = dbWith3Parts();
     const memory = await open();

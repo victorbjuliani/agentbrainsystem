@@ -37,6 +37,14 @@ export interface InstallReport {
 }
 export interface UninstallReport {
   removed: readonly LifecycleMoment[];
+  /**
+   * Set when a file-managed adapter could NOT auto-remove its config entry (OpenCode
+   * JSONC abort, #89): nothing was removed, `manual` carries what to delete by hand
+   * and `targetPath` the untouched file. `cmdUninstall` prints both and must NOT
+   * report success. Absent on the happy path.
+   */
+  manual?: string;
+  targetPath?: string;
 }
 
 /** Process-spawn result — declared locally so `src/harness` needs no `src/cli` type import. */
