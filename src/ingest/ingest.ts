@@ -17,8 +17,8 @@
  * re-ingested. Counting bytes rather than lines lets us resume from a precise
  * `createReadStream({ start })` without rescanning the prefix.
  */
-import { createReadStream } from 'node:fs';
-import { readdir, stat } from 'node:fs/promises';
+import { createReadStream, readFileSync } from 'node:fs';
+import { readdir, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -26,9 +26,10 @@ import type { Memory } from '../memory.js';
 import { projectSlug } from '../optimize/targets.js';
 import { type ParsedEntry, parseLine, type ToolAnchorSeed } from './claude-jsonl.js';
 import { createCodexLineParser } from './codex-jsonl.js';
+import { parseGeminiChat } from './gemini-chat.js';
 // W-R3-1: isCodexTranscript + namespacedExternalId are LEAF helpers in namespacing.ts.
 // ingest.ts IMPORTS them (one direction); it does NOT define isCodexTranscript itself.
-import { isCodexTranscript, namespacedExternalId } from './namespacing.js';
+import { isCodexTranscript, isGeminiTranscript, namespacedExternalId } from './namespacing.js';
 import { cleanupBindings, readBinding, type SessionBinding } from './session-binding.js';
 import type { IngestOptions, IngestResult } from './types.js';
 
@@ -37,6 +38,9 @@ const CURSOR_PREFIX = 'ingest:cursor:';
 
 /** kv_meta cache of a Codex rollout's header `cwd`, keyed by transcript path (W4 resume). */
 const CODEX_CWD_PREFIX = 'codex:cwd:';
+
+/** kv_meta key prefix for the per-Gemini-file last-ingested message id (W-NEW-1 rewind-safe, #68). */
+const GEMINI_LASTID_PREFIX = 'gemini:lastid:';
 
 /** Per-run session-cache sentinel marking a session a `skip` binding excludes. */
 const SKIP = -1;
@@ -107,6 +111,23 @@ function readCursor(memory: Memory, absPath: string): number {
 
 function writeCursor(memory: Memory, absPath: string, offset: number): void {
   memory.store.setMeta(`${CURSOR_PREFIX}${absPath}`, String(offset));
+}
+
+/**
+ * The real cwd for a Gemini chat file (C-NEW-1, #68). The chat JSON has no cwd;
+ * Gemini stores it in `<…/tmp/<slug>>/.project_root`, one dir up from
+ * `…/chats/<file>`. Returns the absolute cwd, or undefined when the marker is
+ * missing/empty so the caller can fall back to the slug dir name (NEVER "chats").
+ * Sync read — one tiny file, off the per-line hot loop.
+ */
+function readGeminiProjectRoot(absPath: string): string | undefined {
+  try {
+    const marker = join(dirname(dirname(absPath)), '.project_root');
+    const cwd = readFileSync(marker, 'utf8').trim();
+    return cwd.length > 0 ? cwd : undefined;
+  } catch {
+    return undefined; // ENOENT/EISDIR → fall back to the slug dir
+  }
 }
 
 /**
@@ -265,6 +286,56 @@ async function ingestFile(
   const bindingCache = new Map<string, SessionBinding | null>();
   const tally: WriteTally = { added: 0, skipped: 0, seeded: 0 };
   let offset = startOffset;
+
+  if (isGeminiTranscript(absPath)) {
+    // Whole-file JSON, NOT line-delimited and NOT incremental: Gemini rewrites the
+    // ENTIRE file on every message (append-only EXCEPT `/rewind`, which truncates).
+    // A byte cursor is meaningless; re-ingest is gated by a persistent per-session
+    // ID-ANCHORED watermark (W-NEW-1): we remember the LAST-ingested message `id`
+    // and ingest everything AFTER it. If that id is gone (rewound past it), we
+    // RE-SYNC from the start — at-least-once dup, but NEVER a silent drop. The
+    // cursor is INTENTIONALLY never advanced for Gemini: `cursor(0) < size` always
+    // re-enters this branch, and the id-watermark (not the byte cursor) gates dedup.
+    const raw = await readFile(absPath, 'utf8');
+    const entries = parseGeminiChat(raw, absPath);
+    // C-NEW-1: the cwd is NOT in the chat JSON. Recover the REAL cwd from the
+    // `.project_root` marker one dir up from `chats/`. Fallback = the slug dir
+    // name (NEVER the literal "chats").
+    const geminiCwd = readGeminiProjectRoot(absPath);
+    const effectiveProject = geminiCwd
+      ? projectSlug(geminiCwd)
+      : basename(dirname(dirname(absPath)));
+    // ID-anchored skip: find the last-ingested id in the CURRENT parse; start after it.
+    const lastIdKey = `${GEMINI_LASTID_PREFIX}${absPath}`;
+    const lastId = memory.store.getMeta(lastIdKey);
+    let start = 0;
+    if (lastId !== null) {
+      const idx = entries.findIndex((e) => e.id === lastId);
+      start = idx >= 0 ? idx + 1 : 0; // found → tail; NOT found → re-sync (rewound)
+    }
+    for (let i = start; i < entries.length; i++) {
+      const entry = entries[i] as ParsedEntry;
+      const externalId = namespacedExternalId('gemini', entry.sessionId);
+      await writeEntry(
+        memory,
+        sessionCache,
+        bindingCache,
+        externalId,
+        effectiveProject,
+        entry,
+        absPath,
+        tally,
+      );
+    }
+    // Advance the watermark to the LAST entry's id (the new tail). On an unchanged
+    // file `start === entries.length` → nothing written, id unchanged (idempotent).
+    const tailId = entries.at(-1)?.id;
+    if (tailId) memory.store.setMeta(lastIdKey, tailId);
+    result.observationsAdded += tally.added;
+    result.observationsSkipped += tally.skipped;
+    result.anchorsSeeded += tally.seeded;
+    return;
+  }
 
   const stream = createReadStream(absPath, { start: startOffset, encoding: 'utf8' });
   const rl = createInterface({ input: stream, crlfDelay: Number.POSITIVE_INFINITY });
