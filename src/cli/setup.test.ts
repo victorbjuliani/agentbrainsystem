@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildClaudeMcpAddArgs,
   buildClaudeMcpRemoveArgs,
+  buildMcpAddArgs,
   MCP_SERVER_NAME,
   manualMcpCommand,
   manualMcpRemoveCommand,
@@ -40,6 +41,51 @@ describe('setup core — argv + manual command', () => {
 
   it('formats a copy-pasteable manual command', () => {
     expect(manualMcpCommand(CLI)).toBe(`claude mcp add ${MCP_SERVER_NAME} -- node ${CLI} start`);
+  });
+});
+
+describe('Gemini positional arg style (#68 — Gemini rejects the -- separator)', () => {
+  it('builds positional Gemini add args without the -- separator', () => {
+    expect(buildMcpAddArgs(CLI, { argStyle: 'positional', scope: 'user' })).toEqual([
+      'mcp',
+      'add',
+      MCP_SERVER_NAME,
+      '--scope',
+      'user',
+      'node',
+      CLI,
+      'start',
+    ]);
+  });
+  it('default add args keep the -- separator (claude/codex unchanged)', () => {
+    expect(buildMcpAddArgs(CLI)).toEqual(['mcp', 'add', MCP_SERVER_NAME, '--', 'node', CLI, 'start']);
+  });
+  it('manual command for Gemini is POSITIONAL — no -- separator', () => {
+    expect(manualMcpCommand('/cli.js', 'gemini', { argStyle: 'positional', scope: 'user' })).toBe(
+      'gemini mcp add agentbrainsystem --scope user node /cli.js start',
+    );
+  });
+  it('manual command default keeps the -- form (claude/codex byte-identical)', () => {
+    expect(manualMcpCommand('/cli.js')).toBe('claude mcp add agentbrainsystem -- node /cli.js start');
+    expect(manualMcpCommand('/cli.js', 'codex')).toBe(
+      'codex mcp add agentbrainsystem -- node /cli.js start',
+    );
+  });
+  it('W3: on a failed gemini mcp add (e.g. unauthed), the surfaced manual command is positional', async () => {
+    const run = async (_cmd: string, args: string[]): Promise<RunResult> =>
+      args.includes('--version')
+        ? { code: 0, stdout: 'gemini 0.35.0', stderr: '' }
+        : args.includes('list')
+          ? { code: 0, stdout: '', stderr: '' }
+          : { code: 1, stdout: '', stderr: 'authentication required' };
+    const r = await registerMcpServer('/cli.js', run, {
+      binary: 'gemini',
+      argStyle: 'positional',
+      scope: 'user',
+    });
+    expect(r.status).toBe('error');
+    if (r.status === 'error')
+      expect(r.manualCommand).toBe('gemini mcp add agentbrainsystem --scope user node /cli.js start');
   });
 });
 
