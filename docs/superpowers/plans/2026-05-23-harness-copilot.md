@@ -47,7 +47,7 @@ Probed against the real install: **GitHub Copilot CLI 1.0.51** at `/opt/homebrew
   2. **The map is FLAT: `event -> [ entry, ... ]`** — NOT Claude's nested `event -> [{ matcher, hooks: [...] }]`. There is no `matcher` wrapper in the plugin format. (`preToolUse`/`postToolUse` can take a matcher in the zod schema, but the plugin ships flat arrays; we will write flat arrays and not depend on matcher support.)
   3. **`version: 1`** at the top level.
 
-  > ⚠️ **Event-name discrepancy to resolve in Task 2/3 (flagged, not yet verified live).** The plugin file uses **`userPromptSubmit`** (no "-ted"), while `app.js` internals use **`userPromptSubmitted`**. The internal canonical key is almost certainly `userPromptSubmitted` and the plugin loader tolerates/aliases the short form, but this is **unverified without an authed session that actually fires the hook**. Task 3 writes `userPromptSubmitted` (matching the internal grep) and the live-acceptance task (Task 8) must confirm which key the recall hook actually fires under. If the authed run shows the prompt hook never fires, switch the installer key to `userPromptSubmit`.
+  > ✅ **Event-name discrepancy — RESOLVED (no live auth needed).** The SDK's zod hooks schema reads ONLY **`userPromptSubmitted`** (12 occurrences in `app.js`); `userPromptSubmit` appears **0×**; the PascalCase→config map is literally `UserPromptSubmit: "userPromptSubmitted"`. The real Masko plugin's `userPromptSubmit` key is a **plugin BUG** — it silently never fires. So the config key is **`userPromptSubmitted`** per the SDK zod schema; `userPromptSubmit` is invalid and silently no-fires. Task 3 writes `userPromptSubmitted` (correct, no switch). Task 8 only **confirms it fires** — it does NOT "decide the key".
 
 - **Config file locations** (from `app.js`):
   - User/personal hooks: a `hooks.json` (the plugin precedent) and a `settings.json` under `~/.copilot/`. The literal `"settings.json they act as repo-level hooks"` and `getHooksDir → <gitRoot>/.github/hooks` show repo-level hooks live at `.github/hooks/` and repo settings at `.github/copilot/settings.json` / `.github/copilot/settings.local.json`.
@@ -66,6 +66,7 @@ Probed against the real install: **GitHub Copilot CLI 1.0.51** at `/opt/homebrew
 - `events.jsonl` is **JSON-Lines**, one event object per line. Write path uses `appendFile` (12 occurrences) — **append-per-event**. The only rewrite path is a `truncate` operation (`g.slice(0, idx)` from an event id) used by **compaction/fork** (`session.compaction_complete`, `loadForkSourceWorkspace`, `rewriteForkedSessionPaths`). So: **append-mostly, with a rare compaction/fork rewrite.**
 - **Per-event envelope** (from `session-events.schema.json`): every event is
   `{ id: string, timestamp: string(date-time, ISO 8601), parentId, ephemeral, agentId, type: string, data: object }`.
+  - **Note:** `ephemeral: true` events are NOT persisted to `events.jsonl` (per the SDK schema), so the parser never sees them — no `ephemeral` handling needed.
 - **Conversation events** (the ones we ingest):
   - `user.message` → `data.content: string` (also `transformedContent`, `source`, `interactionId`, `attachments`).
   - `assistant.message` → `data.content: string` (also `model`, `messageId`, `outputTokens`, `toolRequests: array`, `turnId`).
@@ -96,8 +97,8 @@ All fixture-based tests below are written against the **reverse-engineered real 
 
 Rationale:
 - The normal turn-by-turn write is `appendFile` of one JSON object per line → a byte cursor resumes cleanly from EOF, identical to Codex rollouts. This is what made Codex #67 a byte cursor and why Gemini #68 needed a watermark (Gemini rewrites the *whole* file every message).
-- The one rewrite path is **compaction/fork** (`truncate` = `slice(0, idx)`), which removes *already-ingested old* events and keeps the tail. After a compaction the file is shorter than the cursor → guard with the standard `cursor >= size` check already in `ingestSingleSession` (line 438–439): when `size < cursor` we must **reset the cursor to the new size's start of unread tail**. The existing Codex path already tolerates "cursor past EOF ⇒ skip"; the compaction case where the *file shrank but new content was appended after* is the one edge to handle.
-  - **Decision:** treat it like Codex (byte cursor) and add ONE guard: if persisted `cursor > currentSize`, the file was rewritten (compaction/fork) → **reset cursor to 0 and re-ingest from the top**, relying on the per-observation dedup (`seen` set keyed by event `id` within the parse, plus the store's idempotent write) to avoid duplicates. This is at-least-once (a compaction may re-emit a few already-stored turns) — the SAME risk class Codex/Gemini already accept, never a silent drop. This is the bug class that bit #67/#68; we choose the conservative re-sync over a silent gap.
+- The one rewrite path is **compaction/fork** (`truncate` = `slice(0, idx)`), which removes *already-ingested old* events and keeps the tail. After a compaction the file is shorter than the cursor. The existing `cursor >= size` early-return in `ingestOneTranscript` (`ingest.ts:438-442`) would SKIP such a file — silently dropping any appended tail. The compaction case (file shrank, then new content appended) is the edge to handle, and the guard must fire in `ingestOneTranscript` BEFORE that skip (see Task 5 — a guard inside `ingestFile` is dead code, control never reaches it).
+  - **Decision:** treat it like Codex (byte cursor) and add ONE guard in `ingestOneTranscript`: if `isCopilotTranscript(absPath) && cursor > size`, the file was rewritten (compaction/fork) → **reset cursor to 0 and re-ingest from the top**. This is **at-least-once**: the re-sync re-ingests the retained overlap as **duplicate observations** — `createObservation` (`memory-store.ts:326`) is a plain INSERT with NO UNIQUE on `(session_id, kind, content)`, and the per-run `seen` set is fresh per `ingestFile` (no cross-run dedup), so a re-sync after compaction DOES create dup rows for the retained turns. That is the **same accepted tolerance as Codex #67 / Gemini #68** (cross-run dedup is a known follow-up, out of #69 scope) — never a silent drop. This is the bug class that bit #67/#68; we choose the conservative re-sync over a silent gap.
 - **Grouping id = filename dir UUID** (path-derived), cached-cwd from `session.context_changed` via kv_meta — byte-for-byte the Codex parser strategy.
 
 ---
@@ -143,7 +144,7 @@ This is data carried by the adapter (Task 6) and consumed by the installer (Task
 | `userPromptSubmitted` | `user-prompt-submit` | recall |
 | `preToolUse` | `pre-tool-use` | guard |
 
-> Copilot **HAS `sessionEnd`** (like Gemini, unlike Codex's `Stop`). Capture is `sessionEnd`. (See the `userPromptSubmitted` vs `userPromptSubmit` ⚠️ above — Task 8 confirms.)
+> Copilot **HAS `sessionEnd`** (like Gemini, unlike Codex's `Stop`). Capture is `sessionEnd`. The recall config key is **`userPromptSubmitted`** — resolved from the SDK zod schema (`userPromptSubmit` is invalid, silently no-fires); see the ✅ note above. Task 8 only confirms it fires live.
 
 ### Task 3 — Copilot hook installer (`copilot-lifecycle-installer.ts`)
 **File:** `src/harness/capabilities/copilot-lifecycle-installer.ts` (+ `.test.ts`).
@@ -234,9 +235,32 @@ if (isCopilotTranscript(absPath)) {
 ```
 - It's the **byte-cursor** path (shares `createReadStream(absPath, {start: startOffset})` + `writeCursor(offset)` at the end) — so it slots into the existing stream/`else` structure exactly like Codex (NOT the early-return Gemini block).
 - Add `COPILOT_CWD_PREFIX = 'ingest:copilot-cwd:'` next to `CODEX_CWD_PREFIX`.
-- **Compaction guard (the CRITICAL decision):** in `ingestSingleSession` (the `cursor >= size` check ~line 438), add: if `isCopilotTranscript(absPath) && cursor > size`, reset `cursor = 0` before calling `ingestFile` (file was rewritten by compaction/fork → re-sync; dedup `seen` + idempotent store write absorb the overlap). Test: write N events, ingest, simulate compaction by rewriting the file shorter-then-with-new-tail, re-ingest → new tail captured, no crash, no silent drop.
+- **Import note:** add `isCopilotTranscript` to the existing `./namespacing.js` import (line ~32 currently imports only `isCodexTranscript, isGeminiTranscript, namespacedExternalId`). `basename`/`dirname` are already imported from `node:path` (line ~23).
+- **Compaction guard (the CRITICAL decision) — it MUST live in `ingestOneTranscript`, NOT in `ingestFile`.** `ingestOneTranscript` (`src/ingest/ingest.ts:438-442`) has an EARLIER early-return that runs *before* `ingestFile` is ever called:
+  ```ts
+  const cursor = readCursor(memory, absPath);
+  if (cursor >= size) { result.filesSkipped++; return; }  // ingestFile NEVER reached
+  ```
+  After a compaction/fork truncate, the persisted `cursor > size` ⇒ `cursor >= size` is true ⇒ the file is SKIPPED ⇒ the freshly appended tail is **silently dropped** — the exact bug this guard targets. A guard placed inside `ingestFile` is dead code: control never gets there. Truncate behavior is confirmed in the real binary: the only non-append write is a strict-PREFIX truncate (`writeFile(slice(0, A))`), so the retained bytes stay byte-identical and `cursor > size` is the correct, sufficient detector — but it must fire in `ingestOneTranscript` BEFORE the `cursor >= size` skip.
+  - **FIX (edit `ingestOneTranscript` ~line 438):** HOIST the `project` computation (currently at ~line 445, *after* the skip) to above the skip, and special-case Copilot before the skip:
+    ```ts
+    const project = basename(dirname(absPath)); // hoisted ABOVE the skip
+    const cursor = readCursor(memory, absPath);
+    if (isCopilotTranscript(absPath) && cursor > size) {
+      // compaction/fork truncated events.jsonl → re-sync from top (at-least-once, never drop)
+      writeCursor(memory, absPath, 0);
+      await ingestFile(memory, absPath, project, 0, result);
+      result.filesProcessed++;
+      return;
+    }
+    if (cursor >= size) { result.filesSkipped++; return; }
+    await ingestFile(memory, absPath, project, cursor, result);
+    result.filesProcessed++;
+    ```
+    The re-sync re-ingests the retained overlap as duplicates — see the at-least-once note in the CRITICAL decision section (dedup-free store write is acceptable, matches #67/#68).
+  - **Test (assert against the `ingestOneTranscript` guard, NOT a guard inside `ingestFile`):** write N events, ingest (cursor at EOF). Then simulate compaction: rewrite the file to a strict prefix shorter than the cursor, then append a NEW tail. Re-ingest via `ingestSingleSession` → the new tail is captured (observation present), no crash, **no silent drop** (the file is NOT skipped). Assert the cursor advanced to the new (smaller) EOF.
 
-RED tests in `ingest.test.ts`: ingesting the Copilot fixture writes `copilot:<uuid>`-namespaced observations with the right project (from cached cwd), and a second ingest is a clean no-op (byte cursor at EOF).
+RED tests in `ingest.test.ts`: ingesting the Copilot fixture writes `copilot:<uuid>`-namespaced observations with the right project (from cached cwd), and a second ingest is a clean no-op (byte cursor at EOF). PLUS the compaction-truncate-then-append test above, asserting the guard in `ingestOneTranscript`.
 
 ### Task 6 — Adapter `src/harness/adapters/copilot.ts`
 **File:** `src/harness/adapters/copilot.ts` (+ `.test.ts`). **Template:** `gemini.ts` (has `sessionEnd` capture) merged with the separator-style registrar.
@@ -288,7 +312,7 @@ Document and attempt; do not block the merge on it (Gemini-precedent: API-key de
 - Verify on a populated `~/.copilot/session-state/<uuid>/events.jsonl`:
   1. The real `user.message`/`assistant.message` line shape matches the fixture (fix parser + fixture if not).
   2. `assistant.message.data.toolRequests[]` element schema → wire Edit/Write anchor mining for real (or confirm best-effort `[]` is acceptable for v1).
-  3. The recall hook actually fires → confirms `userPromptSubmitted` vs `userPromptSubmit` config key (fix Task 3 key if needed).
+  3. The recall hook actually fires under `userPromptSubmitted` (the key is already resolved from the SDK zod schema — this is a live-fire confirmation only, NOT a decision; do NOT switch to `userPromptSubmit`).
   4. `transcript_path` on the hook stdin equals the events.jsonl path at fire time (else document the early-empty-path gap like Gemini did).
   5. `abs ingest --apply` produces `copilot:<uuid>` observations bucketed under the session's real cwd project.
 
