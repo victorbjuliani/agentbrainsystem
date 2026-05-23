@@ -30,10 +30,27 @@ export type RegisterResult =
 export interface McpRegisterOptions {
   /** CLI binary that owns `mcp add/list/remove` (defaults to 'claude'). */
   binary?: string;
+  /** Gemini rejects the `--` separator; it needs positional args + an explicit scope (#68). */
+  argStyle?: 'separator' | 'positional';
+  /** Scope for the positional style (`--scope user|project`); positional only. */
+  scope?: 'user' | 'project';
 }
 
-/** `<binary> mcp add agentbrainsystem -- node <cli> start`. */
-export function buildMcpAddArgs(cliPath: string): string[] {
+/** Arg-style options for the add-args / manual-command builders. */
+interface ArgStyleOptions {
+  argStyle?: 'separator' | 'positional';
+  scope?: string;
+}
+
+/**
+ * `<binary> mcp add agentbrainsystem -- node <cli> start` (default, claude/codex)
+ * OR the positional `… --scope <scope> node <cli> start` form for Gemini (#68),
+ * which rejects the `--` separator (yargs parse failure). The default is byte-identical.
+ */
+export function buildMcpAddArgs(cliPath: string, opts: ArgStyleOptions = {}): string[] {
+  if (opts.argStyle === 'positional') {
+    return ['mcp', 'add', MCP_SERVER_NAME, '--scope', opts.scope ?? 'user', 'node', cliPath, 'start'];
+  }
   return ['mcp', 'add', MCP_SERVER_NAME, '--', 'node', cliPath, 'start'];
 }
 export function buildMcpListArgs(): string[] {
@@ -47,8 +64,16 @@ export function buildMcpRemoveArgs(): string[] {
 export const buildClaudeMcpAddArgs = buildMcpAddArgs;
 export const buildClaudeMcpRemoveArgs = buildMcpRemoveArgs;
 
-/** The copy-pasteable command shown when auto-registration isn't possible. */
-export function manualMcpCommand(cliPath: string, binary = 'claude'): string {
+/**
+ * The copy-pasteable command shown when auto-registration isn't possible. Threads
+ * the same arg style as {@link buildMcpAddArgs} (W2, #68) so the printed Gemini
+ * fallback is the POSITIONAL form Gemini accepts — never the rejected `--` form.
+ * The default keeps the Claude/Codex `--` form byte-identical.
+ */
+export function manualMcpCommand(cliPath: string, binary = 'claude', opts: ArgStyleOptions = {}): string {
+  if (opts.argStyle === 'positional') {
+    return `${binary} mcp add ${MCP_SERVER_NAME} --scope ${opts.scope ?? 'user'} node ${cliPath} start`;
+  }
   return `${binary} mcp add ${MCP_SERVER_NAME} -- node ${cliPath} start`;
 }
 
@@ -64,7 +89,8 @@ export async function registerMcpServer(
   options: McpRegisterOptions = {},
 ): Promise<RegisterResult> {
   const binary = options.binary ?? 'claude';
-  const manualCommand = manualMcpCommand(cliPath, binary);
+  const argStyleOpts: ArgStyleOptions = { argStyle: options.argStyle, scope: options.scope };
+  const manualCommand = manualMcpCommand(cliPath, binary, argStyleOpts);
 
   let probe: RunResult;
   try {
@@ -83,7 +109,7 @@ export async function registerMcpServer(
     // listing failed — fall through and attempt the add anyway
   }
 
-  const added = await run(binary, buildMcpAddArgs(cliPath));
+  const added = await run(binary, buildMcpAddArgs(cliPath, argStyleOpts));
   if (added.code === 0) return { status: 'registered' };
   const message = (added.stderr || added.stdout).trim() || `exit ${added.code}`;
   return { status: 'error', message, manualCommand };
