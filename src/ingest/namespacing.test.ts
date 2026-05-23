@@ -91,6 +91,32 @@ describe('isCopilotTranscript (#69 — leaf classifier)', () => {
   });
 });
 
+describe('isCopilotTranscript (#69 — leaf classifier)', () => {
+  it('detects a Copilot events.jsonl session-state path', () => {
+    expect(isCopilotTranscript(COPILOT_PATH)).toBe(true);
+  });
+  it('rejects a Codex rollout path', () => {
+    expect(
+      isCopilotTranscript(
+        '/Users/x/.codex/sessions/2026/05/23/rollout-2026-05-23T04-24-00-78432a44-385f-41f6-8a71-646d51996f8a.jsonl',
+      ),
+    ).toBe(false);
+  });
+  it('rejects a Gemini chats path', () => {
+    expect(
+      isCopilotTranscript('/Users/x/.gemini/tmp/p/chats/session-2026-05-23T04-24-78432a44.json'),
+    ).toBe(false);
+  });
+  it('rejects a Claude projects path', () => {
+    expect(isCopilotTranscript('/Users/x/.claude/projects/p/abc.jsonl')).toBe(false);
+  });
+  it('rejects a session-state dir whose UUID is malformed', () => {
+    expect(isCopilotTranscript('/Users/x/.copilot/session-state/not-a-uuid/events.jsonl')).toBe(
+      false,
+    );
+  });
+});
+
 describe('namespacedExternalId (W1)', () => {
   it('leaves Claude Code ids bare (migration-safe)', () => {
     expect(namespacedExternalId('claude-code', 'abc-123')).toBe('abc-123');
@@ -104,6 +130,9 @@ describe('namespacedExternalId (W1)', () => {
   it('keeps Claude bare and Codex codex: unchanged (migration-safe)', () => {
     expect(namespacedExternalId('claude-code', 'c-1')).toBe('c-1');
     expect(namespacedExternalId('codex', 'x-1')).toBe('codex:x-1');
+  });
+  it('namespaces an opencode session id with the opencode: prefix (#72)', () => {
+    expect(namespacedExternalId('opencode', 'ses_abc')).toBe('opencode:ses_abc');
   });
 });
 
@@ -133,5 +162,17 @@ describe('harnessForPayload (C-NEW-1)', () => {
   });
   it('routes a Copilot events.jsonl path to copilot (#69)', () => {
     expect(harnessForPayload({ transcriptPath: COPILOT_PATH })).toBe('copilot');
+  });
+  // #72 regression-lock: OpenCode has NO hook payload / transcript path — it is a
+  // plugin shelling `abs opencode-capture --session <id>`, namespaced explicitly at
+  // the subcommand boundary (NOT via harnessForPayload). This locks the decision that
+  // no opencode path branch was added: an opencode.db-looking path still falls through
+  // to the bare claude-code default (a future refactor must not "helpfully" add one).
+  it('does NOT classify an opencode.db-looking path as opencode (no path branch — #72)', () => {
+    expect(
+      harnessForPayload({
+        transcriptPath: '/Users/x/.local/share/opencode/opencode.db',
+      }),
+    ).toBe('claude-code');
   });
 });
