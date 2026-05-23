@@ -71,7 +71,11 @@ const RECALLED_DISPLAY = [
  * noisy to typeset — but both carry the identical decision that this block states.
  */
 function recalledBullets(injection: string | undefined): string {
-  if (!injection || !/retr/i.test(injection) || !/double|reconcil/i.test(injection)) return '';
+  // Gate on the <recalled-memory> FENCE specifically, not the whole additionalContext:
+  // `--settings` merges the user's hooks, so a fence-less UserPromptSubmit context from
+  // another hook could otherwise false-positive the 🧠 block (Codex #96 P2).
+  const fence = injection?.match(/<recalled-memory>([\s\S]*?)<\/recalled-memory>/)?.[1];
+  if (!fence || !/retr/i.test(fence) || !/double|reconcil/i.test(fence)) return '';
   return RECALLED_DISPLAY;
 }
 
