@@ -8,7 +8,9 @@ import { defineConfig } from 'vitest/config';
  */
 export default defineConfig({
   test: {
-    include: ['e2e/**/*.e2e.ts'],
+    // The system E2E scenarios + the opt-in live Claude Code smoke (`*.live.ts`), which is
+    // double-gated: collected here but self-skips unless `ABS_LIVE_CC=1` (needs auth + tokens).
+    include: ['e2e/**/*.e2e.ts', 'e2e/live/**/*.live.ts'],
     environment: 'node',
     globalSetup: ['e2e/global-setup.ts'],
     // Each scenario spawns real processes and embeds with the local model.
