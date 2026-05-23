@@ -23,7 +23,10 @@ describe('GEMINI_HOOKS table (#68)', () => {
 describe('geminiLifecycleInstaller (#68)', () => {
   it('writes Gemini hook keys to settings.json (backup-first, idempotent)', async () => {
     const p = join(tmp, 'settings.json');
-    const r1 = await geminiLifecycleInstaller({ settingsPath: p, baseCommand: 'abs hook' }).install();
+    const r1 = await geminiLifecycleInstaller({
+      settingsPath: p,
+      baseCommand: 'abs hook',
+    }).install();
     expect(r1.wired).toEqual(expect.arrayContaining(['capture', 'recall', 'guard']));
     const s = JSON.parse(readFileSync(p, 'utf8'));
     expect(s.hooks.SessionEnd[0].hooks[0].command).toBe('abs hook session-end');

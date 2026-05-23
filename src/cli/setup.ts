@@ -49,7 +49,16 @@ interface ArgStyleOptions {
  */
 export function buildMcpAddArgs(cliPath: string, opts: ArgStyleOptions = {}): string[] {
   if (opts.argStyle === 'positional') {
-    return ['mcp', 'add', MCP_SERVER_NAME, '--scope', opts.scope ?? 'user', 'node', cliPath, 'start'];
+    return [
+      'mcp',
+      'add',
+      MCP_SERVER_NAME,
+      '--scope',
+      opts.scope ?? 'user',
+      'node',
+      cliPath,
+      'start',
+    ];
   }
   return ['mcp', 'add', MCP_SERVER_NAME, '--', 'node', cliPath, 'start'];
 }
@@ -70,7 +79,11 @@ export const buildClaudeMcpRemoveArgs = buildMcpRemoveArgs;
  * fallback is the POSITIONAL form Gemini accepts — never the rejected `--` form.
  * The default keeps the Claude/Codex `--` form byte-identical.
  */
-export function manualMcpCommand(cliPath: string, binary = 'claude', opts: ArgStyleOptions = {}): string {
+export function manualMcpCommand(
+  cliPath: string,
+  binary = 'claude',
+  opts: ArgStyleOptions = {},
+): string {
   if (opts.argStyle === 'positional') {
     return `${binary} mcp add ${MCP_SERVER_NAME} --scope ${opts.scope ?? 'user'} node ${cliPath} start`;
   }

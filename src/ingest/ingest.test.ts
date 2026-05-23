@@ -740,14 +740,20 @@ describe('Gemini ingest (whole-file JSON, id-watermark + .project_root, #68)', (
     writeFileSync(join(slugDir, '.project_root'), REAL_CWD);
 
     // Ingest 3 prose messages → 3 obs. Last id watermarked = 'm3'.
-    writeFileSync(geminiPath, doc([m('m1', 'user', 'q1'), m('m2', 'gemini', 'r1'), m('m3', 'user', 'q2')]));
+    writeFileSync(
+      geminiPath,
+      doc([m('m1', 'user', 'q1'), m('m2', 'gemini', 'r1'), m('m3', 'user', 'q2')]),
+    );
     await ingestSingleSession(memory, geminiPath);
     expect(memory.store.counts().observations).toBe(3);
 
     // /rewind to m1 (drops m2,m3) THEN add 2 NEW messages with NEW ids. The
     // watermarked 'm3' is GONE → must re-sync, NOT skip (a count watermark of 3
     // would see length 3 and add NOTHING — silent drop).
-    writeFileSync(geminiPath, doc([m('m1', 'user', 'q1'), m('m4', 'gemini', 'r2'), m('m5', 'user', 'q3')]));
+    writeFileSync(
+      geminiPath,
+      doc([m('m1', 'user', 'q1'), m('m4', 'gemini', 'r2'), m('m5', 'user', 'q3')]),
+    );
     await ingestSingleSession(memory, geminiPath);
     expect(memory.store.counts().observations).toBeGreaterThanOrEqual(3); // NO silent drop
     expect(memory.store.counts().observations).toBe(6); // re-synced whole file
