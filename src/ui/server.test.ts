@@ -69,6 +69,40 @@ describe('createUiServer (HTTP contract)', () => {
     expect(r.status).toBe(405);
   });
 
+  it('GET /api/stats returns session and observation counts plus the high-water id', async () => {
+    const r = await fetch(`${base}/api/stats`);
+    expect(r.status).toBe(200);
+    expect(r.headers.get('content-type')).toContain('application/json');
+    const s = (await r.json()) as {
+      sessions: number;
+      observations: number;
+      maxObservationId: number;
+    };
+    expect(s.sessions).toBe(1);
+    expect(s.observations).toBe(3);
+    expect(s.maxObservationId).toBe(3); // 3 observations created, monotonic ids 1..3
+  });
+
+  it('GET /api/stats?since= counts only observations newer than the cursor', async () => {
+    const r = await fetch(`${base}/api/stats?since=1`);
+    expect(r.status).toBe(200);
+    const s = (await r.json()) as { newSince: number };
+    expect(s.newSince).toBe(2); // ids 2 and 3 are > 1
+  });
+
+  it('GET /api/stats never leaks observation content (counts only — SEC)', async () => {
+    const r = await fetch(`${base}/api/stats`);
+    const body = await r.text();
+    expect(body).not.toContain('m0');
+    expect(body).not.toContain('m1');
+    expect(body).not.toContain('m2');
+  });
+
+  it('rejects non-GET on /api/stats with 405', async () => {
+    const r = await fetch(`${base}/api/stats`, { method: 'POST' });
+    expect(r.status).toBe(405);
+  });
+
   it('never escapes the static dir on path traversal attempts', async () => {
     for (const path of [
       '/static/..%2f..%2fetc%2fpasswd',

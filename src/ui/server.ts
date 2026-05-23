@@ -459,6 +459,36 @@ export function createUiServer(memory: Memory, opts: UiServerOptions = {}): Serv
       return;
     }
 
+    // Read-only counts for the ambient companion's ingest pulse (DESIGN.md §12-A).
+    // Counts ONLY — never observation content (SEC). The pulse reflects ingest
+    // (maxObservationId growing), not recall, which never writes (see ADR-0015).
+    if (path === '/api/stats') {
+      try {
+        const c = memory.store.counts();
+        const stats: {
+          sessions: number;
+          observations: number;
+          maxObservationId: number;
+          newSince?: number;
+        } = {
+          sessions: c.sessions,
+          observations: c.observations,
+          maxObservationId: memory.store.maxObservationId(),
+        };
+        const sinceRaw = url.searchParams.get('since');
+        if (sinceRaw !== null) {
+          const since = Number.parseInt(sinceRaw, 10);
+          if (Number.isInteger(since) && since >= 0) {
+            stats.newSince = memory.store.countObservationsSince(since);
+          }
+        }
+        sendJson(res, 200, stats);
+      } catch (e) {
+        sendInternalError(res, 'stats build failed', e);
+      }
+      return;
+    }
+
     if (path.startsWith('/static/') || path.startsWith('/assets/')) {
       // Strip the prefix; decode percent-encoding so `..%2f` is normalized and
       // then caught by the realpath guard rather than served raw.
