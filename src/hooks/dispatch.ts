@@ -33,6 +33,12 @@ export interface DispatchOptions {
   stderr?: (line: string) => void;
   /** Self-bound timeout in ms passed to the runner. */
   timeoutMs?: number;
+  /**
+   * Override the handler table (tests only). Lets a test capture the EXACT payload
+   * a handler receives AFTER the chokepoint has run — proving the session id was
+   * namespaced before any handler sees it, without sniffing rendered stdout.
+   */
+  handlers?: Record<string, (payload: HookPayload) => Promise<string | undefined>>;
 }
 
 /**
@@ -41,7 +47,7 @@ export interface DispatchOptions {
  * nothing and is non-fatal.
  */
 export async function dispatchHook(eventArg: string, options: DispatchOptions = {}): Promise<void> {
-  const handler = HANDLERS[eventArg];
+  const handler = (options.handlers ?? HANDLERS)[eventArg];
   await runHookSafely(
     async () => {
       if (!handler) return undefined; // unknown event — no-op, non-fatal
