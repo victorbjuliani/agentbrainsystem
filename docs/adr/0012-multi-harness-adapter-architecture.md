@@ -1,8 +1,8 @@
 # ADR 0012 — Multi-harness adapter architecture
 
 **Status:** accepted · **Date:** 2026-05-23 · Epic: #65 · Adapters: #67 (Codex),
-#68 (Gemini), #69 (Copilot), #72 (OpenCode) · Spike: OpenCode parity (#70, ADR-0011 lands via PR #79) ·
-Depends on: ADR-0004 (hook model), ADR-0001 (storage)
+#68 (Gemini), #69 (Copilot), #72 (OpenCode) · Spikes: OpenCode parity (#70, ADR-0011) ·
+Antigravity parity (#71, ADR-0013 — DOES-NOT-QUALIFY) · Depends on: ADR-0004 (hook model), ADR-0001 (storage)
 
 ## Context
 
@@ -15,7 +15,7 @@ same memory experience as Claude Code.
 
 This ADR consolidates the architecture that the epic shipped across five adapters. The
 per-harness mechanics and the parity verdict for the divergent OpenCode case were proven
-empirically — see the OpenCode parity spike (#70, ADR-0011 lands via PR #79) and the per-harness plans under
+empirically — see the OpenCode parity spike (#70, ADR-0011) and the per-harness plans under
 `docs/superpowers/plans/` (`harness-codex`, `harness-gemini`, `harness-copilot`,
 `harness-opencode`) plus the design spec `docs/superpowers/specs/2026-05-22-multi-harness-support-design.md`.
 
