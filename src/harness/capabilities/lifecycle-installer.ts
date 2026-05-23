@@ -1,5 +1,5 @@
 // src/harness/capabilities/lifecycle-installer.ts
-import { installHooks, type InstallOptions, uninstallHooks } from '../../hooks/installer.js';
+import { type InstallOptions, installHooks, uninstallHooks } from '../../hooks/installer.js';
 import type { HookEvent } from '../../hooks/payload.js';
 import type { InstallReport, LifecycleMoment, UninstallReport } from '../types.js';
 
