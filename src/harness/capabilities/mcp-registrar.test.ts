@@ -31,4 +31,25 @@ describe('cliMcpRegistrar', () => {
     expect((await registrar.register('/cli.js', run)).status).toBe('registered');
     expect(seen.every((c) => c === 'codex')).toBe(true);
   });
+
+  it('gemini registrar drives the gemini binary with positional args (no --, #68)', async () => {
+    const seen: { cmd: string; args: string[] }[] = [];
+    const run = async (cmd: string, args: string[]) => {
+      seen.push({ cmd, args });
+      return {
+        code: 0,
+        stdout: args.includes('--version') ? 'gemini 0.35.0' : '',
+        stderr: '',
+      };
+    };
+    const r = await cliMcpRegistrar({
+      binary: 'gemini',
+      argStyle: 'positional',
+      scope: 'user',
+    }).register('/cli.js', run);
+    expect(r.status).toBe('registered');
+    expect(seen.find((s) => s.args.includes('add'))?.args).not.toContain('--');
+    expect(seen.find((s) => s.args.includes('add'))?.args).toContain('--scope');
+    expect(seen.every((s) => s.cmd === 'gemini')).toBe(true);
+  });
 });

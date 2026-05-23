@@ -96,6 +96,22 @@ describe('dispatchHook — chokepoint namespacing (C-NEW-1/R4, #67)', () => {
     expect(captured[0]?.sessionId).not.toContain('codex:codex:'); // single-application guard
   });
 
+  it('namespaces a Gemini payload with gemini: at dispatch (#68)', async () => {
+    const { captured, handlers } = capturing();
+    await dispatchHook('session-start', {
+      stdin: stdinOf({
+        session_id: 'u-1',
+        cwd: '/work/proj',
+        transcript_path: '/h/.gemini/tmp/p/chats/session-2026-05-23T04-24-78432a44.json',
+        source: 'startup',
+      }),
+      handlers,
+    });
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.sessionId).toBe('gemini:u-1');
+    expect(captured[0]?.sessionId).not.toContain('gemini:gemini:'); // single-application guard
+  });
+
   it('leaves a Claude payload sessionId BARE at dispatch (regression)', async () => {
     const { captured, handlers } = capturing();
     await dispatchHook('session-start', {

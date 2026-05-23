@@ -1,6 +1,11 @@
 // src/ingest/namespacing.test.ts
 import { describe, expect, it } from 'vitest';
-import { harnessForPayload, isCodexTranscript, namespacedExternalId } from './namespacing.js';
+import {
+  harnessForPayload,
+  isCodexTranscript,
+  isGeminiTranscript,
+  namespacedExternalId,
+} from './namespacing.js';
 
 describe('isCodexTranscript (W-R3-1 — leaf classifier)', () => {
   it('matches a codex sessions dir and a rollout filename', () => {
@@ -22,12 +27,53 @@ describe('isCodexTranscript (W-R3-1 — leaf classifier)', () => {
   });
 });
 
+describe('isGeminiTranscript (#68 — leaf classifier)', () => {
+  it('detects a Gemini chats transcript path', () => {
+    expect(
+      isGeminiTranscript(
+        '/Users/x/.gemini/tmp/myproj/chats/session-2026-05-23T04-24-78432a44.json',
+      ),
+    ).toBe(true);
+  });
+  it('rejects a Codex rollout path', () => {
+    expect(
+      isGeminiTranscript(
+        '/Users/x/.codex/sessions/2026/05/23/rollout-2026-05-23T04-24-00-78432a44-385f-41f6-8a71-646d51996f8a.jsonl',
+      ),
+    ).toBe(false);
+  });
+  it('rejects a Claude projects path', () => {
+    expect(isGeminiTranscript('/Users/x/.claude/projects/p/abc.jsonl')).toBe(false);
+  });
+  it('detects a relocated Gemini home (no ~/.gemini/tmp/ prefix) by shape alone (#90b)', () => {
+    expect(
+      isGeminiTranscript(
+        '/srv/xdg-config/gemini/myproj/chats/session-2026-05-23T04-24-78432a44.json',
+      ),
+    ).toBe(true);
+  });
+  it('detects a Windows backslash-separated Gemini path (#86)', () => {
+    expect(
+      isGeminiTranscript(
+        'C:\\Users\\dev\\.gemini\\tmp\\p\\chats\\session-2026-05-23T04-24-78432a44.json',
+      ),
+    ).toBe(true);
+  });
+});
+
 describe('namespacedExternalId (W1)', () => {
   it('leaves Claude Code ids bare (migration-safe)', () => {
     expect(namespacedExternalId('claude-code', 'abc-123')).toBe('abc-123');
   });
   it('prefixes non-Claude harnesses', () => {
     expect(namespacedExternalId('codex', '019e2658')).toBe('codex:019e2658');
+  });
+  it('namespaces a gemini session id with the gemini: prefix', () => {
+    expect(namespacedExternalId('gemini', 'u-1')).toBe('gemini:u-1');
+  });
+  it('keeps Claude bare and Codex codex: unchanged (migration-safe)', () => {
+    expect(namespacedExternalId('claude-code', 'c-1')).toBe('c-1');
+    expect(namespacedExternalId('codex', 'x-1')).toBe('codex:x-1');
   });
 });
 
@@ -47,5 +93,12 @@ describe('harnessForPayload (C-NEW-1)', () => {
   });
   it('defaults to claude-code when no transcript path is present', () => {
     expect(harnessForPayload({})).toBe('claude-code');
+  });
+  it('routes a Gemini chats path to gemini (#68)', () => {
+    expect(
+      harnessForPayload({
+        transcriptPath: '/h/.gemini/tmp/p/chats/session-2026-05-23T04-24-78432a44.json',
+      }),
+    ).toBe('gemini');
   });
 });

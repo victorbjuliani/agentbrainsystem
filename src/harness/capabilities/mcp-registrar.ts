@@ -9,13 +9,21 @@ export interface McpRegistrar {
 export interface CliMcpRegistrarOptions {
   /** CLI binary that owns `mcp add/list/remove` (defaults to 'claude'). */
   binary?: string;
+  /** Gemini rejects the `--` separator; it needs positional args + an explicit scope (#68). */
+  argStyle?: 'separator' | 'positional';
+  /** Scope for the positional style (`--scope user|project`); positional only. */
+  scope?: 'user' | 'project';
 }
 
 /** MCP registrar for CLI-driven harnesses (`<cli> mcp add ...`). */
 export function cliMcpRegistrar(options: CliMcpRegistrarOptions = {}): McpRegistrar {
   return {
     register: async (cliPath, run) => {
-      const result = await registerMcpServer(cliPath, run, { binary: options.binary });
+      const result = await registerMcpServer(cliPath, run, {
+        binary: options.binary,
+        argStyle: options.argStyle,
+        scope: options.scope,
+      });
       if (result.status === 'no-claude') {
         return { status: 'unavailable', manualCommand: result.manualCommand };
       }
