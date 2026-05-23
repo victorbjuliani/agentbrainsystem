@@ -34,6 +34,14 @@ export function isCodexTranscript(absPath: string): boolean {
   );
 }
 
+/** True when the path is a Gemini CLI chat transcript (drives parser + namespace, #68). */
+export function isGeminiTranscript(absPath: string): boolean {
+  return (
+    absPath.includes('/.gemini/tmp/') &&
+    /\/chats\/session-[\dT-]+-[0-9a-f]{8}\.json$/i.test(absPath)
+  );
+}
+
 /**
  * Namespace a harness session id for storage (W1, #67). Claude Code keeps its
  * BARE id (migration-safe: existing rows + bindings written before namespacing
@@ -52,7 +60,9 @@ export function namespacedExternalId(harnessId: string, rawSessionId: string): s
  * safe default.
  */
 export function harnessForPayload(payload: { transcriptPath?: string }): string {
-  return payload.transcriptPath && isCodexTranscript(payload.transcriptPath)
-    ? 'codex'
-    : 'claude-code';
+  const p = payload.transcriptPath;
+  if (!p) return 'claude-code'; // safe default (existing contract)
+  if (isCodexTranscript(p)) return 'codex'; // codex first — minimises the diff to the existing branch
+  if (isGeminiTranscript(p)) return 'gemini';
+  return 'claude-code';
 }
