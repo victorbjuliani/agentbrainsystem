@@ -66,7 +66,7 @@ where it does not:
 npm + Node ≥22 + TypeScript (ESM). Biome lint/format, Vitest, `tsc`. Validation:
 `npm run check` (lint → typecheck → test). **Run `npm run build` before any live
 `abs` test** (dist is not rebuilt by `check`). Worktree:
-`/Users/vbjuliani/Devs/agentbrainsystem/.worktrees/h68`, branch
+`/Users/dev/Devs/agentbrainsystem/.worktrees/h68`, branch
 `feat/harness-gemini`, stacked on merged Codex work.
 
 ---
@@ -208,7 +208,7 @@ Event → moment mapping decision:
   **absolute normalized cwd** (`config/projectRegistry.js:235-247`, written with
   `flag:'wx'`). Verified on the live install:
   `cat ~/.gemini/tmp/agentbrainsystem/.project_root` →
-  `/Users/vbjuliani/Devs/agentbrainsystem`. There is also a registry
+  `/Users/dev/Devs/agentbrainsystem`. There is also a registry
   `~/.gemini/projects.json` = `{ "projects": { "<cwd>": "<slug>" } }` (inverse map).
   From a chat file `…/tmp/<slug>/chats/session-*.json`, the marker is exactly
   `join(dirname(dirname(absPath)), '.project_root')` — one dir up from `chats/`.
@@ -548,7 +548,7 @@ session (it only holds `/dir add` workspaces). So `parseGeminiChat` CANNOT emit 
 cwd from the file. Instead the ingest branch reads the marker
 `<slugDir>/.project_root` (one dir up from `chats/`), which Gemini writes with the
 absolute normalized cwd (`config/projectRegistry.js:235-247`; verified
-`~/.gemini/tmp/agentbrainsystem/.project_root` = `/Users/vbjuliani/Devs/agentbrainsystem`).
+`~/.gemini/tmp/agentbrainsystem/.project_root` = `/Users/dev/Devs/agentbrainsystem`).
 This gives the TRUE cwd → `projectSlug(cwd)` matches Claude/Codex bucketing.
 **Fallback** when the marker is absent/unreadable: `basename(dirname(dirname(absPath)))`
 = the `<slug>` dir name (e.g. `agentbrainsystem`) — a slug of the cwd basename,
