@@ -26,10 +26,16 @@ import type { Memory } from '../memory.js';
 import { projectSlug } from '../optimize/targets.js';
 import { type ParsedEntry, parseLine, type ToolAnchorSeed } from './claude-jsonl.js';
 import { createCodexLineParser } from './codex-jsonl.js';
+import { createCopilotLineParser } from './copilot-jsonl.js';
 import { parseGeminiChat } from './gemini-chat.js';
 // W-R3-1: isCodexTranscript + namespacedExternalId are LEAF helpers in namespacing.ts.
 // ingest.ts IMPORTS them (one direction); it does NOT define isCodexTranscript itself.
-import { isCodexTranscript, isGeminiTranscript, namespacedExternalId } from './namespacing.js';
+import {
+  isCodexTranscript,
+  isCopilotTranscript,
+  isGeminiTranscript,
+  namespacedExternalId,
+} from './namespacing.js';
 import { cleanupBindings, readBinding, type SessionBinding } from './session-binding.js';
 import type { IngestOptions, IngestResult } from './types.js';
 
@@ -38,6 +44,9 @@ const CURSOR_PREFIX = 'ingest:cursor:';
 
 /** kv_meta cache of a Codex rollout's header `cwd`, keyed by transcript path (W4 resume). */
 const CODEX_CWD_PREFIX = 'codex:cwd:';
+
+/** kv_meta cache of a Copilot session's `session.context_changed` cwd, keyed by path (#69 resume). */
+const COPILOT_CWD_PREFIX = 'ingest:copilot-cwd:';
 
 /** kv_meta key prefix for the per-Gemini-file last-ingested message id (W-NEW-1 rewind-safe, #68). */
 const GEMINI_LASTID_PREFIX = 'gemini:lastid:';
@@ -340,7 +349,38 @@ async function ingestFile(
   const stream = createReadStream(absPath, { start: startOffset, encoding: 'utf8' });
   const rl = createInterface({ input: stream, crlfDelay: Number.POSITIVE_INFINITY });
 
-  if (isCodexTranscript(absPath)) {
+  if (isCopilotTranscript(absPath)) {
+    // Copilot path (#69): append-mostly events.jsonl → stream PER-LINE with a BYTE
+    // cursor exactly like Codex. The sessionId is the session-state dir UUID (so a
+    // header-less mid-file resume still groups), and the `session.context_changed`
+    // cwd is recovered from the kv_meta cache for a header-less tail. The rare
+    // compaction/fork truncate (cursor > size) is handled UPSTREAM in
+    // `ingestOneTranscript` (re-sync from 0), so this branch only ever sees a tail.
+    const cwdHint = memory.store.getMeta(`${COPILOT_CWD_PREFIX}${absPath}`) ?? undefined;
+    const parser = createCopilotLineParser(absPath, cwdHint);
+    for await (const line of rl) {
+      offset += Buffer.byteLength(line, 'utf8') + 1;
+      const entry = parser.pushLine(line);
+      if (!entry) {
+        tally.skipped++;
+        continue;
+      }
+      const externalId = namespacedExternalId('copilot', entry.sessionId);
+      const effectiveProject = entry.cwd ? projectSlug(entry.cwd) : project;
+      await writeEntry(
+        memory,
+        sessionCache,
+        bindingCache,
+        externalId,
+        effectiveProject,
+        entry,
+        absPath,
+        tally,
+      );
+    }
+    const observedCwd = parser.observedCwd();
+    if (observedCwd) memory.store.setMeta(`${COPILOT_CWD_PREFIX}${absPath}`, observedCwd);
+  } else if (isCodexTranscript(absPath)) {
     // Codex path (W4): stream PER-LINE like Claude. The sessionId is the FILENAME
     // UUID (so a header-less mid-file resume still groups), and the header `cwd`
     // is recovered from the kv_meta cache for a header-less tail.
@@ -435,14 +475,31 @@ async function ingestOneTranscript(
   } catch {
     return; // vanished between walk and stat — ignore
   }
+  // Fallback project for lines with no cwd: the encoded dir name (the file's
+  // immediate parent). The hot path derives the project from each line's cwd.
+  // HOISTED above the `cursor >= size` skip so the Copilot compaction guard can
+  // call ingestFile with it (the guard fires BEFORE the skip — a guard inside
+  // ingestFile would be dead code, control never reaches it after a skip).
+  const project = basename(dirname(absPath));
   const cursor = readCursor(memory, absPath);
+  // Copilot compaction/fork guard (#69): events.jsonl is append-mostly with a
+  // STRICT-PREFIX truncate on compaction/fork. After a truncate the persisted
+  // cursor > size, which the `cursor >= size` skip below would treat as "nothing
+  // new" and SILENTLY DROP the freshly appended tail. Detect that here and re-sync
+  // from offset 0 — at-least-once (the retained overlap is re-ingested as dup
+  // observations; the dedup-free store write is the accepted #67/#68 tolerance),
+  // NEVER a silent drop. Byte cursor > size is the correct, sufficient detector
+  // because the only non-append write is a prefix truncate.
+  if (isCopilotTranscript(absPath) && cursor > size) {
+    writeCursor(memory, absPath, 0);
+    await ingestFile(memory, absPath, project, 0, result);
+    result.filesProcessed++;
+    return;
+  }
   if (cursor >= size) {
     result.filesSkipped++; // nothing new since last run
     return;
   }
-  // Fallback project for lines with no cwd: the encoded dir name (the file's
-  // immediate parent). The hot path derives the project from each line's cwd.
-  const project = basename(dirname(absPath));
   await ingestFile(memory, absPath, project, cursor, result);
   result.filesProcessed++;
 }
