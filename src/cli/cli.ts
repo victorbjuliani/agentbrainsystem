@@ -18,7 +18,8 @@ import { consolidate } from '../consolidate/index.js';
 import { type DeleteSelector, executeIds, previewSelector } from '../delete/index.js';
 import { exportStore, importStore } from '../export/index.js';
 import { GLOBAL_PROJECT, getOrCreateGlobalSession } from '../global.js';
-import { dispatchHook, installHooks, uninstallHooks } from '../hooks/index.js';
+import { defaultRegistry, type HarnessAdapter } from '../harness/index.js';
+import { dispatchHook } from '../hooks/index.js';
 import {
   defaultClaudeProjectsDir,
   ingestClaudeProjects,
@@ -40,12 +41,7 @@ import {
 import { projectSlug } from '../optimize/targets.js';
 import { startUiServer } from '../ui/index.js';
 import { VERSION } from '../version.js';
-import {
-  MCP_SERVER_NAME,
-  type RunResult,
-  registerMcpServer,
-  unregisterMcpServer,
-} from './setup.js';
+import { MCP_SERVER_NAME, type RunResult, unregisterMcpServer } from './setup.js';
 
 const USAGE = `agentbrainsystem (abs) v${VERSION} — local-first memory for AI coding agents
 
@@ -372,18 +368,46 @@ async function cmdHook(args: string[]): Promise<void> {
   await dispatchHook(event);
 }
 
+/**
+ * Resolve the harness adapter(s) to act on from a `--harness <id>` flag. With the
+ * flag, the named adapter must exist and `qualifies()`; otherwise we refuse with a
+ * non-zero exit. With no flag, the Claude Code reference adapter is used (Phase 0;
+ * cross-adapter auto-detect lands with the second adapter). Returns null after
+ * printing an error + setting a non-zero exit code.
+ */
+function resolveHarnesses(args: string[]): HarnessAdapter[] | null {
+  const id = optionValue(args, '--harness');
+  if (id !== undefined) {
+    const adapter = defaultRegistry().byId(id);
+    if (!adapter) {
+      out(`! unknown harness '${id}'`);
+      process.exitCode = 1;
+      return null;
+    }
+    const q = adapter.qualifies();
+    if (!q.ok) {
+      out(`! harness '${id}' does not qualify (missing: ${q.missing.join(', ')})`);
+      process.exitCode = 1;
+      return null;
+    }
+    return [adapter];
+  }
+  // No flag → the Claude Code reference adapter (Phase 0 default).
+  const claude = defaultRegistry().byId('claude-code');
+  return claude ? [claude] : [];
+}
+
 /** `abs install-hooks` — register the memory hooks in settings.json (opt-in). */
-async function cmdInstallHooks(): Promise<void> {
-  const result = installHooks();
-  if (result.added.length > 0) {
-    out(`registered hooks: ${result.added.join(', ')} → ${result.settingsPath}`);
-    if (result.backupPath) out(`backup: ${result.backupPath}`);
-  }
-  if (result.alreadyPresent.length > 0) {
-    out(`already present (no change): ${result.alreadyPresent.join(', ')}`);
-  }
-  if (result.added.length === 0 && result.alreadyPresent.length === 0) {
-    out('no hooks to register');
+async function cmdInstallHooks(args: string[]): Promise<void> {
+  const harnesses = resolveHarnesses(args);
+  if (!harnesses) return;
+  for (const adapter of harnesses) {
+    const report = await adapter.install();
+    if (report.wired.length > 0) {
+      out(`registered hooks (${adapter.displayName}): ${report.wired.join(', ')}`);
+    } else {
+      out(`no hooks to register (${adapter.displayName})`);
+    }
   }
 }
 
@@ -419,13 +443,20 @@ function spawnCapture(cmd: string, args: string[]): Promise<RunResult> {
  * as a stdio MCP server with Claude Code. Both steps are idempotent. A missing
  * `claude` CLI degrades to a printed manual command (non-fatal).
  */
-async function cmdSetup(): Promise<void> {
-  const hooks = installHooks();
-  if (hooks.added.length > 0) out(`✓ hooks registered: ${hooks.added.join(', ')}`);
-  else if (hooks.alreadyPresent.length > 0) out('✓ hooks already registered');
+async function cmdSetup(args: string[]): Promise<void> {
+  const harnesses = resolveHarnesses(args);
+  if (!harnesses) return;
+  const adapter = harnesses[0];
+  if (!adapter) {
+    out('no harness available to set up');
+    return;
+  }
+
+  const hooks = await adapter.install();
+  if (hooks.wired.length > 0) out(`✓ hooks registered: ${hooks.wired.join(', ')}`);
 
   const cliPath = fileURLToPath(import.meta.url);
-  const reg = await registerMcpServer(cliPath, spawnCapture);
+  const reg = await adapter.registerMcp(cliPath, spawnCapture);
   switch (reg.status) {
     case 'registered':
       out(`✓ MCP server registered with Claude Code as "${MCP_SERVER_NAME}"`);
@@ -433,7 +464,7 @@ async function cmdSetup(): Promise<void> {
     case 'already':
       out(`✓ MCP server already registered as "${MCP_SERVER_NAME}"`);
       break;
-    case 'no-claude':
+    case 'unavailable':
       out('! Claude CLI not found — register the MCP server manually:');
       out(`    ${reg.manualCommand}`);
       break;
@@ -494,10 +525,10 @@ async function cmdUninstall(args: string[]): Promise<void> {
   const yes = args.includes('--yes');
 
   // 1. Remove our hooks from settings.json (symlink-safe, backup-first, atomic).
-  const hooks = uninstallHooks();
+  const adapter = defaultRegistry().byId('claude-code');
+  const hooks = adapter ? await adapter.uninstall() : { removed: [] };
   if (hooks.removed.length > 0) {
-    out(`✓ hooks removed: ${hooks.removed.join(', ')} → ${hooks.settingsPath}`);
-    if (hooks.backupPath) out(`  backup: ${hooks.backupPath}`);
+    out(`✓ hooks removed: ${hooks.removed.join(', ')}`);
   } else {
     out('✓ no abs hooks were present in settings.json');
   }
@@ -813,8 +844,10 @@ export function resolveSessionId(args: string[]): SessionResolution {
     }
     return { id: explicit, source: 'flag' };
   }
-  const env = process.env.CLAUDE_CODE_SESSION_ID;
-  if (env !== undefined && env.length > 0) return { id: env, source: 'env' };
+  // The env read is centralized in the Claude adapter (multi-harness support); a
+  // resolved id from the env keeps the `source: 'env'` semantics.
+  const resolved = defaultRegistry().byId('claude-code')?.resolveSession({ env: process.env });
+  if (resolved) return { id: resolved.sessionId, source: 'env' };
   return null;
 }
 
@@ -1078,9 +1111,9 @@ async function main(): Promise<void> {
     case 'hook':
       return cmdHook(rest);
     case 'install-hooks':
-      return cmdInstallHooks();
+      return cmdInstallHooks(rest);
     case 'setup':
-      return cmdSetup();
+      return cmdSetup(rest);
     case 'uninstall':
       return cmdUninstall(rest);
     case 'optimize':
