@@ -128,10 +128,14 @@
   --label-fg: var(--neutral-700);
   --edge-containment: rgba(74, 71, 96, 0.18);
   --edge-similarity: rgba(20, 148, 136, 0.22);
-  /* Slightly deeper accents so the luminous hues stay legible on a light canvas. */
+  /* Slightly deeper accents so the luminous hues stay legible on a light canvas.
+     lesson/decision are the largest nodes (sized by class, §11), so their bright
+     dark-theme hues (amber/fuchsia) would bloom worst on white — deepen them too. */
   --accent-user: #0891b2;
   --accent-assistant: #7c3aed;
   --accent-tool: #0d9488;
+  --accent-lesson: #b45309;
+  --accent-decision: #a21caf;
   --elevation: 0 4px 12px -2px rgba(20, 16, 27, 0.1);
   --elevation-lg: 0 12px 32px -6px rgba(20, 16, 27, 0.14);
   --vignette: none;
@@ -346,6 +350,16 @@ body {
 .seg-btn:focus-visible {
   outline: 2px solid var(--violet-500);
   outline-offset: -2px;
+}
+
+/* Light theme: the active-toggle text (violet-300) is tuned for the dark canvas and
+   washes out on the pale surface — there the pressed segment read FAINTER than the
+   idle one. Use a deep violet + a touch more fill so the active state clears AA and
+   reads as the heavier element. Covers the similarity toggle (same root). */
+[data-theme='light'] .seg-btn[aria-pressed='true'],
+[data-theme='light'] .toggle[aria-pressed='true'] {
+  color: var(--violet-700);
+  background: color-mix(in oklab, var(--violet-500) 22%, var(--surface-solid));
 }
 
 .icon-btn {

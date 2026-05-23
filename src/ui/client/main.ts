@@ -17,8 +17,9 @@ import {
   previewDelete,
   StaleTokenError,
 } from './delete-client.js';
+import { radiusFor } from './node-size.js';
 import { mountOverlays } from './overlays.js';
-import { createRenderer, radiusFor } from './render.js';
+import { createRenderer } from './render.js';
 import { scopeToQuery } from './scope.js';
 import type { ScopeState, Theme, ViewEdge, ViewGraph, ViewNode } from './types.js';
 import { presentTypes } from './visible-types.js';
