@@ -16,6 +16,7 @@ import { loadConfig } from '../config.js';
 import { __clearDeleteCacheForTests } from '../delete/delete.js';
 import { getOrCreateGlobalSession } from '../global.js';
 import { buildOpencodeDb } from '../harness/capabilities/__fixtures__/opencode-db.js';
+import type { HarnessAdapter } from '../harness/index.js';
 import { type Memory, openMemory } from '../memory.js';
 import {
   cmdForget,
@@ -26,6 +27,7 @@ import {
   cmdPromote,
   cmdRemember,
   cmdUninstall,
+  gatherHarnessStatus,
   parseForgetSelector,
   parseIds,
   parseProjectAction,
@@ -555,6 +557,109 @@ describe('resolveHarnesses — --harness flag resolution (install-hooks path)', 
   // registry directly (no injection seam). This branch is exercised in Phase 1 when a
   // second, non-qualifying adapter exists. Production code is intentionally left
   // unrefactored — adding a registry-injection seam purely for this test is not warranted.
+});
+
+describe('gatherHarnessStatus — per-harness installed/parity rows (#75)', () => {
+  // Minimal fake adapter — gatherHarnessStatus only reads id/displayName and calls
+  // detect()/qualifies(). Cast through HarnessAdapter so we don't stub the whole contract.
+  type Fake = Pick<HarnessAdapter, 'id' | 'displayName' | 'detect' | 'qualifies'>;
+  const fakeRegistry = (adapters: Fake[]) => ({
+    all: () => adapters as unknown as readonly HarnessAdapter[],
+  });
+
+  it('reports installed=true/parity=true for a detected, qualifying harness', async () => {
+    const rows = await gatherHarnessStatus(
+      fakeRegistry([
+        {
+          id: 'foo',
+          displayName: 'Foo CLI',
+          detect: async () => true,
+          qualifies: () => ({ ok: true, missing: [] }),
+        },
+      ]),
+    );
+    expect(rows).toEqual([{ id: 'foo', displayName: 'Foo CLI', installed: true, parity: true }]);
+  });
+
+  it('reports installed=false when detect() resolves false', async () => {
+    const rows = await gatherHarnessStatus(
+      fakeRegistry([
+        {
+          id: 'bar',
+          displayName: 'Bar CLI',
+          detect: async () => false,
+          qualifies: () => ({ ok: true, missing: [] }),
+        },
+      ]),
+    );
+    expect(rows[0]).toMatchObject({ installed: false, parity: true });
+  });
+
+  it('reports parity=false when qualifies().ok is false', async () => {
+    const rows = await gatherHarnessStatus(
+      fakeRegistry([
+        {
+          id: 'baz',
+          displayName: 'Baz CLI',
+          detect: async () => true,
+          qualifies: () => ({ ok: false, missing: ['mcp'] }),
+        },
+      ]),
+    );
+    expect(rows[0]).toMatchObject({ installed: true, parity: false });
+  });
+
+  it('never crashes when detect() throws — surfaces installed=false (non-fatal)', async () => {
+    const rows = await gatherHarnessStatus(
+      fakeRegistry([
+        {
+          id: 'boom',
+          displayName: 'Boom CLI',
+          detect: async () => {
+            throw new Error('detect blew up');
+          },
+          qualifies: () => ({ ok: true, missing: [] }),
+        },
+      ]),
+    );
+    expect(rows[0]).toMatchObject({ id: 'boom', installed: false, parity: true });
+  });
+
+  it('preserves order and one row per adapter across a mixed registry', async () => {
+    const rows = await gatherHarnessStatus(
+      fakeRegistry([
+        {
+          id: 'a',
+          displayName: 'A',
+          detect: async () => true,
+          qualifies: () => ({ ok: true, missing: [] }),
+        },
+        {
+          id: 'b',
+          displayName: 'B',
+          detect: async () => false,
+          qualifies: () => ({ ok: false, missing: ['recall'] }),
+        },
+      ]),
+    );
+    expect(rows.map((r) => r.id)).toEqual(['a', 'b']);
+    expect(rows.map((r) => r.installed)).toEqual([true, false]);
+    expect(rows.map((r) => r.parity)).toEqual([true, false]);
+  });
+
+  it('the real defaultRegistry yields one row per shipped adapter (all five qualify)', async () => {
+    const { defaultRegistry } = await import('../harness/index.js');
+    const rows = await gatherHarnessStatus(defaultRegistry());
+    expect(rows.map((r) => r.id).sort()).toEqual([
+      'claude-code',
+      'codex',
+      'copilot',
+      'gemini',
+      'opencode',
+    ]);
+    // Every shipped adapter is full-parity (qualifies().ok === true).
+    expect(rows.every((r) => r.parity)).toBe(true);
+  });
 });
 
 describe('cmdUninstall — --harness-aware MCP unregister (C2, #67)', () => {
