@@ -6,21 +6,21 @@
 
 <p>
 Your agent forgets everything between sessions. <b>agentbrainsystem</b> captures every
-Claude&nbsp;Code session and recalls what matters next time — <b>100% on your machine</b>.
-No cloud, no account, no API keys.
+coding session — across <b>five harnesses</b> — and recalls what matters next time,
+<b>100% on your machine</b>. No cloud, no account, no API keys.
 </p>
 
 <p>
 <a href="https://github.com/victorbjuliani/agentbrainsystem/blob/main/LICENSE"><img src="https://img.shields.io/github/license/victorbjuliani/agentbrainsystem?style=flat-square&color=8B5CF6&labelColor=1A1825" alt="MIT License" /></a>
 <a href="https://github.com/victorbjuliani/agentbrainsystem/stargazers"><img src="https://img.shields.io/github/stars/victorbjuliani/agentbrainsystem?style=flat-square&color=A78BFA&labelColor=1A1825&logo=github&logoColor=white" alt="Stars" /></a>
 <img src="https://img.shields.io/badge/node-%E2%89%A5%2022-7C3AED?style=flat-square&labelColor=1A1825&logo=node.js&logoColor=white" alt="Node ≥ 22" />
-<img src="https://img.shields.io/badge/tests-509%20passing-5EEAD4?style=flat-square&labelColor=1A1825" alt="506 tests" />
+<img src="https://img.shields.io/badge/tests-799%20passing-5EEAD4?style=flat-square&labelColor=1A1825" alt="799 tests" />
 <a href="https://victorbjuliani.github.io/agentbrainsystem/"><img src="https://img.shields.io/badge/website-live-22D3EE?style=flat-square&labelColor=1A1825" alt="Website" /></a>
 </p>
 
 <p>
 <img src="https://img.shields.io/badge/local--first-%240%20%C2%B7%20offline-8B5CF6?style=for-the-badge&labelColor=0A0810" alt="local-first · $0 · offline" />
-<img src="https://img.shields.io/badge/MCP-8%20tools-22D3EE?style=for-the-badge&labelColor=0A0810" alt="8 MCP tools" />
+<img src="https://img.shields.io/badge/MCP-9%20tools-22D3EE?style=for-the-badge&labelColor=0A0810" alt="9 MCP tools" />
 <img src="https://img.shields.io/badge/deps-just%205-A78BFA?style=for-the-badge&labelColor=0A0810" alt="just 5 dependencies" />
 <img src="https://img.shields.io/badge/storage-embedded%20SQLite-5EEAD4?style=for-the-badge&labelColor=0A0810" alt="embedded SQLite" />
 </p>
@@ -139,9 +139,10 @@ manually, or to wire a second machine (Claude Code shown):
 claude mcp add agentbrainsystem -- node /absolute/path/to/agentbrainsystem/dist/cli/cli.js start
 ```
 
-MCP tools exposed to the agent: `recall`, `remember`, `memory_status`, `optimize`/`apply`
-(gated `CLAUDE.md` edits), `forget_preview`/`forget` (two-phase selective hard-delete), and
-`set_session_project`. The same memory store is shared across every harness.
+The 9 MCP tools exposed to the agent: `recall`, `remember`, `memory_status`, `optimize`/`apply`
+(gated `CLAUDE.md` edits), `forget_preview`/`forget` (two-phase selective hard-delete),
+`set_session_project`, and `promote` (move a memory into the cross-project global brain). The same
+memory store is shared across every harness.
 
 ## Memory graph UI
 
