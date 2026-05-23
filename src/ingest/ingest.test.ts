@@ -828,7 +828,10 @@ describe('Copilot ingest (byte cursor + compaction guard, #69)', () => {
     const memory = newMemory();
     const copilotPath = join(dir, copilotRel);
     mkdirSync(dirname(copilotPath), { recursive: true });
-    writeFileSync(copilotPath, `${[ctx, u('e1', 'turn one q'), a('e2', 'turn one a')].join('\n')}\n`);
+    writeFileSync(
+      copilotPath,
+      `${[ctx, u('e1', 'turn one q'), a('e2', 'turn one a')].join('\n')}\n`,
+    );
     await ingestSingleSession(memory, copilotPath);
     const afterTurn1 = memory.store.counts().observations;
     expect(afterTurn1).toBe(2);
