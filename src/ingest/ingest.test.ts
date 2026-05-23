@@ -3,6 +3,7 @@ import {
   copyFileSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -774,6 +775,107 @@ describe('Gemini ingest (whole-file JSON, id-watermark + .project_root, #68)', (
     expect(sess.length).toBe(1);
     expect(sess[0]?.project).toBe('agentbrainsystem'); // slug dir, not 'chats'
     expect(sess[0]?.project).not.toBe('chats');
+    memory.close();
+  });
+});
+
+describe('Copilot ingest (byte cursor + compaction guard, #69)', () => {
+  const CO_UUID = '3db5c133-d9b9-419c-a649-d8d1b0514c49';
+  const copilotRel = `.copilot/session-state/${CO_UUID}/events.jsonl`;
+  const CWD = '/Users/me/Devs/agentbrainsystem';
+  const ctx = JSON.stringify({
+    id: 'evt-ctx',
+    timestamp: 't',
+    type: 'session.context_changed',
+    data: { cwd: CWD },
+  });
+  const u = (id: string, text: string) =>
+    JSON.stringify({ id, timestamp: 't', type: 'user.message', data: { content: text } });
+  const a = (id: string, text: string) =>
+    JSON.stringify({ id, timestamp: 't', type: 'assistant.message', data: { content: text } });
+
+  it('ingests the Copilot fixture via ingestSingleSession: one copilot:-namespaced session under the real cwd project', async () => {
+    const memory = newMemory();
+    const src = join(__dirname, '__fixtures__/copilot-events.jsonl');
+    const copilotPath = join(dir, copilotRel);
+    mkdirSync(dirname(copilotPath), { recursive: true });
+    copyFileSync(src, copilotPath);
+    const result = await ingestSingleSession(memory, copilotPath);
+    expect(result.observationsAdded).toBeGreaterThan(0);
+    const sessions = memory.store.listSessions();
+    expect(sessions.length).toBe(1);
+    expect(sessions[0]?.externalId).toBe(`copilot:${CO_UUID}`); // W1 namespaced
+    expect(sessions[0]?.project).toBe(projectSlug(CWD)); // real cwd, not the dir UUID
+    expect(sessions[0]?.project).not.toBe(CO_UUID);
+    memory.close();
+  });
+
+  it('the REAL dispatch path (handleSessionEnd) namespaces a Copilot transcript copilot: (C1)', async () => {
+    const memory = newMemory();
+    const copilotPath = join(dir, copilotRel);
+    mkdirSync(dirname(copilotPath), { recursive: true });
+    copyFileSync(join(__dirname, '__fixtures__/copilot-events.jsonl'), copilotPath);
+    await handleSessionEnd(
+      { transcriptPath: copilotPath },
+      { ingest: (p) => ingestSingleSession(memory, p).then(() => undefined) },
+    );
+    const ids = memory.store.listSessions().map((s) => s.externalId);
+    expect(ids).toEqual([`copilot:${CO_UUID}`]);
+    memory.close();
+  });
+
+  it('a second SessionEnd on a GROWN events.jsonl appends only new turns (byte cursor at EOF)', async () => {
+    const memory = newMemory();
+    const copilotPath = join(dir, copilotRel);
+    mkdirSync(dirname(copilotPath), { recursive: true });
+    writeFileSync(copilotPath, `${[ctx, u('e1', 'turn one q'), a('e2', 'turn one a')].join('\n')}\n`);
+    await ingestSingleSession(memory, copilotPath);
+    const afterTurn1 = memory.store.counts().observations;
+    expect(afterTurn1).toBe(2);
+    // Append a new pair (no new context event — header-less tail).
+    appendFileSync(copilotPath, `${[u('e3', 'turn two q'), a('e4', 'turn two a')].join('\n')}\n`);
+    await ingestSingleSession(memory, copilotPath);
+    expect(memory.store.counts().observations).toBe(afterTurn1 + 2);
+    expect(memory.store.listSessions().length).toBe(1);
+    // An UNCHANGED-file re-ingest adds nothing (cursor at EOF).
+    await ingestSingleSession(memory, copilotPath);
+    expect(memory.store.counts().observations).toBe(afterTurn1 + 2);
+    memory.close();
+  });
+
+  it('a compaction/fork truncate-to-shorter-prefix + new tail is RE-SYNCED, NEVER silently dropped (the cursor>size guard in ingestOneTranscript)', async () => {
+    const memory = newMemory();
+    const copilotPath = join(dir, copilotRel);
+    mkdirSync(dirname(copilotPath), { recursive: true });
+    // Ingest 3 events → cursor at EOF (a large offset).
+    writeFileSync(
+      copilotPath,
+      `${[ctx, u('e1', 'q1'), a('e2', 'r1'), u('e3', 'q2')].join('\n')}\n`,
+    );
+    await ingestSingleSession(memory, copilotPath);
+    const afterFirst = memory.store.counts().observations;
+    expect(afterFirst).toBeGreaterThan(0);
+    const sizeAfterFirst = readFileSync(copilotPath, 'utf8').length;
+
+    // Compaction: rewrite to a STRICT PREFIX shorter than the cursor, then append a
+    // NEW tail. A count/byte cursor >= size would SKIP this file → silent drop of
+    // the tail. The guard must reset to 0 and re-ingest.
+    const truncated = `${[ctx, u('e1', 'q1')].join('\n')}\n`; // strict prefix, shorter
+    const newTail = `${a('e9', 'brand new tail answer')}\n`;
+    writeFileSync(copilotPath, truncated + newTail);
+    const sizeAfterCompaction = (truncated + newTail).length;
+    expect(sizeAfterCompaction).toBeLessThan(sizeAfterFirst); // file shrank → cursor > size
+
+    await ingestSingleSession(memory, copilotPath);
+    // No crash, file was NOT skipped: the new tail landed.
+    expect(memory.store.searchFts('brand new tail answer', 10).length).toBeGreaterThan(0);
+    expect(memory.store.listSessions().length).toBe(1);
+    // Cursor advanced to the NEW (smaller) EOF.
+    const cursor = Number.parseInt(
+      memory.store.getMeta(`ingest:cursor:${copilotPath}`) ?? '-1',
+      10,
+    );
+    expect(cursor).toBe(Buffer.byteLength(truncated + newTail, 'utf8'));
     memory.close();
   });
 });
