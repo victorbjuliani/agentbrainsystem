@@ -1,31 +1,17 @@
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { refreshIndex } from '../index/indexer.js';
 import { type Memory, openMemory } from '../memory.js';
 import { handlePreToolUse } from './pre-tool-use.js';
 
-/** Seed a minimal code-review-graph at repoRoot with the given (name, file, line) nodes. */
-function seedGraph(repoRoot: string, nodes: Array<[string, string, number]>): void {
-  const graphDir = join(repoRoot, '.code-review-graph');
-  mkdirSync(graphDir, { recursive: true });
-  const db = new Database(join(graphDir, 'graph.db'));
-  db.prepare(
-    'CREATE TABLE nodes (id INTEGER PRIMARY KEY, kind TEXT, name TEXT, qualified_name TEXT, file_path TEXT, line_start INTEGER)',
-  ).run();
-  const ins = db.prepare(
-    'INSERT INTO nodes (id, kind, name, qualified_name, file_path, line_start) VALUES (?, ?, ?, ?, ?, ?)',
-  );
-  let i = 1;
-  for (const [name, file, line] of nodes) {
-    ins.run(i, 'Function', name, name, file, line);
-    i++;
-  }
-  db.close();
+function git(root: string, ...args: string[]) {
+  execFileSync('git', ['-C', root, ...args], { stdio: ['ignore', 'pipe', 'ignore'] });
 }
 
-describe('PreToolUse contradiction guard (#29 duplication)', () => {
+describe('PreToolUse contradiction guard (#29 duplication, native index)', () => {
   let dir: string;
   let repo: string;
 
@@ -33,21 +19,36 @@ describe('PreToolUse contradiction guard (#29 duplication)', () => {
     dir = mkdtempSync(join(tmpdir(), 'abs-guard-'));
     repo = join(dir, 'repo');
     mkdirSync(repo, { recursive: true });
+    git(repo, 'init', '-q');
+    git(repo, 'config', 'user.email', 't@t');
+    git(repo, 'config', 'user.name', 't');
     delete process.env.ABS_GUARD_MODE;
-    // An isolated empty store so the decision-surfacing lens (#48) stays silent here.
-    process.env.ABS_HOME = join(dir, 'abs');
+    process.env.ABS_HOME = join(dir, 'abs'); // empty store → decision-surfacing stays silent here
     process.env.ABS_EMBED_DIM = '8';
+    process.env.ABS_WASM_DIR = join(__dirname, '../../dist/index/wasm');
   });
-
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
     delete process.env.ABS_GUARD_MODE;
     delete process.env.ABS_HOME;
     delete process.env.ABS_EMBED_DIM;
+    delete process.env.ABS_WASM_DIR;
   });
 
+  /** Write files (relative paths), commit, and refresh the native index. */
+  async function seed(files: Record<string, string>): Promise<void> {
+    for (const [rel, content] of Object.entries(files)) {
+      const abs = join(repo, rel);
+      mkdirSync(join(abs, '..'), { recursive: true });
+      writeFileSync(abs, content);
+    }
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-q', '-m', 'seed');
+    await refreshIndex(repo);
+  }
+
   it('warns when the action defines a symbol that already exists in another file', async () => {
-    seedGraph(repo, [['helper', join(repo, 'src/util.ts'), 12]]);
+    await seed({ 'src/util.ts': 'export function helper() {}' });
     const out = await handlePreToolUse({
       cwd: repo,
       toolName: 'Write',
@@ -57,44 +58,46 @@ describe('PreToolUse contradiction guard (#29 duplication)', () => {
     const parsed = JSON.parse(out as string);
     expect(parsed.hookSpecificOutput.hookEventName).toBe('PreToolUse');
     expect(parsed.hookSpecificOutput.additionalContext).toContain('helper');
-    expect(parsed.hookSpecificOutput.additionalContext).toContain('src/util.ts:12');
+    expect(parsed.hookSpecificOutput.additionalContext).toContain('util.ts');
   });
 
   it('stays silent when the symbol already lives in the SAME file (just editing it)', async () => {
-    const file = join(repo, 'src/util.ts');
-    seedGraph(repo, [['helper', file, 12]]);
+    await seed({ 'src/util.ts': 'export function helper() {}' });
     const out = await handlePreToolUse({
       cwd: repo,
       toolName: 'Edit',
-      toolInput: { file_path: file, new_string: 'export function helper() { return 1; }' },
+      toolInput: {
+        file_path: join(repo, 'src/util.ts'),
+        new_string: 'export function helper() { return 1; }',
+      },
     });
     expect(out).toBeUndefined();
   });
 
   it('blocks (deny) when ABS_GUARD_MODE=block', async () => {
+    await seed({ 'src/util.ts': 'export function helper() {}' });
     process.env.ABS_GUARD_MODE = 'block';
-    seedGraph(repo, [['helper', join(repo, 'src/util.ts'), 5]]);
     const out = await handlePreToolUse({
       cwd: repo,
       toolName: 'Write',
-      toolInput: { file_path: join(repo, 'src/new.ts'), content: 'function helper() {}' },
+      toolInput: { file_path: join(repo, 'src/new.ts'), content: 'export function helper() {}' },
     });
     const parsed = JSON.parse(out as string);
     expect(parsed.hookSpecificOutput.permissionDecision).toBe('deny');
     expect(parsed.hookSpecificOutput.permissionDecisionReason).toContain('helper');
   });
 
-  it('fails open (silent) when there is no graph for the repo', async () => {
+  it('fails open (silent) when the cwd is not a git repo (no native index)', async () => {
     const out = await handlePreToolUse({
-      cwd: join(dir, 'no-graph'),
+      cwd: join(dir, 'no-git'),
       toolName: 'Write',
-      toolInput: { file_path: join(dir, 'x.ts'), content: 'function helper() {}' },
+      toolInput: { file_path: join(dir, 'x.ts'), content: 'export function helper() {}' },
     });
     expect(out).toBeUndefined();
   });
 
-  it('ignores non Edit/Write tools and new symbols', async () => {
-    seedGraph(repo, [['helper', join(repo, 'src/util.ts'), 12]]);
+  it('ignores non Edit/Write tools and brand-new symbols', async () => {
+    await seed({ 'src/util.ts': 'export function helper() {}' });
     expect(
       await handlePreToolUse({ cwd: repo, toolName: 'Bash', toolInput: { command: 'ls' } }),
     ).toBeUndefined();
@@ -102,7 +105,10 @@ describe('PreToolUse contradiction guard (#29 duplication)', () => {
       await handlePreToolUse({
         cwd: repo,
         toolName: 'Write',
-        toolInput: { file_path: join(repo, 'src/new.ts'), content: 'function brandNew() {}' },
+        toolInput: {
+          file_path: join(repo, 'src/new.ts'),
+          content: 'export function brandNew() {}',
+        },
       }),
     ).toBeUndefined();
   });
@@ -116,11 +122,10 @@ describe('PreToolUse decision surfacing (#48 Phase A)', () => {
     dir = mkdtempSync(join(tmpdir(), 'abs-guard-ds-'));
     process.env.ABS_HOME = join(dir, 'abs');
     process.env.ABS_EMBED_DIM = '8';
-    process.env.ABS_RECALL_SCOPE = 'global'; // scope itself is covered by #47/scope tests
+    process.env.ABS_RECALL_SCOPE = 'global';
     delete process.env.ABS_GUARD_MODE;
     mem = await openMemory(undefined, { ensure: false });
   });
-
   afterEach(() => {
     mem.close();
     delete process.env.ABS_HOME;
@@ -130,7 +135,6 @@ describe('PreToolUse decision surfacing (#48 Phase A)', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  /** Seed a decision into FTS (no embed) so recallFts can surface it. */
   function seedDecision(content: string, kind = 'decision'): void {
     const sid = mem.store.createSession({ externalId: 'ds', project: 'P' });
     const id = mem.store.createObservation({ sessionId: sid, kind, content });
@@ -149,7 +153,6 @@ describe('PreToolUse decision surfacing (#48 Phase A)', () => {
     );
     expect(out).toBeTruthy();
     const parsed = JSON.parse(out as string);
-    // Warn-only: a context note, never a deny.
     expect(parsed.hookSpecificOutput.permissionDecision).toBeUndefined();
     expect(parsed.hookSpecificOutput.additionalContext).toContain('[decision]');
     expect(parsed.hookSpecificOutput.additionalContext).toContain('Vitest');
@@ -167,11 +170,11 @@ describe('PreToolUse decision surfacing (#48 Phase A)', () => {
       { memory: mem },
     );
     const parsed = JSON.parse(out as string);
-    expect(parsed.hookSpecificOutput.permissionDecision).toBeUndefined(); // NOT deny
+    expect(parsed.hookSpecificOutput.permissionDecision).toBeUndefined();
     expect(parsed.hookSpecificOutput.additionalContext).toContain('[lesson]');
   });
 
-  it('stays silent when no decision relates to the touched file (low FP)', async () => {
+  it('stays silent when no memory relates to the touched file (low FP)', async () => {
     seedDecision('We chose Vitest as the test runner.');
     const out = await handlePreToolUse(
       {
@@ -181,10 +184,10 @@ describe('PreToolUse decision surfacing (#48 Phase A)', () => {
       },
       { memory: mem },
     );
-    expect(out).toBeUndefined(); // 'payments' does not match the test-runner decision
+    expect(out).toBeUndefined(); // 'payments' does not match the test-runner memory
   });
 
-  it('stays silent when the store has no decisions at all', async () => {
+  it('stays silent when the store has no memory at all', async () => {
     const out = await handlePreToolUse(
       {
         cwd: '/work/p',
@@ -196,8 +199,10 @@ describe('PreToolUse decision surfacing (#48 Phase A)', () => {
     expect(out).toBeUndefined();
   });
 
-  it('does not surface non-decision observations (only decision/lesson)', async () => {
-    seedDecision('vitest config matters a lot for the runner', 'user'); // kind=user, not decision
+  it('surfaces ANY relevant memory kind related to the file — no consolidation required (#1)', async () => {
+    // A plain captured user turn (kind=user) now surfaces; previously the lens filtered to
+    // decision/lesson and stayed silent until `consolidate`/`remember` ran.
+    seedDecision('vitest config matters a lot for the runner', 'user');
     const out = await handlePreToolUse(
       {
         cwd: '/work/p',
@@ -206,13 +211,12 @@ describe('PreToolUse decision surfacing (#48 Phase A)', () => {
       },
       { memory: mem },
     );
-    expect(out).toBeUndefined();
+    expect(out, 'a user-kind memory related to the file should now surface').toBeTruthy();
+    const parsed = JSON.parse(out as string);
+    expect(parsed.hookSpecificOutput.additionalContext).toContain('[user]');
   });
 
   it('fails open (no throw) when store/config init fails — e.g. invalid env (Codex P2)', async () => {
-    // No injected memory → the handler must build one from config; an invalid
-    // ABS_EMBED_PROVIDER makes loadConfig throw. The guard must degrade silently,
-    // not reject (its fail-open contract covers init, not just recall).
     process.env.ABS_EMBED_PROVIDER = 'not-a-real-provider';
     try {
       const out = await handlePreToolUse({
