@@ -75,6 +75,12 @@ export class Indexer {
    * write path callers should use so nothing lands unindexed.
    */
   async write(input: CreateObservationInput): Promise<number> {
+    // Cheap FK pre-check: embedding moved ahead of the insert (below), so a
+    // bad sessionId would otherwise pay for an embedding request before the
+    // foreign-key insert fails. Reject it first — no wasted embed call.
+    if (this.store.getSession(input.sessionId) === null)
+      throw new Error(`session ${input.sessionId} not found`);
+
     // Embed BEFORE any write: embedding is async and cannot sit inside
     // better-sqlite3's synchronous transaction. If it throws, nothing was
     // written — no orphan row, no compensating delete that could itself fail.
