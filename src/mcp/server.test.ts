@@ -165,6 +165,69 @@ describe('MCP server', () => {
     expect(hits.some((h) => h.content.includes('Fridays'))).toBe(true);
   });
 
+  it('promote (no as) MOVES the whole observation into the global brain', async () => {
+    const sid = mem.store.createSession({ externalId: 'pmv', project: '-Users-me-Devs-mv' });
+    const id = mem.store.createObservation({
+      sessionId: sid,
+      kind: 'decision',
+      content: 'turborepo',
+    });
+    mem.store.indexFts(id, 'turborepo');
+    const client = await connectedClient();
+
+    const res = parse(await client.callTool({ name: 'promote', arguments: { id } })) as {
+      id: number;
+      scope: string;
+      applied: boolean;
+      curated?: boolean;
+    };
+    expect(res).toMatchObject({ id, scope: 'global', applied: true });
+    expect(res.curated).toBeUndefined();
+    const g = mem.store.getSessionByExternalId('__global__');
+    expect(mem.store.getObservation(id)?.sessionId).toBe(g?.id);
+  });
+
+  it('promote with `as` files a curated COPY and keeps the original intact', async () => {
+    const sid = mem.store.createSession({ externalId: 'pcur', project: '-Users-me-Devs-cur' });
+    const id = mem.store.createObservation({
+      sessionId: sid,
+      kind: 'decision',
+      content: 'use JWT; secret HUNTER2 lives in /proj/vault',
+    });
+    mem.store.indexFts(id, 'use JWT; secret HUNTER2 lives in /proj/vault');
+    const client = await connectedClient();
+
+    const res = parse(
+      await client.callTool({
+        name: 'promote',
+        arguments: { id, as: 'prefer JWT for stateless auth' },
+      }),
+    ) as { id: number; newId: number; scope: string; curated: boolean; applied: boolean };
+    expect(res).toMatchObject({ id, scope: 'global', curated: true, applied: true });
+    expect(res.newId).toBeGreaterThan(0);
+
+    // original untouched in its project; curated copy is global with exactly the text
+    expect(mem.store.getObservation(id)?.sessionId).toBe(sid);
+    const g = mem.store.getSessionByExternalId('__global__');
+    const created = mem.store.getObservation(res.newId);
+    expect(created?.sessionId).toBe(g?.id);
+    expect(created?.content).toBe('prefer JWT for stateless auth');
+    expect(created?.content).not.toContain('HUNTER2');
+    expect(created?.metadata).toMatchObject({ promotedFrom: id });
+  });
+
+  it('promote with empty `as` is rejected (no mutation)', async () => {
+    const sid = mem.store.createSession({ externalId: 'pe', project: '-Users-me-Devs-pe' });
+    const id = mem.store.createObservation({ sessionId: sid, kind: 'note', content: 'x' });
+    const client = await connectedClient();
+
+    const res = parse(await client.callTool({ name: 'promote', arguments: { id, as: '   ' } })) as {
+      error?: string;
+    };
+    expect(res.error).toMatch(/non-empty|must not be empty/i);
+    expect(mem.store.getObservation(id)?.sessionId).toBe(sid);
+  });
+
   it('recall honors an explicit project arg — no cross-project leak (#47)', async () => {
     // Seed two named projects with distinct content + vectors.
     for (const [ext, project, content] of [
