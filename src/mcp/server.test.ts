@@ -3,19 +3,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppConfig } from '../config.js';
 import { __clearDeleteCacheForTests } from '../delete/delete.js';
 import type { EnsureResult } from '../indexer/index.js';
 import { readBinding } from '../ingest/index.js';
 import { type Memory, openMemory } from '../memory.js';
 import { isRebuildLocked, REBUILD_FAILED_KEY, rebuildLockPath } from '../store/index.js';
-import {
-  backgroundEnsure,
-  createMcpServer,
-  rememberAction,
-  setSessionProjectAction,
-} from './server.js';
+import { backgroundEnsure, createMcpServer, setSessionProjectAction, withReady } from './server.js';
 
 let dir: string;
 let mem: Memory;
@@ -331,28 +326,31 @@ describe('background startup rebuild (MCP boot latency)', () => {
     }
   });
 
-  it('rememberAction parks on memory.ready and never writes a half-built index', async () => {
-    // Simulate the boot path: a still-running background rebuild. The write must wait
-    // for it. A non-gated write would land within these macrotasks regardless of how
+  it('the remember TOOL parks on memory.ready and never writes a half-built index (#104)', async () => {
+    // The readiness contract now lives in `withReady` at the tool boundary, not in
+    // rememberAction itself. Simulate the boot path: a still-running background
+    // rebuild. A non-gated write would land within these macrotasks regardless of how
     // fast embedding is — so a still-empty store after 50ms proves the gate holds.
     let resolveReady!: (r: EnsureResult) => void;
     mem.ready = new Promise<EnsureResult>((res) => {
       resolveReady = res;
     });
+    const client = await connectedClient();
 
     let settled = false;
-    const pending = rememberAction(mem, { content: 'gated write' }).then((v) => {
-      settled = true;
-      return v as { id: number };
-    });
+    const pending = client
+      .callTool({ name: 'remember', arguments: { content: 'gated write' } })
+      .then((v) => {
+        settled = true;
+        return v;
+      });
 
     await new Promise((r) => setTimeout(r, 50));
     expect(settled).toBe(false);
     expect(mem.store.counts().observations).toBe(0);
 
     resolveReady({ rebuilt: false, reason: 'fresh', status: mem.indexer.status() });
-    const out = await pending;
-    expect(out.id).toBeGreaterThan(0);
+    await pending;
     expect(mem.store.counts().observations).toBe(1);
   });
 
@@ -432,5 +430,57 @@ describe('setSessionProjectAction — single-prefix guard (R4, #67)', () => {
     // The binding key is session-project:codex:abc, never session-project:codex:codex:abc.
     expect(readBinding(mem.store, 'codex:abc')?.action).toBe('skip');
     expect(readBinding(mem.store, 'codex:codex:abc')).toBeNull();
+  });
+});
+
+describe('withReady — single rebuild-readiness contract (#104)', () => {
+  it('runs fn immediately when memory.ready is undefined (synchronous/CLI path)', async () => {
+    let ran = false;
+    const out = await withReady({ ready: undefined }, async () => {
+      ran = true;
+      return 42;
+    });
+    expect(ran).toBe(true);
+    expect(out).toBe(42);
+  });
+
+  it('defers fn until memory.ready resolves', async () => {
+    const order: string[] = [];
+    let resolve!: () => void;
+    const ready = new Promise<void>((r) => {
+      resolve = () => {
+        order.push('ready');
+        r();
+      };
+    });
+    const p = withReady({ ready }, async () => {
+      order.push('fn');
+    });
+    // fn must NOT have run yet — ready is still pending.
+    await Promise.resolve();
+    expect(order).toEqual([]);
+    resolve();
+    await p;
+    expect(order).toEqual(['ready', 'fn']);
+  });
+});
+
+describe('MCP tools wait for memory.ready before touching the index (#104)', () => {
+  it('memory_status (a newly-wrapped tool) does not read the index until ready resolves', async () => {
+    let resolveReady!: () => void;
+    mem.ready = new Promise<void>((r) => {
+      resolveReady = () => r();
+    });
+    const spy = vi.spyOn(mem.indexer, 'status');
+    const client = await connectedClient();
+
+    const callP = client.callTool({ name: 'memory_status', arguments: {} });
+    // Let microtasks/timers flush: the handler must still be parked on `ready`.
+    await new Promise((r) => setTimeout(r, 25));
+    expect(spy).not.toHaveBeenCalled();
+
+    resolveReady();
+    await callP;
+    expect(spy).toHaveBeenCalled();
   });
 });
