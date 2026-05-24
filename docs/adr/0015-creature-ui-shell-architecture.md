@@ -1,6 +1,6 @@
 # ADR 0015 — Creature UI: renderer paradigm + tray shell architecture
 
-- **Status:** Accepted (F1 renderer + F2 `/api/stats` implemented; F3 tray planned)
+- **Status:** Accepted (F1 + F1 polish + F2 implemented & verified; F3 tray code-complete, cross-OS build via `release.yml`)
 - **Date:** 2026-05-23
 - **Issue:** creature-ui (the memory visualizer REFRESH)
 - **Deciders:** solo maintainer
@@ -91,12 +91,33 @@ F3 adds `src-tauri/` (versioned Rust source) with `src-tauri/target/` gitignored
 3-OS release build runs in a tag-triggered `release.yml`, **not** the PR `ci.yml`
 (keeps CI lean).
 
-## Status of work (at time of writing)
+## Status of work
 
 - **F1 (renderer):** done — `creature.ts` (WebGL2 + bloom + ACES + OrbitControls),
   `creature-geometry.ts` (TDD), node-link retired. Verified in the real app.
+- **F1 polish:** done — light-mode (additive→normal blending swap + pigment + diffuse
+  shadow, DESIGN §8), WebGL2-absent fallback (`CreatureUnsupportedError`). Empty-store /
+  no-results already handled by `overlays.ts` (not duplicated). Verified dark + light +
+  empty + no-results via agent-browser.
 - **F2 (`/api/stats`):** done — TDD, leak-guarded.
-- **F3 (tray):** planned — `src-tauri/` not yet created.
-- **Remaining gates:** qa-engineer, frontend-auditor, a11y, integration-checker,
-  performance (render hot path) — to run after the F1 polish (light-mode, empty /
-  WebGL2-absent states).
+- **F3 (tray):** code-complete — `src-tauri/` (Tauri 2: tray + popover + read-only
+  rusqlite counts + `abs ui --no-open` sidecar). NOT compiled locally (cargo can't reach
+  crates.io behind the dev proxy); cross-OS build verification delegated to `release.yml`.
+
+## Known follow-ups (from Gate 2 local-code-review, to address when Rust builds)
+
+- **Tray idle-throttle (§13/§10):** the stats poll is a fixed 5 s `loop` with no
+  focus/idle pause. Low impact (a SQLite count, not a render loop) but the spec wants it
+  paused when unfocused — add a window-focus gate.
+- **Blocking sidecar read on the menu path:** `open_ocean` does a blocking `read_line`
+  on the `abs ui` stdout; invoked from the tray *menu* (main thread) it can freeze the
+  tray for the Node startup window. Move the read to a worker thread (the popover-button
+  path already runs off-main as a command).
+- **`abs` PATH resolution for GUI launch:** a `.app`/tray launched from Finder/Dock has a
+  minimal `PATH` that often omits the npm global bin — `Command::new("abs")` would
+  `ENOENT`. The error is surfaced (not silent), but bake/resolve the path or document it.
+- **Commit `Cargo.lock`:** an application should pin its lockfile for reproducible release
+  builds; it could not be generated locally (no registry access). `tauri-action` produces
+  one on the first `release.yml` run — commit it then.
+- **Mutex poison tolerance / first-ingest pulse:** harden `last_max_obs_id.lock()` with
+  poison tolerance and document the intentional `*last != 0` first-ingest guard.
