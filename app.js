@@ -48,14 +48,14 @@
     "more.h": "Cuidadoso por design.",
     "more.1": "Recall por projeto",
     "more.2": "Detecta contradições",
-    "more.3": "Fatos auto-curativos",
+    "more.3": "Fatos verificados e auto-curativos",
     "more.4": "Sugestões no CLAUDE.md",
     "more.5": "Export & import",
     "more.6": "Lições destiladas",
 
     "graph.eyebrow": "abs ui",
     "graph.h": "Veja o cérebro do seu agente tomar forma.",
-    "graph.p": "Um grafo interativo no navegador: cada sessão é um hub, conectado às memórias que gerou, colorido por tipo. Navegue, inspecione, busque, remova.",
+    "graph.p": "Todo o seu store como uma água-viva bioluminescente: o domo é o núcleo consolidado, cada tentáculo uma sessão, cada conta de luz uma observação. Dê zoom, orbite, inspecione, remova.",
 
     "faq.eyebrow": "FAQ",
     "faq.h": "As respostas honestas.",
