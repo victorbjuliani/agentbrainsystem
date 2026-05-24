@@ -85,23 +85,26 @@ Three steps, zero effort once installed:
 
 ## What makes it different
 
-Not just another memory store. The parts most tools skip:
+Not another write-only memory bucket. The parts most tools skip:
 
-- 🔒 **Local-first, $0, offline — for real.** No cloud, no account, no API keys, no telemetry.
-  Local embeddings by default; plug in a hosted embedder or any OpenAI-compatible LLM **only if you want**.
-- 🩹 **Verifiable, self-healing memory — built in.** Facts edited via Edit/Write are anchored to real code
-  (`file:line@commit`) against abs's **own** tree-sitter symbol index (TS/JS/Python today; other languages
-  resolve at the file level). It works in any git repo, offline, with no external tool. Recall labels each
-  ✓verified / ~claimed / ⚠stale; anchors **re-anchor when code moves** and go stale when it's removed. A
-  PreToolUse guard warns in-loop before you duplicate code that already exists — and surfaces relevant
-  memory touching the file you're editing.
-- 🗂️ **Project-scoped by default.** Recall is isolated to the current project, so memory from project B
-  never leaks into project A.
+- 🎯 **Recall that returns the right thing — every prompt.** Hybrid semantic + keyword search,
+  injected on **every turn**, not just dumped once at session start. The decision you locked in last
+  week surfaces exactly when you're about to break it.
+- 🩹 **Verifiable, self-healing memory — no external tooling.** Every fact your agent edits is anchored to
+  real code (`file:line@commit`) by abs's **own** embedded tree-sitter index — symbol-level for TS/JS/Python,
+  file-level for everything else. Recall labels each fact **✓verified / ~claimed / ⚠stale** against your
+  *live* code; anchors **re-follow code when it moves** and go **stale** when it's deleted — in any git repo,
+  offline, zero setup. A PreToolUse guard fires **in the loop**, before an edit lands: it flags code you're
+  about to duplicate and surfaces past memory about the file you're touching.
+- 🔒 **Local-first, $0, offline — for real.** No cloud, no account, no API keys, no telemetry. Local
+  embeddings by default; a hosted embedder or any OpenAI-compatible LLM is **opt-in, never required**.
+- 🗂️ **Project-scoped by default.** Recall is isolated per project — project B's memory never bleeds into
+  project A. Promote a lesson to the global brain when it's worth sharing everywhere.
 - 🪶 **Deliberately small.** 6 runtime dependencies (incl. an embedded WASM tree-sitter parser), embedded
   SQLite, no server to run. ~11k lines you can actually read.
-- 🪼 **The memory as a living creature.** A localhost UI renders the whole store as one bioluminescent
+- 🪼 **Your memory, as a living creature.** A localhost UI renders the whole store as one bioluminescent
   jellyfish whose anatomy *is* the memory — dome = consolidated core, tentacles = sessions, beads = observations (`abs ui`).
-- 🎒 **Portable.** Export/import the whole store as one file. No lock-in.
+- 🎒 **Portable, no lock-in.** Export/import the whole store as a single file.
 
 ## Benchmarks
 
