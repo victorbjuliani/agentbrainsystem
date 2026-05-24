@@ -41,8 +41,13 @@ export function settingsFileInstaller(options: SettingsInstallerOptions): Lifecy
   };
   return {
     install: async () => {
-      installHooks(buildOpts());
-      return { wired: momentsOf(options.events) };
+      // Thread the real InstallResult through instead of discarding it, so the CLI
+      // can distinguish a fresh install from an idempotent re-run (ADR-0004).
+      const result = installHooks(buildOpts());
+      return {
+        wired: momentsOf(result.added),
+        alreadyPresent: momentsOf(result.alreadyPresent),
+      };
     },
     uninstall: async () => {
       const result = uninstallHooks(buildOpts());
