@@ -16,6 +16,7 @@
 | **E2E / smoke** | ingest fixture transcript → recall returns it → export → re-import → recall still works | high |
 | **UI** | graph UI (`abs ui`) — `buildGraph` projection unit tests, HTTP server contract tests (read-only/405/path-traversal/cap-clamp), boot smoke; canvas paint audited visually via `frontend-auditor`, not unit-tested | medium |
 | **LLM consolidation** | `abs consolidate` — pure `distill` unit tests (prompt/parse/zod/injection-golden), orchestrator integration (idempotency, `--force` replace, dry-run-writes-nothing, batch rollback, default-latest, guards) against a temp store with an **injected stub `LlmProvider`**; the OpenAI-compat client tested via **mocked `fetch`** | high |
+| **Native symbol index** (`src/index/`) | abs's own tree-sitter ground truth (TS/JS/Py). `parser` (per-language defs + ABI canary), `symbol-store` (per-repo SQLite), `git` helpers, `indexer` (full/incremental/dirty against temp git repos), `AbsIndexProvider` (the `GroundTruthProvider` port + never-false-stale rule), and an end-to-end `integration` test (claimed→verified→move→stale). **Parse suites read the bundled wasm from `dist/index/wasm`, so they set `ABS_WASM_DIR` to it; `pretest` (`build:ui`) copies the wasm, so `npm run check` is self-contained.** | highest |
 
 ## Non-Negotiable Coverage
 

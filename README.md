@@ -21,7 +21,7 @@ coding session — across <b>five harnesses</b> — and recalls what matters nex
 <p>
 <img src="https://img.shields.io/badge/local--first-%240%20%C2%B7%20offline-8B5CF6?style=for-the-badge&labelColor=0A0810" alt="local-first · $0 · offline" />
 <img src="https://img.shields.io/badge/MCP-9%20tools-22D3EE?style=for-the-badge&labelColor=0A0810" alt="9 MCP tools" />
-<img src="https://img.shields.io/badge/deps-just%205-A78BFA?style=for-the-badge&labelColor=0A0810" alt="just 5 dependencies" />
+<img src="https://img.shields.io/badge/deps-just%206-A78BFA?style=for-the-badge&labelColor=0A0810" alt="just 6 dependencies" />
 <img src="https://img.shields.io/badge/storage-embedded%20SQLite-5EEAD4?style=for-the-badge&labelColor=0A0810" alt="embedded SQLite" />
 </p>
 
@@ -89,14 +89,16 @@ Not just another memory store. The parts most tools skip:
 
 - 🔒 **Local-first, $0, offline — for real.** No cloud, no account, no API keys, no telemetry.
   Local embeddings by default; plug in a hosted embedder or any OpenAI-compatible LLM **only if you want**.
-- 🩹 **Verifiable, self-healing memory.** Facts edited via Edit/Write are anchored to real code
-  (`file:line@commit`). Recall labels each ✓verified / ~claimed / ⚠stale; anchors **re-anchor when code
-  moves** and go stale when it's removed. A PreToolUse guard warns in-loop before you duplicate code that
-  already exists — and surfaces decisions touching the file you're editing.
+- 🩹 **Verifiable, self-healing memory — built in.** Facts edited via Edit/Write are anchored to real code
+  (`file:line@commit`) against abs's **own** tree-sitter symbol index (TS/JS/Python today; other languages
+  resolve at the file level). It works in any git repo, offline, with no external tool. Recall labels each
+  ✓verified / ~claimed / ⚠stale; anchors **re-anchor when code moves** and go stale when it's removed. A
+  PreToolUse guard warns in-loop before you duplicate code that already exists — and surfaces relevant
+  memory touching the file you're editing.
 - 🗂️ **Project-scoped by default.** Recall is isolated to the current project, so memory from project B
   never leaks into project A.
-- 🪶 **Deliberately small.** 5 runtime dependencies, embedded SQLite, no server to run. ~11k lines you can
-  actually read.
+- 🪶 **Deliberately small.** 6 runtime dependencies (incl. an embedded WASM tree-sitter parser), embedded
+  SQLite, no server to run. ~11k lines you can actually read.
 - 🪼 **The memory as a living creature.** A localhost UI renders the whole store as one bioluminescent
   jellyfish whose anatomy *is* the memory — dome = consolidated core, tentacles = sessions, beads = observations (`abs ui`).
 - 🎒 **Portable.** Export/import the whole store as one file. No lock-in.
