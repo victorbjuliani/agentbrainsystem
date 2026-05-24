@@ -2,7 +2,7 @@
  * Per-repo symbol index store: <ABS_HOME>/index/<projectSlug(repoRoot)>.db. Separate from
  * memory.db — code-derived data with its own (rebuildable, never-committed) lifecycle.
  */
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { loadConfig } from '../config.js';
@@ -37,7 +37,16 @@ interface SymbolRow {
 export function openSymbolStore(repoRoot: string): SymbolStore {
   const dir = join(loadConfig().dataDir, 'index');
   mkdirSync(dir, { recursive: true });
-  const db = new Database(join(dir, `${projectSlug(repoRoot)}.db`));
+  // Realpath the root so a symlink path (/var/...) and its realpath (/private/var/... on macOS)
+  // map to the SAME index db: refreshIndex uses the git toplevel (realpath) while a caller may
+  // pass a symlinked cwd.
+  let canonical = repoRoot;
+  try {
+    canonical = realpathSync(repoRoot);
+  } catch {
+    /* path may not exist (tests use synthetic roots) — fall back to the given path */
+  }
+  const db = new Database(join(dir, `${projectSlug(canonical)}.db`));
   db.pragma('journal_mode = WAL');
   db.exec(
     `CREATE TABLE IF NOT EXISTS symbols (
