@@ -10,12 +10,7 @@ import type { EnsureResult } from '../indexer/index.js';
 import { readBinding } from '../ingest/index.js';
 import { type Memory, openMemory } from '../memory.js';
 import { isRebuildLocked, REBUILD_FAILED_KEY, rebuildLockPath } from '../store/index.js';
-import {
-  backgroundEnsure,
-  createMcpServer,
-  setSessionProjectAction,
-  withReady,
-} from './server.js';
+import { backgroundEnsure, createMcpServer, setSessionProjectAction, withReady } from './server.js';
 
 let dir: string;
 let mem: Memory;
