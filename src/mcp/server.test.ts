@@ -226,6 +226,9 @@ describe('MCP server', () => {
     };
     expect(res.error).toMatch(/non-empty|must not be empty/i);
     expect(mem.store.getObservation(id)?.sessionId).toBe(sid);
+    // No mutation on invalid input: the reserved global session must NOT have been
+    // minted by a rejected request (it would skew status/listing). (codex PR review)
+    expect(mem.store.getSessionByExternalId('__global__')).toBeNull();
   });
 
   it('recall honors an explicit project arg — no cross-project leak (#47)', async () => {

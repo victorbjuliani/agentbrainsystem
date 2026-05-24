@@ -67,11 +67,13 @@ export async function promoteAction(
   const original = memory.store.getObservation(id);
   if (!original) return { id, scope: 'global', applied: false, error: `no observation ${id}` };
 
-  const globalSession = getOrCreateGlobalSession(memory.store);
-
   if (as !== undefined) {
     const curated = as.trim();
     if (curated.length === 0) {
+      // Validate BEFORE touching storage: getOrCreateGlobalSession would otherwise
+      // mint the reserved session row on a request we then reject, violating the
+      // "no mutation on invalid input" contract (reachable via the MCP `as` param;
+      // the CLI guards empty --as before calling here).
       return {
         id,
         scope: 'global',
@@ -86,7 +88,7 @@ export async function promoteAction(
     if (memory.ready) await memory.ready;
     const kind = CURATED_KINDS.has(original.kind) ? original.kind : 'note';
     const newId = await memory.indexer.write({
-      sessionId: globalSession,
+      sessionId: getOrCreateGlobalSession(memory.store),
       kind,
       content: curated,
       metadata: { promotedFrom: id },
@@ -94,6 +96,6 @@ export async function promoteAction(
     return { id, newId, scope: 'global', curated: true, applied: true };
   }
 
-  memory.store.moveObservationToSession(id, globalSession);
+  memory.store.moveObservationToSession(id, getOrCreateGlobalSession(memory.store));
   return { id, scope: 'global', applied: true };
 }
