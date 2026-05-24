@@ -14,10 +14,14 @@
  *
  * Idempotent: re-running overwrites the outputs. Creates dirs as needed.
  */
+import { existsSync } from 'node:fs';
 import { cp, mkdir } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as esbuild from 'esbuild';
+
+const require = createRequire(import.meta.url);
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const clientDir = resolve(root, 'src/ui/client');
@@ -50,3 +54,20 @@ await esbuild.build({
 await cp(resolve(clientDir, 'index.html'), resolve(outDir, 'index.html'));
 
 console.log(`UI bundled → ${outDir}`);
+
+// Bundle the tree-sitter core + grammar wasm for the native symbol index (src/index).
+// Resolve via each package dir (its package.json IS exported) and join the known files;
+// throw if any is missing so a version-pin drift is loud, not a silent empty index.
+const wasmOut = resolve(root, 'dist/index/wasm');
+await mkdir(wasmOut, { recursive: true });
+const wtsDir = dirname(require.resolve('web-tree-sitter/package.json'));
+const grammarsDir = resolve(dirname(require.resolve('tree-sitter-wasms/package.json')), 'out');
+const wasmCopies = [[resolve(wtsDir, 'tree-sitter.wasm'), 'tree-sitter.wasm']];
+for (const g of ['typescript', 'tsx', 'javascript', 'python']) {
+  wasmCopies.push([resolve(grammarsDir, `tree-sitter-${g}.wasm`), `tree-sitter-${g}.wasm`]);
+}
+for (const [src, name] of wasmCopies) {
+  if (!existsSync(src)) throw new Error(`grammar wasm missing: ${src} (version pin drift?)`);
+  await cp(src, resolve(wasmOut, name));
+}
+console.log(`index wasm bundled → ${wasmOut}`);
