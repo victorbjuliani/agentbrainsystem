@@ -16,13 +16,20 @@
  * is never blocked (ADR-0004). We open memory with the default ensure gate so a
  * drifted index self-heals, then always close the store.
  */
+import { sweepAnchors } from '../anchoring/index.js';
+import { createGroundTruthProvider, type GroundTruthProvider } from '../ground-truth/index.js';
 import { ingestSingleSession } from '../ingest/index.js';
 import { openMemory } from '../memory.js';
 import type { HookPayload } from './payload.js';
 
+/** Max claimed anchors a single SessionEnd promotes — bounds the out-of-hot-path cost. */
+const SWEEP_LIMIT = 200;
+
 export interface SessionEndDeps {
   /** Injection seam for tests — defaults to the real openMemory + ingest. */
   ingest?: (transcriptPath: string) => Promise<void>;
+  /** Injection seam for tests — defaults to the cwd-rooted ground-truth provider. */
+  groundTruth?: GroundTruthProvider;
 }
 
 /**
@@ -45,6 +52,19 @@ export async function handleSessionEnd(
   const memory = await openMemory();
   try {
     await ingestSingleSession(memory, transcriptPath);
+
+    // #26 integration: promote the just-seeded `claimed` anchors against ground truth,
+    // OUT of the interactive hot path (this is exactly where sweep.ts intends to run).
+    // Fail-open (ADR-0004): an unavailable provider (no .code-review-graph/graph.db) is a
+    // clean no-op, preserving offline/$0; a sweep error never undoes a successful ingest.
+    const provider = deps.groundTruth ?? createGroundTruthProvider(payload.cwd ?? process.cwd());
+    try {
+      sweepAnchors(memory.store, provider, { limit: SWEEP_LIMIT });
+    } catch {
+      // swallow — ingest already succeeded
+    } finally {
+      if (!deps.groundTruth) provider.close();
+    }
   } finally {
     memory.close();
   }
