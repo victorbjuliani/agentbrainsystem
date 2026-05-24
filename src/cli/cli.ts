@@ -346,11 +346,16 @@ async function cmdUi(args: string[]): Promise<void> {
     port = n;
   }
 
+  // --no-open: print the URL but don't launch a browser. The Tauri tray companion
+  // (src-tauri) uses this to host the ocean in its own webview window after parsing
+  // the URL from stdout — without it, `abs ui` would also pop a system browser tab.
+  const noOpen = args.includes('--no-open');
+
   // ensure:false — the UI is a read-only viewer; it must not trigger a model load.
   const memory = await openMemory(loadConfig(), { ensure: false });
   const { server, url } = await startUiServer(memory, port !== undefined ? { port } : {});
   out(url);
-  openBrowser(url);
+  if (!noOpen) openBrowser(url);
 
   const shutdown = (): void => {
     server.close();

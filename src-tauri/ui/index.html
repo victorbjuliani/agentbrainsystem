@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="pt-BR" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>agentbrainsystem</title>
+    <style>
+      /* Compact popover, on-brand (DESIGN §11/§12): deep-ocean surface, luminous
+         hairline, mono stats. Fonts fall back to the OS mono face — the popover is
+         tiny and bundles no webfonts (offline-first; the immersive window has them). */
+      :root {
+        --bg: #0a0810;
+        --surface: #1a1622;
+        --fg: #fafaf9;
+        --fg-muted: #9b96aa;
+        --violet: #8b5cf6;
+        --hairline: rgba(139, 92, 246, 0.35);
+        --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", monospace;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: transparent;
+        color: var(--fg);
+        font-family: var(--mono);
+        user-select: none;
+      }
+      .card {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        padding: 18px;
+        background: radial-gradient(120% 90% at 50% 0%, #150f22 0%, var(--bg) 70%);
+        border: 1px solid var(--hairline);
+        border-radius: 14px;
+        box-shadow: 0 0 24px -2px rgba(139, 92, 246, 0.45);
+      }
+      .glyph {
+        align-self: center;
+        width: 64px;
+        height: 64px;
+        margin-top: 4px;
+        border-radius: 50% 50% 46% 46%;
+        background: radial-gradient(circle at 50% 35%, #e6dcff 0%, var(--violet) 45%, transparent 72%);
+        filter: drop-shadow(0 0 14px rgba(139, 92, 246, 0.6));
+        animation: breathe 3.4s ease-in-out infinite;
+      }
+      .glyph.pulse {
+        animation: pulse 0.9s ease-out;
+      }
+      @keyframes breathe {
+        0%, 100% { transform: scale(1); }
+        50% { transform: scale(1.06); }
+      }
+      @keyframes pulse {
+        0% { transform: scale(1); filter: drop-shadow(0 0 14px rgba(139, 92, 246, 0.6)); }
+        40% { transform: scale(1.22); filter: drop-shadow(0 0 30px rgba(230, 220, 255, 0.95)); }
+        100% { transform: scale(1); filter: drop-shadow(0 0 14px rgba(139, 92, 246, 0.6)); }
+      }
+      .title {
+        text-align: center;
+        font-size: 13px;
+        letter-spacing: 0.02em;
+        color: var(--fg);
+      }
+      .stats {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 6px 10px;
+        font-size: 12px;
+      }
+      .stats dt {
+        color: var(--fg-muted);
+      }
+      .stats dd {
+        margin: 0;
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+      }
+      .ts {
+        font-size: 11px;
+        color: var(--fg-muted);
+        text-align: center;
+        word-break: break-all;
+      }
+      button {
+        margin-top: auto;
+        padding: 9px 12px;
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--fg);
+        background: color-mix(in oklab, var(--violet) 22%, var(--surface));
+        border: 1px solid var(--hairline);
+        border-radius: 9px;
+        cursor: pointer;
+        transition: background-color 150ms cubic-bezier(0.16, 1, 0.3, 1);
+      }
+      button:hover {
+        background: color-mix(in oklab, var(--violet) 34%, var(--surface));
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .glyph,
+        .glyph.pulse {
+          animation: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <div class="glyph" id="glyph" aria-hidden="true"></div>
+      <p class="title">agentbrainsystem</p>
+      <dl class="stats">
+        <dt>observações</dt>
+        <dd id="obs">—</dd>
+        <dt>sessões</dt>
+        <dd id="sessions">—</dd>
+      </dl>
+      <p class="ts" id="ts"></p>
+      <button id="open">abrir oceano</button>
+    </div>
+    <script src="popover.js"></script>
+  </body>
+</html>
