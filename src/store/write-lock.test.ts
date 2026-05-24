@@ -58,6 +58,28 @@ describe('write-lock — cross-process advisory single-writer lock (#103)', () =
     lock.release();
   });
 
+  it('is exclusive: a second acquire does not own the lock and cannot release a peer (#103, Codex P1)', () => {
+    const a = acquireRebuildLock(dbPath); // owns (atomic create)
+    const b = acquireRebuildLock(dbPath); // fresh lock exists → b does NOT own it
+    // b releasing must NOT remove a's live lock.
+    b.release();
+    expect(isRebuildLocked(dbPath)).toBe(true);
+    // a still owns and can release it.
+    a.release();
+    expect(isRebuildLocked(dbPath)).toBe(false);
+  });
+
+  it('steals a STALE lock so a dead holder cannot wedge writers forever', () => {
+    acquireRebuildLock(dbPath); // first holder
+    const path = rebuildLockPath(dbPath);
+    const old = (Date.now() - REBUILD_LOCK_TTL_MS - 5000) / 1000;
+    utimesSync(path, old, old); // simulate the holder dying without releasing
+    const b = acquireRebuildLock(dbPath); // stale → b steals it
+    expect(isRebuildLocked(dbPath)).toBe(true);
+    b.release(); // b owns the stolen lock → release clears it
+    expect(isRebuildLocked(dbPath)).toBe(false);
+  });
+
   it('release is idempotent and safe when no lock exists', () => {
     const lock = acquireRebuildLock(dbPath);
     lock.release();

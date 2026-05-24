@@ -14,7 +14,16 @@
  * proceeds. This is deliberately NOT distributed locking — single user, one MCP +
  * hooks + the occasional CLI (ADR-0001 ergonomics).
  */
-import { existsSync, mkdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 
 /** A lock older than this (no heartbeat) is treated as a dead holder and ignored. */
@@ -41,31 +50,67 @@ export function rebuildLockPath(dbPath: string): string {
   return join(dirname(dbPath), '.rebuild.lock');
 }
 
+/** Does the lockfile currently carry OUR ownership token? */
+function ownsLock(path: string, token: string): boolean {
+  try {
+    return (JSON.parse(readFileSync(path, 'utf8')) as { token?: string }).token === token;
+  } catch {
+    return false;
+  }
+}
+
 /**
- * Create/take the rebuild lock for this process. Always succeeds (advisory, not
- * mandatory): it stamps the lockfile so other processes defer. Caller MUST
- * `release()` in a finally and `heartbeat()` periodically while working.
+ * Take the rebuild lock for this process. Acquisition is EXCLUSIVE: the lockfile is
+ * created atomically (`wx`), so two processes can't both believe they hold it. If a
+ * fresh lock already exists, this process does NOT own it (heartbeat/release become
+ * no-ops) — it must not delete a peer's live lock out from under it. A STALE lock
+ * (holder died, no heartbeat past the TTL) is stolen.
+ *
+ * Always returns a handle (advisory, never throws). Caller MUST `release()` in a
+ * finally and `heartbeat()` periodically while working.
  */
 export function acquireRebuildLock(dbPath: string): RebuildLock {
   const path = rebuildLockPath(dbPath);
+  const token = `${process.pid}:${randomUUID()}`;
+  const payload = JSON.stringify({ pid: process.pid, token, startedAt: new Date().toISOString() });
+  let owns = false;
   try {
     mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }));
+    try {
+      writeFileSync(path, payload, { flag: 'wx' }); // atomic create — EEXIST if held
+      owns = true;
+    } catch {
+      // A lock already exists. Steal it ONLY if it is stale (dead holder); never
+      // clobber a peer's fresh lock — that is exactly the double-owner bug.
+      if (!isRebuildLocked(dbPath)) {
+        try {
+          writeFileSync(path, payload);
+          owns = true;
+        } catch {
+          owns = false;
+        }
+      }
+    }
   } catch {
-    // A lock we couldn't write just means peers won't defer — never block on it.
+    owns = false; // couldn't even mkdir — peers just won't defer; never block.
   }
   return {
     heartbeat() {
+      if (!owns) return;
       try {
-        const now = new Date();
-        utimesSync(path, now, now);
+        if (ownsLock(path, token)) {
+          const now = new Date();
+          utimesSync(path, now, now);
+        }
       } catch {
         // Lost lockfile mid-run → readers fall back to the TTL/stale path. Non-fatal.
       }
     },
     release() {
+      // Only remove the lockfile if WE still own it — never delete a peer's lock.
+      if (!owns) return;
       try {
-        rmSync(path, { force: true });
+        if (ownsLock(path, token)) rmSync(path, { force: true });
       } catch {
         // Stale lockfile is harmless — it ages out via the TTL.
       }

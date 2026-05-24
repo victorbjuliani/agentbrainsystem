@@ -62,16 +62,24 @@ export async function handleSessionEnd(
   // advanced, so a later `abs ingest` (or the next unlocked SessionEnd) re-pulls it.
   const { dbPath } = loadConfig();
   if (isRebuildLocked(dbPath)) {
-    const memory = await openMemory(undefined, { ensure: false });
-    try {
-      memory.store.setMeta(INGEST_DEFERRED_KEY, new Date().toISOString());
-    } finally {
-      memory.close();
-    }
+    // The stderr log is the RELIABLE defer signal — emit it first, unconditionally.
+    // The kv_meta marker is a best-effort nicety: writing it touches the same DB the
+    // rebuild writer is holding, so under contention it could hit busy_timeout. We
+    // must never let that throw and undo the defer, so it is swallowed.
     process.stderr.write(
       '[abs] session-end ingest deferred: an index rebuild is in progress; ' +
         'this session will be re-ingested later (no data lost).\n',
     );
+    try {
+      const memory = await openMemory(undefined, { ensure: false });
+      try {
+        memory.store.setMeta(INGEST_DEFERRED_KEY, new Date().toISOString());
+      } finally {
+        memory.close();
+      }
+    } catch {
+      // best-effort marker — the stderr log above already records the deferral.
+    }
     return undefined;
   }
 
