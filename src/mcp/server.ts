@@ -20,7 +20,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { loadConfig } from '../config.js';
 import { DeleteRefusalError, type DeleteSelector, execute, preview } from '../delete/index.js';
-import { getOrCreateGlobalSession } from '../global.js';
+import { getOrCreateGlobalSession, promoteAction } from '../global.js';
 import { defaultRegistry } from '../harness/index.js';
 import { clearBinding, defaultClaudeProjectsDir, writeBinding } from '../ingest/index.js';
 import { type Memory, openMemory } from '../memory.js';
@@ -374,21 +374,29 @@ export function createMcpServer(memory: Memory): McpServer {
     async (args) => jsonContent(setSessionProjectAction(memory, args)),
   );
 
-  // Promote an existing memory into the cross-project global brain (#). Move, not
-  // copy. User-initiated only — never on the agent's own initiative.
+  // Promote an existing memory into the cross-project global brain (#). Without `as`
+  // it MOVES the whole observation; with `as` it files a curated COPY of exactly that
+  // text and keeps the original (the leak-safe path). User-initiated only — never on
+  // the agent's own initiative.
   server.registerTool(
     'promote',
     {
       title: 'Promote a memory to the global brain',
       description:
-        'Move an existing observation into the cross-project global brain (recalled in every project). Use ONLY when the user explicitly asks to promote/save something globally — never on your own initiative.',
-      inputSchema: { id: z.number().int().describe('Observation id to promote.') },
+        'Promote an observation into the cross-project global brain (recalled in every project). Without `as`, MOVES the whole observation. With `as`, files a CURATED COPY containing exactly that text and KEEPS the original in its project — use this to promote only the reusable part and leave project-specific or sensitive detail behind. Use ONLY when the user explicitly asks — never on your own initiative.',
+      inputSchema: {
+        id: z.number().int().describe('Observation id to promote.'),
+        as: z
+          .string()
+          .optional()
+          .describe(
+            'Curated text to file globally instead of moving the original (keeps the original).',
+          ),
+      },
     },
-    async ({ id }) => {
-      if (!memory.store.getObservation(id)) return jsonContent({ error: `no observation ${id}` });
-      const g = getOrCreateGlobalSession(memory.store);
-      memory.store.moveObservationToSession(id, g);
-      return jsonContent({ id, scope: 'global', applied: true });
+    async ({ id, as }) => {
+      const result = await promoteAction(memory, { id, as });
+      return jsonContent(result.error ? { error: result.error } : result);
     },
   );
 

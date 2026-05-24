@@ -392,6 +392,125 @@ describe('cmdProject — set / cwd / skip / status (hermetic, tmp ABS_HOME)', ()
     expect(process.exitCode).toBe(1);
   });
 
+  it('promote --as files a curated global copy, keeps the original, and indexes FTS', async () => {
+    // The curated path embeds (indexer.write) — use the real local model width, not the
+    // FTS-only dim-8 this block defaults to.
+    process.env.ABS_EMBED_DIM = '384';
+    const mem = await openMemory(loadConfig(), { ensure: false });
+    const sid = mem.store.createSession({ externalId: 's-cur', project: '-Users-me-Devs-bar' });
+    const id = mem.store.createObservation({
+      sessionId: sid,
+      kind: 'decision',
+      content: 'use JWT; the signing secret is HUNTER2 in vault /proj/x',
+    });
+    mem.store.indexFts(id, 'use JWT; the signing secret is HUNTER2 in vault /proj/x');
+    mem.close();
+
+    await cmdPromote([String(id), '--as', 'prefer JWT for stateless auth', '--json']);
+    const o = JSON.parse(outLines.join('')) as { id: number; newId: number; curated: boolean };
+    expect(o).toMatchObject({ id, scope: 'global', curated: true, applied: true });
+    expect(o.newId).toBeGreaterThan(0);
+
+    const mem2 = await openMemory(loadConfig(), { ensure: false });
+    const g = mem2.store.getSessionByExternalId('__global__');
+    // original is untouched: still in its project session
+    expect(mem2.store.getObservation(id)?.sessionId).toBe(sid);
+    // curated copy lives in global with EXACTLY the curated text — no leaked secret
+    const created = mem2.store.getObservation(o.newId);
+    expect(created?.sessionId).toBe(g?.id);
+    expect(created?.content).toBe('prefer JWT for stateless auth');
+    expect(created?.content).not.toContain('HUNTER2');
+    expect(created?.kind).toBe('decision');
+    expect(created?.metadata).toMatchObject({ promotedFrom: id });
+    // and it is FTS-recallable from the global brain
+    const hits = mem2.recall.recallFts('stateless auth', {
+      limit: 5,
+      project: '-Users-me-Devs-bar',
+      includeGlobal: true,
+    });
+    expect(hits.some((h) => h.observation.id === o.newId)).toBe(true);
+    mem2.close();
+  });
+
+  it('promote --as normalizes a raw ingest kind (user/assistant/tool) to note', async () => {
+    process.env.ABS_EMBED_DIM = '384';
+    const mem = await openMemory(loadConfig(), { ensure: false });
+    const sid = mem.store.createSession({ externalId: 's-kind', project: '-Users-me-Devs-k' });
+    const id = mem.store.createObservation({ sessionId: sid, kind: 'tool_edit', content: 'raw' });
+    mem.store.indexFts(id, 'raw');
+    mem.close();
+
+    await cmdPromote([String(id), '--as', 'reusable wording', '--json']);
+    const o = JSON.parse(outLines.join('')) as { newId: number };
+
+    const mem2 = await openMemory(loadConfig(), { ensure: false });
+    expect(mem2.store.getObservation(o.newId)?.kind).toBe('note');
+    mem2.close();
+  });
+
+  it('promote --as with empty text errors (exit 1) and mutates nothing', async () => {
+    const mem = await openMemory(loadConfig(), { ensure: false });
+    const sid = mem.store.createSession({ externalId: 's-empty', project: '-Users-me-Devs-e' });
+    const id = mem.store.createObservation({ sessionId: sid, kind: 'note', content: 'x' });
+    mem.close();
+
+    await cmdPromote([String(id), '--as', '   ', '--json']);
+    expect(process.exitCode).toBe(1);
+    expect(outLines.join('')).toContain('non-empty');
+
+    const mem2 = await openMemory(loadConfig(), { ensure: false });
+    expect(mem2.store.getObservation(id)?.sessionId).toBe(sid); // untouched
+    const g = mem2.store.getSessionByExternalId('__global__');
+    if (g) expect(mem2.store.listObservations({ sessionId: g.id }).length).toBe(0);
+    mem2.close();
+  });
+
+  it('promote rejects a flag-looking --as value (forgotten text) and mutates nothing', async () => {
+    const mem = await openMemory(loadConfig(), { ensure: false });
+    const sid = mem.store.createSession({ externalId: 's-flag', project: '-Users-me-Devs-f' });
+    const id = mem.store.createObservation({ sessionId: sid, kind: 'note', content: 'x' });
+    mem.close();
+
+    await cmdPromote([String(id), '--as', '--json']);
+    expect(process.exitCode).toBe(1);
+    expect(outLines.join('')).toContain('looks like a flag');
+
+    const mem2 = await openMemory(loadConfig(), { ensure: false });
+    expect(mem2.store.getObservation(id)?.sessionId).toBe(sid); // untouched
+    const g = mem2.store.getSessionByExternalId('__global__');
+    if (g) expect(mem2.store.listObservations({ sessionId: g.id }).length).toBe(0);
+    mem2.close();
+  });
+
+  it('promote with a bare --as (no value) errors and mutates nothing', async () => {
+    const mem = await openMemory(loadConfig(), { ensure: false });
+    const sid = mem.store.createSession({ externalId: 's-bare', project: '-Users-me-Devs-b' });
+    const id = mem.store.createObservation({ sessionId: sid, kind: 'note', content: 'x' });
+    mem.close();
+
+    await cmdPromote([String(id), '--as']);
+    expect(process.exitCode).toBe(1);
+    expect(outLines.join('')).toContain('non-empty');
+
+    const mem2 = await openMemory(loadConfig(), { ensure: false });
+    expect(mem2.store.getObservation(id)?.sessionId).toBe(sid); // untouched
+    mem2.close();
+  });
+
+  it('promote resolves the id even when --as precedes it', async () => {
+    process.env.ABS_EMBED_DIM = '384';
+    const mem = await openMemory(loadConfig(), { ensure: false });
+    const sid = mem.store.createSession({ externalId: 's-order', project: '-Users-me-Devs-o' });
+    const id = mem.store.createObservation({ sessionId: sid, kind: 'lesson', content: 'orig' });
+    mem.store.indexFts(id, 'orig');
+    mem.close();
+
+    await cmdPromote(['--as', 'curated lesson', String(id), '--json']);
+    const o = JSON.parse(outLines.join('')) as { id: number; curated: boolean; newId: number };
+    expect(o).toMatchObject({ id, curated: true, applied: true });
+    expect(o.newId).toBeGreaterThan(0);
+  });
+
   it('--cwd binds the cwd-derived slug', async () => {
     await cmdProject(['--session', 'sess-B', '--cwd', '--json']);
     const o = JSON.parse(outLines.join(''));
