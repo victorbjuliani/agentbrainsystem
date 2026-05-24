@@ -17,7 +17,11 @@
  * drifted index self-heals, then always close the store.
  */
 import { sweepAnchors } from '../anchoring/index.js';
-import { createGroundTruthProvider, type GroundTruthProvider } from '../ground-truth/index.js';
+import {
+  createGroundTruthProvider,
+  type GroundTruthProvider,
+  refreshIndex,
+} from '../ground-truth/index.js';
 import { ingestSingleSession } from '../ingest/index.js';
 import { openMemory } from '../memory.js';
 import type { HookPayload } from './payload.js';
@@ -55,9 +59,11 @@ export async function handleSessionEnd(
 
     // #26 integration: promote the just-seeded `claimed` anchors against ground truth,
     // OUT of the interactive hot path (this is exactly where sweep.ts intends to run).
-    // Fail-open (ADR-0004): an unavailable provider (no .code-review-graph/graph.db) is a
-    // clean no-op, preserving offline/$0; a sweep error never undoes a successful ingest.
-    const provider = deps.groundTruth ?? createGroundTruthProvider(payload.cwd ?? process.cwd());
+    // Fail-open (ADR-0004): an unavailable provider (not a git repo) is a clean no-op,
+    // preserving offline/$0; a sweep error never undoes a successful ingest.
+    const cwd = payload.cwd ?? process.cwd();
+    if (!deps.groundTruth) await refreshIndex(cwd); // make the native symbol index current first
+    const provider = deps.groundTruth ?? createGroundTruthProvider(cwd);
     try {
       sweepAnchors(memory.store, provider, { limit: SWEEP_LIMIT });
     } catch {
