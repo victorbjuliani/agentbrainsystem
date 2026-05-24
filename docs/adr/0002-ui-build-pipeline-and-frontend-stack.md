@@ -1,9 +1,15 @@
 # ADR 0002 — UI build pipeline and frontend stack
 
-- **Status:** Accepted
+- **Status:** Accepted; **frontend stack partially superseded by ADR 0015**
 - **Date:** 2026-05-20
 - **Issue:** #11 (localhost read-only memory graph)
 - **Deciders:** solo maintainer
+
+> **Update (2026-05-23, ADR 0015):** the *frontend renderer* changed from a
+> force-directed node-link (`force-graph`/`d3-force`) to a three.js WebGL2 creature
+> (`src/ui/client/creature.ts`). The **build pipeline decisions here still hold** —
+> esbuild bundles the single client offline-first (now bundling `three` instead of
+> `force-graph`), served by `abs ui`. Only the paint layer and its two deps changed.
 
 ## Context
 

@@ -10,6 +10,7 @@
  * Shares the wire contract with the backend via `../graph-types.js`.
  */
 import { GRAPH_CONTRACT_VERSION, type GraphData, type NodeType } from '../graph-types.js';
+import { CreatureUnsupportedError, createRenderer } from './creature.js';
 import {
   type ClientSelector,
   confirmDelete,
@@ -17,9 +18,7 @@ import {
   previewDelete,
   StaleTokenError,
 } from './delete-client.js';
-import { radiusFor } from './node-size.js';
 import { mountOverlays } from './overlays.js';
-import { createRenderer } from './render.js';
 import { scopeToQuery } from './scope.js';
 import type { ScopeState, Theme, ViewEdge, ViewGraph, ViewNode } from './types.js';
 import { presentTypes } from './visible-types.js';
@@ -37,14 +36,10 @@ const ALL_TYPES: readonly NodeType[] = [
   'decision',
 ];
 
-/** Project the frozen wire payload into the renderer's view model. */
+/** Project the frozen wire payload into the renderer's view model. The creature
+ *  renderer derives all geometry from the wire fields, so this is a thin copy. */
 function toViewGraph(data: GraphData): ViewGraph {
-  const nodes: ViewNode[] = data.nodes.map((n) => ({
-    ...n,
-    radius: radiusFor(n.type, n.sizeDriver),
-    phase: Math.random() * Math.PI * 2,
-    breathRate: 1.4 + Math.random() * 1.2, // ~0.22–0.41 Hz, desynchronized
-  }));
+  const nodes: ViewNode[] = data.nodes.map((n) => ({ ...n }));
   const links: ViewEdge[] = data.edges.map((e) => ({ ...e }));
   return { nodes, links };
 }
@@ -139,23 +134,38 @@ async function main(): Promise<void> {
     };
   }
 
-  const renderer = createRenderer(mount, {
-    onSelect: (node) => {
-      overlays.showInspector(node);
-      // Clicking a session hub focuses that session (session mode) — this replaces
-      // the old session dropdown. Observation clicks only inspect, never re-scope.
-      if (node?.type === 'session') {
-        const id = Number(node.id.slice(2));
-        if (scope.mode === 'session' && scope.sessionId === id) return; // already focused
-        scope.mode = 'session';
-        scope.sessionId = id;
-        scope.project = undefined;
-        scope.search = undefined;
-        lastSearch = '';
-        void load();
-      }
-    },
-  });
+  // WebGL2 is required for the creature (ADR-0015). On a context-less browser we
+  // surface an on-brand message instead of a black canvas, and stop wiring the rest.
+  let renderer: ReturnType<typeof createRenderer>;
+  try {
+    renderer = createRenderer(mount, {
+      onSelect: (node) => onSelectNode(node),
+    });
+  } catch (err) {
+    if (err instanceof CreatureUnsupportedError) {
+      showError(
+        'Esta visualização precisa de WebGL2. Atualize o navegador ou habilite a aceleração de hardware para ver a criatura.',
+      );
+      return;
+    }
+    throw err;
+  }
+
+  function onSelectNode(node: ViewNode | null): void {
+    overlays.showInspector(node);
+    // Clicking a session hub focuses that session (session mode) — this replaces
+    // the old session dropdown. Observation clicks only inspect, never re-scope.
+    if (node?.type === 'session') {
+      const id = Number(node.id.slice(2));
+      if (scope.mode === 'session' && scope.sessionId === id) return; // already focused
+      scope.mode = 'session';
+      scope.sessionId = id;
+      scope.project = undefined;
+      scope.search = undefined;
+      lastSearch = '';
+      void load();
+    }
+  }
 
   const overlays = mountOverlays(overlayRoot, {
     onSetVisibleTypes: (types) => {

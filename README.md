@@ -97,7 +97,8 @@ Not just another memory store. The parts most tools skip:
   never leaks into project A.
 - 🪶 **Deliberately small.** 5 runtime dependencies, embedded SQLite, no server to run. ~11k lines you can
   actually read.
-- 🕸️ **Visual memory graph.** A localhost UI to explore the agent's memory as a living graph (`abs ui`).
+- 🪼 **The memory as a living creature.** A localhost UI renders the whole store as one bioluminescent
+  jellyfish whose anatomy *is* the memory — dome = consolidated core, tentacles = sessions, beads = observations (`abs ui`).
 - 🎒 **Portable.** Export/import the whole store as one file. No lock-in.
 
 ## Benchmarks
@@ -144,15 +145,27 @@ The 9 MCP tools exposed to the agent: `recall`, `remember`, `memory_status`, `op
 `set_session_project`, and `promote` (move a memory into the cross-project global brain). The same
 memory store is shared across every harness.
 
-## Memory graph UI
+## Memory creature UI
 
 ```bash
-abs ui        # serves an interactive graph at http://127.0.0.1:7717
+abs ui        # serves the creature at http://127.0.0.1:7717
 ```
 
-Session hubs and their observations, colored by kind, with optional similarity edges. Binds to
-localhost only and ships self-contained (works offline). Inspect, search, and prune memories
-right from the canvas.
+The store renders as a single **bioluminescent jellyfish** whose anatomy encodes the memory
+(WebGL2 + HDR bloom): the **dome** is the consolidated core with a neural mesh of similarity, each
+**tentacle** is a session, each **bead** of light is an observation (colored by kind), brightness is
+recency, and the most-recent observations pulse. Dark by default (the creature glows); a light theme
+turns it into a translucent pastel gel. Zoom/orbit freely, inspect, search, and prune memories right
+from the canvas. Binds to localhost only and ships self-contained (works offline). Falls back to an
+on-brand message where WebGL2 is unavailable.
+
+### Tray companion (optional)
+
+A native **tray companion** (`src-tauri/`, Tauri 2 — macOS / Windows / Linux) keeps the creature
+glanceable from the menu bar: it reads counts read-only straight from the store (no Node process to
+sit idle), pulses when the agent learns, and a popover opens the full "ocean" window on demand.
+Cross-OS installers are built by the tag-triggered `release.yml` (it is intentionally **not** part of
+the per-PR CI). Build it yourself with `cargo tauri build` (or `dev`) inside `src-tauri/`.
 
 ## CLI
 
