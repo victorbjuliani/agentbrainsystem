@@ -4,7 +4,7 @@
  * Re-exports `MemoryStore`, its types, and the schema version constant so
  * downstream layers (embedding #4, indexer #5, recall #6) import from one path.
  */
-export { MemoryStore } from './memory-store.js';
+export { CorruptStoreError, MemoryStore } from './memory-store.js';
 export type { Migration } from './schema.js';
 export { CURRENT_SCHEMA_VERSION } from './schema.js';
 export type {
@@ -21,3 +21,13 @@ export type {
   Session,
   StoreOptions,
 } from './types.js';
+export {
+  acquireRebuildLock,
+  INGEST_DEFERRED_KEY,
+  isRebuildLocked,
+  REBUILD_FAILED_KEY,
+  REBUILD_HEARTBEAT_MS,
+  REBUILD_LOCK_TTL_MS,
+  type RebuildLock,
+  rebuildLockPath,
+} from './write-lock.js';
