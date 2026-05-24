@@ -36,6 +36,8 @@ export interface SessionStartFacts {
   flagged: boolean;
   /** Whether a session→project binding already exists for this session (#52). */
   hasBinding?: boolean;
+  /** Index is stale / a prior rebuild left it degraded — recall is unreliable (#101). */
+  indexStale?: boolean;
 }
 
 export interface SessionStartDeps {
@@ -61,6 +63,9 @@ async function gatherFactsFromStore(sessionId?: string): Promise<SessionStartFac
       observations: counts.observations,
       pending,
       flagged,
+      // status() is read-only (no rebuild — ensure:false above); it reports the
+      // staleness verdict that is otherwise computed but never surfaced (#101).
+      indexStale: memory.indexer.status().stale,
     };
     if (sessionId) {
       facts.hasBinding = readBinding(memory.store, sessionId) !== null;
@@ -82,6 +87,12 @@ export function renderBaseline(facts: SessionStartFacts): string {
     lines.push(
       `Staleness: ${facts.pending} new observation(s) since the last optimization — ` +
         'consider running `abs optimize` to distill them into durable lessons.',
+    );
+  }
+  if (facts.indexStale) {
+    lines.push(
+      'DEGRADED: the recall index is stale (a rebuild is pending or a prior one failed) — ' +
+        'recall may miss memories until it is rebuilt. Run `abs doctor` to inspect.',
     );
   }
   return lines.join('\n');

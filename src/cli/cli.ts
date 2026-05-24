@@ -74,6 +74,9 @@ Commands:
                         --all (every project) or --project <slug> (repeatable). Refuses
                         --apply without a selector. --dir PATH overrides the root.
   status                Show real health: db path, schema, counts, index staleness.
+  doctor                Health check: integrity (quick_check), counts (observations vs
+                        vectors vs FTS), embed signature, WAL size, backup path. Exits
+                        non-zero on a detected problem (corrupt db / stale / drifted index).
   export <path>         Export the whole store to a portable artifact.
   import <path>         Import an artifact. Options: --mode replace|merge (default merge).
   ui [--port N]         Open the local read-only memory graph (127.0.0.1, default port 7717).
@@ -290,6 +293,53 @@ async function cmdStatus(): Promise<void> {
         2,
       ),
     );
+  } finally {
+    memory.close();
+  }
+}
+
+export async function cmdDoctor(): Promise<void> {
+  const config = loadConfig();
+  // ensure:false → report the on-disk staleness verdict instead of silently
+  // healing it with a rebuild. A corrupt db throws CorruptStoreError at open
+  // (caught by main → actionable message + non-zero exit) before we get here.
+  const memory = await openMemory(config, { ensure: false });
+  try {
+    const integrity = memory.store.quickCheck();
+    const counts = memory.store.counts();
+    const status = memory.indexer.status();
+    const drift = counts.vectors !== counts.observations || counts.fts !== counts.observations;
+    const healthy = integrity.ok && !status.stale && !drift;
+    out(
+      JSON.stringify(
+        {
+          dbPath: config.dbPath,
+          healthy,
+          integrity,
+          counts,
+          drift,
+          index: {
+            stale: status.stale,
+            signature: status.signature,
+            expectedSignature: status.expectedSignature,
+          },
+          walSizeBytes: memory.store.walSizeBytes(),
+          backupPath: memory.store.backupPath(),
+        },
+        null,
+        2,
+      ),
+    );
+    if (!healthy) {
+      err(
+        integrity.ok
+          ? 'abs doctor: index is STALE/drifted — recall is degraded. It rebuilds on the next ' +
+              'MCP launch (`abs start`); run `abs status` to trigger a rebuild now.'
+          : 'abs doctor: memory.db FAILED its integrity check — restore from the `.bak` next to ' +
+              'the db, or your last `abs export`.',
+      );
+      process.exitCode = 1;
+    }
   } finally {
     memory.close();
   }
@@ -1361,6 +1411,8 @@ async function main(): Promise<void> {
       return cmdIngest(rest);
     case 'status':
       return cmdStatus();
+    case 'doctor':
+      return cmdDoctor();
     case 'export':
       return cmdExport(rest);
     case 'import':

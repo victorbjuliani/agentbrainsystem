@@ -1,8 +1,8 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { MemoryStore } from './memory-store.js';
+import { BACKUP_INTERVAL_MS, backupIsDue, CorruptStoreError, MemoryStore } from './memory-store.js';
 import { CURRENT_SCHEMA_VERSION } from './schema.js';
 
 const DIM = 384;
@@ -694,5 +694,102 @@ describe('MemoryStore', () => {
       expect(store.searchFts('"kubernetes"', 10, 'Nonexistent')).toEqual([]);
       expect(store.knn(unitVector(1), 10, 'Nonexistent')).toEqual([]);
     });
+  });
+});
+
+describe('MemoryStore — corruption resilience (#101)', () => {
+  let dir: string;
+  let dbPath: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'abs-resilience-'));
+    dbPath = join(dir, 'memory.db');
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  describe('backupIsDue (pure gate)', () => {
+    it('is due when no backup exists', () => {
+      expect(backupIsDue(null, Date.now())).toBe(true);
+    });
+    it('is not due within the interval, due after it', () => {
+      const now = Date.now();
+      expect(backupIsDue(now - 1000, now)).toBe(false);
+      expect(backupIsDue(now - BACKUP_INTERVAL_MS, now)).toBe(true);
+    });
+  });
+
+  it('quickCheck reports ok on a healthy store', () => {
+    const store = new MemoryStore({ dbPath, dimensions: DIM }).open();
+    expect(store.quickCheck()).toEqual({ ok: true, errors: [] });
+    store.close();
+  });
+
+  it('throws a CorruptStoreError (not a raw throw) when opening a non-db file', () => {
+    writeFileSync(dbPath, 'this is definitely not a sqlite database');
+    const store = new MemoryStore({ dbPath, dimensions: DIM });
+    expect(() => store.open()).toThrow(CorruptStoreError);
+    try {
+      store.open();
+    } catch (e) {
+      expect((e as Error).message).toMatch(/appears corrupt/);
+      expect((e as Error).message).toMatch(/abs doctor/);
+    }
+  });
+
+  it('creates a .bak on first open of a pre-existing db, and not again within the window', () => {
+    // First, create + populate a real db, then close it so it pre-exists on reopen.
+    const seed = new MemoryStore({ dbPath, dimensions: DIM }).open();
+    seed.createSession({ externalId: 's1' });
+    seed.close();
+
+    const bak = `${dbPath}.bak`;
+    const first = new MemoryStore({ dbPath, dimensions: DIM }).open();
+    const firstMtime = statSync(bak).mtimeMs;
+    first.close();
+
+    // Reopen within the window → backup must NOT be rewritten.
+    const second = new MemoryStore({ dbPath, dimensions: DIM }).open();
+    expect(statSync(bak).mtimeMs).toBe(firstMtime);
+    second.close();
+
+    // Age the backup past the interval → next open refreshes it.
+    const old = (Date.now() - BACKUP_INTERVAL_MS - 1000) / 1000;
+    utimesSync(bak, old, old);
+    const third = new MemoryStore({ dbPath, dimensions: DIM }).open();
+    expect(statSync(bak).mtimeMs).toBeGreaterThan(firstMtime);
+    third.close();
+  });
+
+  it('does not back up a brand-new db (nothing to protect yet)', () => {
+    const store = new MemoryStore({ dbPath, dimensions: DIM }).open();
+    store.close();
+    expect(() => statSync(`${dbPath}.bak`)).toThrow();
+  });
+
+  it('walSizeBytes is a non-negative number on a real store, 0 for in-memory', () => {
+    const store = new MemoryStore({ dbPath, dimensions: DIM }).open();
+    store.createSession({ externalId: 's1' });
+    expect(store.walSizeBytes()).toBeGreaterThanOrEqual(0);
+    store.close();
+    const mem = new MemoryStore({ dbPath: ':memory:', dimensions: DIM }).open();
+    expect(mem.walSizeBytes()).toBe(0);
+    mem.close();
+  });
+
+  it('a backup copy reopens as a healthy store (recovery path works)', () => {
+    const seed = new MemoryStore({ dbPath, dimensions: DIM }).open();
+    seed.createSession({ externalId: 's1' });
+    seed.close();
+    // Reopen to mint the .bak, then simulate restoring it.
+    new MemoryStore({ dbPath, dimensions: DIM }).open().close();
+    const restored = join(dir, 'restored.db');
+    copyFileSync(`${dbPath}.bak`, restored);
+    const store = new MemoryStore({ dbPath: restored, dimensions: DIM }).open();
+    expect(store.quickCheck().ok).toBe(true);
+    expect(store.listSessions().length).toBe(1);
+    store.close();
   });
 });

@@ -23,6 +23,29 @@ describe('renderBaseline', () => {
     expect(block).toContain('60 new observation(s) since the last optimization');
     expect(block).toContain('abs optimize');
   });
+
+  it('surfaces a degraded note when the index is stale (#101)', () => {
+    const block = renderBaseline({
+      sessions: 2,
+      observations: 40,
+      pending: 0,
+      flagged: false,
+      indexStale: true,
+    });
+    expect(block).toContain('DEGRADED');
+    expect(block).toContain('abs doctor');
+  });
+
+  it('omits the degraded note when the index is healthy', () => {
+    const block = renderBaseline({
+      sessions: 2,
+      observations: 40,
+      pending: 0,
+      flagged: false,
+      indexStale: false,
+    });
+    expect(block).not.toContain('DEGRADED');
+  });
 });
 
 describe('handleSessionStart', () => {
