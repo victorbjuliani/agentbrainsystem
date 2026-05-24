@@ -24,6 +24,7 @@
  *     note never rides inside a block/deny payload);
  *   - fail-open: no graph / no store / any error → allow silently (ADR-0004).
  */
+import { realpathSync } from 'node:fs';
 import { basename } from 'node:path';
 import { loadConfig } from '../config.js';
 import { createGroundTruthProvider } from '../ground-truth/index.js';
@@ -49,6 +50,16 @@ function guardMode(): 'warn' | 'block' {
   return process.env.ABS_GUARD_MODE === 'block' ? 'block' : 'warn';
 }
 
+/** True when two paths point at the same file, tolerant of symlinks and non-existent paths. */
+function samePath(a: string, b: string): boolean {
+  if (a === b) return true;
+  try {
+    return realpathSync(a) === realpathSync(b);
+  } catch {
+    return false; // a path that can't be resolved (e.g. a not-yet-created file) is "different"
+  }
+}
+
 /**
  * Code-duplication lens (#29): a symbol about to be defined that already lives in
  * a DIFFERENT file is likely a duplicate. Ground-truth only; returns the reason
@@ -61,7 +72,10 @@ function checkDuplication(payload: HookPayload, seeds: ToolAnchorSeed[]): string
     for (const seed of seeds) {
       for (const symbol of seed.symbols) {
         const existing = provider.resolveSymbol(symbol);
-        if (existing && existing.filePath !== seed.filePath) {
+        // Compare realpath-aware: the provider returns the canonical (realpath) path while the
+        // seed file_path may be a symlink form (/var vs /private/var on macOS); a raw `!==`
+        // would mis-fire on a same-file edit.
+        if (existing && !samePath(existing.filePath, seed.filePath)) {
           const where = existing.line ? `${existing.filePath}:${existing.line}` : existing.filePath;
           return (
             `\`${symbol}\` already exists at ${where}. You are about to define it in ` +
@@ -113,9 +127,10 @@ function surfaceDecisions(
   if (query.length === 0) return undefined;
 
   const hits = memory.recall.recallFts(query, { limit: RECALL_POOL, project, includeGlobal: true });
-  const decisions = hits
-    .filter((h) => h.observation.kind === 'decision' || h.observation.kind === 'lesson')
-    .slice(0, MAX_DECISIONS);
+  // Surface any relevant memory for the touched file/symbols (not only decision/lesson) —
+  // session-captured memory is user/assistant kind, so a decision/lesson-only filter would be
+  // silent without consolidation. Warn-only, capped, prompt-injection-fenced as before. (#1)
+  const decisions = hits.slice(0, MAX_DECISIONS);
   if (decisions.length === 0) return undefined;
 
   const lines = decisions.map(

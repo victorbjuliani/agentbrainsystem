@@ -1,41 +1,29 @@
 /**
- * Provider selection: a code-review-graph adapter when a graph DB is present
- * for the repo, the null adapter otherwise. Centralizing the choice here keeps
- * every consumer (sweep #26, self-healing #28, guard #29) graph-agnostic and
- * honours the offline/$0 default — no graph, no problem.
+ * Provider selection: abs's own native symbol index when `cwd` is in a git repo, else the
+ * null adapter. The external code-review-graph dependency is retired — abs owns its ground
+ * truth (offline/$0). Consumers only ever see the GroundTruthProvider port.
+ *
+ * `repoRoot` is a `git rev-parse` exec; this factory is called on the per-prompt recall hot
+ * path (user-prompt-submit verifyOnRecall), so memoize by cwd for the lifetime of the
+ * (short-lived hook) process — one exec per cwd, not per call.
  */
-import { existsSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { CodeReviewGraphProvider } from './graph-provider.js';
+import { repoRoot } from '../index/git.js';
+import { AbsIndexProvider } from './abs-index-provider.js';
 import { NullGroundTruthProvider } from './null-provider.js';
 import type { GroundTruthProvider } from './types.js';
 
-/**
- * Walk up from `start` (inclusive) looking for a directory that holds
- * `.code-review-graph/graph.db`. Returns the first such directory, or undefined.
- * This is why running from a subdirectory (monorepos, `cwd` deep in the tree)
- * still finds the graph at the repo root instead of silently degrading.
- */
-function findGraphRoot(start: string): string | undefined {
-  let dir = start;
-  // Stop at the filesystem root (dirname of '/' is '/').
-  for (;;) {
-    if (existsSync(join(dir, '.code-review-graph', 'graph.db'))) return dir;
-    const parent = dirname(dir);
-    if (parent === dir) return undefined;
-    dir = parent;
-  }
+const rootCache = new Map<string, string | undefined>();
+function cachedRepoRoot(cwd: string): string | undefined {
+  const cached = rootCache.get(cwd);
+  if (cached !== undefined || rootCache.has(cwd)) return cached;
+  const r = repoRoot(cwd);
+  rootCache.set(cwd, r);
+  return r;
 }
 
-/**
- * Pick a ground-truth provider for `repoRoot`. Searches `repoRoot` and its
- * ancestors for `.code-review-graph/graph.db`; uses the graph-backed provider
- * rooted at wherever it is found, else the null provider (everything degrades
- * to `claimed`/warn-only).
- */
-export function createGroundTruthProvider(repoRoot: string | undefined): GroundTruthProvider {
-  if (!repoRoot) return new NullGroundTruthProvider();
-  const graphRoot = findGraphRoot(repoRoot);
-  if (!graphRoot) return new NullGroundTruthProvider();
-  return new CodeReviewGraphProvider(graphRoot);
+export function createGroundTruthProvider(cwd: string | undefined): GroundTruthProvider {
+  if (!cwd) return new NullGroundTruthProvider();
+  const gitRoot = cachedRepoRoot(cwd);
+  if (!gitRoot) return new NullGroundTruthProvider();
+  return new AbsIndexProvider(gitRoot);
 }
