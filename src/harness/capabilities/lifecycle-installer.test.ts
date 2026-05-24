@@ -28,4 +28,24 @@ describe('settingsFileInstaller (Claude Code shape)', () => {
     expect(written).toContain('abs hook user-prompt-submit');
     expect(written).toContain('abs hook pre-tool-use');
   });
+
+  it('reports newly-added moments on first install and all-already-present on the second (idempotent)', async () => {
+    const settingsPath = join(dir, 'settings.json');
+    const installer = settingsFileInstaller({
+      settingsPath,
+      events: ['SessionEnd', 'SessionStart', 'UserPromptSubmit', 'PreToolUse'],
+    });
+
+    const first = await installer.install();
+    expect(first.wired.slice().sort()).toEqual(['capture', 'guard', 'recall']);
+    expect((first.alreadyPresent ?? []).slice()).toEqual([]);
+    const afterFirst = readFileSync(settingsPath, 'utf8');
+
+    const second = await installer.install();
+    // Nothing newly wired; every moment reported as already present.
+    expect(second.wired.slice()).toEqual([]);
+    expect(second.alreadyPresent?.slice().sort()).toEqual(['capture', 'guard', 'recall']);
+    // installHooks wrote nothing the 2nd time → byte-identical settings.json.
+    expect(readFileSync(settingsPath, 'utf8')).toBe(afterFirst);
+  });
 });

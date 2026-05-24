@@ -155,10 +155,25 @@ describe('G — install-hooks + abs hook (non-fatal, always exit 0)', () => {
     for (const event of ['SessionEnd', 'SessionStart', 'UserPromptSubmit', 'PreToolUse']) {
       expect(settings.hooks[event]).toBeDefined();
     }
+    const afterFirst = readFileSync(settingsPath, 'utf8');
 
     const second = await abs(['install-hooks'], { env: h.env });
     expect(second.code).toBe(0);
     expect(second.stdout).toContain('already present');
+
+    // True idempotency (ADR-0004): the 2nd run mutates nothing → byte-identical
+    // settings.json, and no event grows a duplicate hook entry.
+    expect(readFileSync(settingsPath, 'utf8')).toBe(afterFirst);
+    const settings2 = JSON.parse(readFileSync(settingsPath, 'utf8')) as {
+      hooks: Record<string, { hooks: unknown[] }[] | undefined>;
+    };
+    const countHooks = (groups: { hooks: unknown[] }[] | undefined): number =>
+      (groups ?? []).reduce((n, g) => n + g.hooks.length, 0);
+    for (const event of ['SessionEnd', 'SessionStart', 'UserPromptSubmit', 'PreToolUse']) {
+      const before = countHooks(settings.hooks[event] as { hooks: unknown[] }[] | undefined);
+      const now = countHooks(settings2.hooks[event]);
+      expect(now, `${event} hook count unchanged on 2nd run`).toBe(before);
+    }
   });
 
   it('every hook event exits 0 — even with a broken store path (non-fatal contract)', async () => {

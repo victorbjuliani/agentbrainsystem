@@ -33,7 +33,14 @@ export interface ResolveInput {
 }
 
 export interface InstallReport {
+  /** Moments whose hook was NEWLY wired this run (empty on a fully idempotent re-run). */
   wired: readonly LifecycleMoment[];
+  /**
+   * Moments whose hook was already present (idempotent no-op). Optional and
+   * backward-compatible: adapters that don't track this can omit it. The CLI uses
+   * it to print "already present" when nothing new was wired.
+   */
+  alreadyPresent?: readonly LifecycleMoment[];
 }
 export interface UninstallReport {
   removed: readonly LifecycleMoment[];
