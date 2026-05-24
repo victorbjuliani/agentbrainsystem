@@ -1,28 +1,14 @@
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { refreshIndex } from '../index/indexer.js';
 import { type Memory, openMemory } from '../memory.js';
 import { evaluateGuard, type GuardCase } from './guard-eval.js';
 
-/** Seed a graph whose existing symbols live in `src/existing.ts`. */
-function seedGraph(repoRoot: string, symbols: string[]): void {
-  const graphDir = join(repoRoot, '.code-review-graph');
-  mkdirSync(graphDir, { recursive: true });
-  const db = new Database(join(graphDir, 'graph.db'));
-  db.prepare(
-    'CREATE TABLE nodes (id INTEGER PRIMARY KEY, kind TEXT, name TEXT, qualified_name TEXT, file_path TEXT, line_start INTEGER)',
-  ).run();
-  const ins = db.prepare(
-    'INSERT INTO nodes (id, kind, name, qualified_name, file_path, line_start) VALUES (?, ?, ?, ?, ?, ?)',
-  );
-  let i = 1;
-  for (const name of symbols) {
-    ins.run(i, 'Function', name, name, join(repoRoot, 'src/existing.ts'), i * 3);
-    i++;
-  }
-  db.close();
+function git(root: string, ...args: string[]) {
+  execFileSync('git', ['-C', root, ...args], { stdio: ['ignore', 'pipe', 'ignore'] });
 }
 
 describe('guard evaluation harness (#30, O3 gate)', () => {
@@ -35,11 +21,22 @@ describe('guard evaluation harness (#30, O3 gate)', () => {
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), 'abs-guardeval-'));
     repo = join(dir, 'repo');
-    mkdirSync(repo, { recursive: true });
+    mkdirSync(join(repo, 'src'), { recursive: true });
     delete process.env.ABS_GUARD_MODE;
     process.env.ABS_HOME = join(dir, 'abs');
     process.env.ABS_EMBED_DIM = '8';
-    seedGraph(repo, ['existingA', 'existingB', 'existingC']);
+    process.env.ABS_WASM_DIR = join(__dirname, '../../dist/index/wasm');
+    // Native ground truth: the three existing symbols live in src/existing.ts.
+    git(repo, 'init', '-q');
+    git(repo, 'config', 'user.email', 't@t');
+    git(repo, 'config', 'user.name', 't');
+    writeFileSync(
+      join(repo, 'src/existing.ts'),
+      'export function existingA(){}\nexport function existingB(){}\nexport class existingC {}\n',
+    );
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-q', '-m', 'seed');
+    await refreshIndex(repo);
     emptyMemory = await openMemory(undefined, { ensure: false });
   });
 
@@ -47,6 +44,7 @@ describe('guard evaluation harness (#30, O3 gate)', () => {
     emptyMemory.close();
     delete process.env.ABS_HOME;
     delete process.env.ABS_EMBED_DIM;
+    delete process.env.ABS_WASM_DIR;
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -54,7 +52,6 @@ describe('guard evaluation harness (#30, O3 gate)', () => {
   function buildCases(): GuardCase[] {
     const f = (name: string) => join(repo, name);
     return [
-      // --- bad: redefining an existing symbol in a NEW file (true contradiction) ---
       {
         name: 'dup existingA',
         shouldFire: true,
@@ -82,7 +79,6 @@ describe('guard evaluation harness (#30, O3 gate)', () => {
           toolInput: { file_path: f('src/dupe3.ts'), new_string: 'class existingC {}' },
         },
       },
-      // --- benign: should NOT fire ---
       {
         name: 'edit existing in its own file',
         shouldFire: false,
@@ -149,7 +145,6 @@ describe('guard evaluation harness (#30, O3 gate)', () => {
 
   it('meets the O3 release gate: TP >= 30% AND FP < 1 per 10 actions', async () => {
     const result = await evaluateGuard(buildCases(), {}, { memory: emptyMemory });
-    // This guard is precise: every seeded duplication is caught, zero false alarms.
     expect(result.tpRate).toBe(1);
     expect(result.fpPerAction).toBe(0);
     expect(result.passesGate).toBe(true);
@@ -164,15 +159,11 @@ describe('guard evaluation harness (#30, O3 gate)', () => {
   });
 
   it('flags a gate failure when FP is too high (sanity of the metric itself)', async () => {
-    // A pathological set where every benign action is mislabelled "should fire"
-    // would still measure fpPerAction against true labels — here we prove the
-    // gate math rejects a noisy guard by tightening the threshold to 0.
     const result = await evaluateGuard(
       buildCases(),
       { fpPerActionMax: 0 },
       { memory: emptyMemory },
     );
-    // fpPerAction is 0, and the gate uses strict <, so max=0 fails by construction.
     expect(result.passesGate).toBe(false);
   });
 });

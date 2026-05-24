@@ -3,5 +3,7 @@ export class Beta {
   gamma(): void {}
 }
 export const delta = (): number => 1;
-interface Eps { x: number }
+interface Eps {
+  x: number;
+}
 type Zeta = string;
