@@ -88,6 +88,49 @@ describe('Indexer — atomic write', () => {
     expect(counts).toMatchObject({ observations: 0, vectors: 0, fts: 0 });
     store.close();
   });
+
+  it('rolls back the observation row when a write inside the txn fails', async () => {
+    const store = newStore(8);
+    const indexer = new Indexer(store, new FakeProvider());
+    const sessionId = store.createSession({ externalId: 's1' });
+
+    // Inject a failure AFTER the row insert but inside the atomic txn: the
+    // transaction must undo the row itself (no second delete, no torn row).
+    store.indexFts = () => {
+      throw new Error('fts boom');
+    };
+
+    await expect(indexer.write({ sessionId, kind: 'note', content: 'torn' })).rejects.toThrow(
+      'fts boom',
+    );
+
+    const counts = store.counts();
+    expect(counts).toMatchObject({ observations: 0, vectors: 0, fts: 0 });
+    store.close();
+  });
+
+  it('rejects an unknown sessionId before embedding (no wasted embed call)', async () => {
+    const store = newStore(8);
+    let embedCalls = 0;
+    const counting: EmbeddingProvider = {
+      id: 'count',
+      model: 'count-v1',
+      dimensions: 8,
+      async embed(texts) {
+        embedCalls++;
+        return texts.map(() => new Array(8).fill(0) as number[]);
+      },
+    };
+    const indexer = new Indexer(store, counting);
+
+    await expect(
+      indexer.write({ sessionId: 9999, kind: 'note', content: 'no session' }),
+    ).rejects.toThrow('session 9999 not found');
+
+    expect(embedCalls).toBe(0);
+    expect(store.counts()).toMatchObject({ observations: 0, vectors: 0, fts: 0 });
+    store.close();
+  });
 });
 
 describe('Indexer — status reports reality', () => {
