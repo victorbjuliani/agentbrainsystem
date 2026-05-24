@@ -19,6 +19,7 @@ import { buildOpencodeDb } from '../harness/capabilities/__fixtures__/opencode-d
 import type { HarnessAdapter } from '../harness/index.js';
 import { type Memory, openMemory } from '../memory.js';
 import {
+  cmdDoctor,
   cmdForget,
   cmdIngest,
   cmdOpencodeCapture,
@@ -1021,5 +1022,67 @@ describe('cmdOpencodeCapture / cmdOpencodeRecall (#72, hermetic, real local prov
     const text = outLines.join('');
     expect(text).toContain('agentbrainsystem — memory notice.');
     expect(text).not.toContain('<recalled-memory>');
+  });
+});
+
+describe('cmdDoctor — health check (#101, hermetic, tmp ABS_HOME)', () => {
+  let dir: string;
+  let outLines: string[];
+  let errLines: string[];
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'abs-cli-doctor-'));
+    process.env.ABS_HOME = dir;
+    outLines = [];
+    errLines = [];
+    // Keep streams separate: stdout carries the JSON report; stderr the hint.
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk: string | Uint8Array) => {
+      outLines.push(String(chunk));
+      return true;
+    });
+    vi.spyOn(process.stderr, 'write').mockImplementation((chunk: string | Uint8Array) => {
+      errLines.push(String(chunk));
+      return true;
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete process.env.ABS_HOME;
+    process.exitCode = 0;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('reports healthy + exit 0, printing counts, integrity and WAL size', async () => {
+    // Fresh empty store: no observations → no drift → healthy.
+    const mem = await openMemory(loadConfig(), { ensure: false });
+    mem.store.createSession({ externalId: 's1' });
+    mem.close();
+
+    await cmdDoctor();
+
+    const report = JSON.parse(outLines.join(''));
+    expect(report.healthy).toBe(true);
+    expect(report.integrity.ok).toBe(true);
+    expect(report.counts).toMatchObject({ observations: 0, vectors: 0, fts: 0 });
+    expect(typeof report.walSizeBytes).toBe('number');
+    expect(report.backupPath).toMatch(/\.bak$/);
+    expect(process.exitCode).not.toBe(1);
+  });
+
+  it('exits non-zero on a drifted index (observations without vectors/FTS)', async () => {
+    const mem = await openMemory(loadConfig(), { ensure: false });
+    const sid = mem.store.createSession({ externalId: 's1' });
+    // Bypass the indexer → an observation with no vector/FTS = a drifted index.
+    mem.store.createObservation({ sessionId: sid, kind: 'note', content: 'orphan' });
+    mem.close();
+
+    await cmdDoctor();
+
+    const report = JSON.parse(outLines.join(''));
+    expect(report.healthy).toBe(false);
+    expect(report.drift).toBe(true);
+    expect(process.exitCode).toBe(1);
+    expect(errLines.join('')).toMatch(/STALE|drift/i);
   });
 });

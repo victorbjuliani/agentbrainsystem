@@ -18,7 +18,7 @@
  *   - vectors bind into vec0 as a JSON string (`JSON.stringify(arr)`), not a
  *     Float32Array.
  */
-import { mkdirSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, statSync } from 'node:fs';
 import { dirname } from 'node:path';
 import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
@@ -127,6 +127,45 @@ function rowToAnchor(row: FactAnchorRow): FactAnchor {
   };
 }
 
+/**
+ * Thrown when `memory.db` fails its integrity check (or SQLite reports it is not
+ * a database) at open. Distinct type so callers (the CLI, hooks) can give an
+ * actionable message — restore from a backup / run `abs doctor` — instead of a
+ * raw SQLite stack trace. Hooks still fail-open (ADR-0004): the runner swallows
+ * it to stderr without crashing the agent session.
+ */
+export class CorruptStoreError extends Error {
+  readonly dbPath: string;
+  constructor(dbPath: string, detail: string) {
+    super(
+      `memory.db appears corrupt (${dbPath}): ${detail}. ` +
+        'Restore from your last `abs export`, or copy back the `.bak` next to the db, ' +
+        'then run `abs doctor` to confirm.',
+    );
+    this.name = 'CorruptStoreError';
+    this.dbPath = dbPath;
+  }
+}
+
+/** Result of a `PRAGMA quick_check` — `ok:true` means SQLite found no problems. */
+export interface IntegrityResult {
+  ok: boolean;
+  errors: string[];
+}
+
+/** Back up the db at most once per this window (a file copy is cheap but not free). */
+export const BACKUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Whether a backup is due given the existing backup's mtime. A missing backup
+ * (`bakMtimeMs === null`) is always due; otherwise only once per BACKUP_INTERVAL_MS.
+ * Pure so the daily gate is unit-testable without touching the clock or disk.
+ */
+export function backupIsDue(bakMtimeMs: number | null, nowMs: number): boolean {
+  if (bakMtimeMs === null) return true;
+  return nowMs - bakMtimeMs >= BACKUP_INTERVAL_MS;
+}
+
 export class MemoryStore {
   private db: Database.Database | null = null;
   private readonly dbPath: string;
@@ -141,17 +180,90 @@ export class MemoryStore {
   open(dbPath?: string): this {
     if (this.db) return this; // already open — idempotent
     const path = dbPath ?? this.dbPath;
-    if (path !== ':memory:') {
+    const onDisk = path !== ':memory:';
+    if (onDisk) {
       mkdirSync(dirname(path), { recursive: true });
     }
-    const db = new Database(path);
-    sqliteVec.load(db);
-    db.pragma('journal_mode = WAL'); // durability across restarts
-    db.pragma('busy_timeout = 5000'); // wait up to 5s for a concurrent writer before SQLITE_BUSY
-    db.pragma('foreign_keys = ON'); // honour ON DELETE CASCADE
-    this.db = db;
+    // A db file that already existed before this open is the only thing worth
+    // protecting: capture it now, before `new Database` may create an empty file.
+    const preexisting = onDisk && existsSync(path);
+
+    // A truncated / non-db / corrupt file can surface its error at any point from
+    // `new Database` through the first pragma — wrap the whole bring-up so every
+    // such failure becomes an actionable CorruptStoreError instead of a raw throw
+    // that fail-opens into silence. quick_check is the explicit structural probe.
+    try {
+      const db = new Database(path);
+      sqliteVec.load(db);
+      db.pragma('journal_mode = WAL'); // durability across restarts
+      db.pragma('busy_timeout = 5000'); // wait up to 5s for a concurrent writer before SQLITE_BUSY
+      db.pragma('foreign_keys = ON'); // honour ON DELETE CASCADE
+      this.db = db;
+
+      // Fast structural integrity check, once per process open. quick_check skips
+      // the (expensive) per-row index cross-check that full integrity_check does,
+      // but catches a corrupt/truncated/non-db file — the failure mode that today
+      // fail-opens into a silent total memory outage.
+      const integrity = this.quickCheck();
+      if (!integrity.ok) {
+        throw new CorruptStoreError(path, integrity.errors.join('; '));
+      }
+    } catch (e) {
+      this.close();
+      if (e instanceof CorruptStoreError) throw e;
+      if (e instanceof Error && /not a database|corrupt|malformed|encrypted/i.test(e.message)) {
+        throw new CorruptStoreError(path, e.message);
+      }
+      throw e;
+    }
+
+    // Backup-on-open: a verified-intact db, snapshotted at most once a day, is the
+    // only recovery path today (besides a manual `abs export`). mtime-gated so it
+    // is a no-op on every subsequent open within the window.
+    if (preexisting) this.maybeBackup(path);
+
     this.runMigrations();
     return this;
+  }
+
+  /** Path of the rotating backup created on open: the db file with a `.bak` suffix. */
+  backupPath(dbPath?: string): string {
+    return `${dbPath ?? this.dbPath}.bak`;
+  }
+
+  /**
+   * Copy the (already integrity-checked) db to `<db>.bak` when a backup is due.
+   * Checkpoints the WAL first so the single-file copy is a consistent snapshot,
+   * not a stale pre-WAL state. Best-effort: a backup failure must never block open.
+   */
+  private maybeBackup(path: string): void {
+    try {
+      const bak = this.backupPath(path);
+      const bakMtime = existsSync(bak) ? statSync(bak).mtimeMs : null;
+      if (!backupIsDue(bakMtime, Date.now())) return;
+      this.conn().pragma('wal_checkpoint(FULL)');
+      copyFileSync(path, bak);
+    } catch {
+      // A failed backup is non-fatal — the store is still usable this session.
+    }
+  }
+
+  /**
+   * Run `PRAGMA quick_check` and report whether SQLite found structural problems.
+   * `ok:true` ⇔ the single result row is the literal `ok`. Used at open and by
+   * `abs doctor`.
+   */
+  quickCheck(): IntegrityResult {
+    const rows = this.conn().pragma('quick_check') as Array<{ quick_check: string }>;
+    const messages = rows.map((r) => r.quick_check).filter((m) => m !== 'ok');
+    return { ok: messages.length === 0, errors: messages };
+  }
+
+  /** Size of the write-ahead log file in bytes (0 when absent or in-memory). */
+  walSizeBytes(): number {
+    if (this.dbPath === ':memory:') return 0;
+    const wal = `${this.dbPath}-wal`;
+    return existsSync(wal) ? statSync(wal).size : 0;
   }
 
   /** Close the underlying connection. Safe to call when already closed. */
