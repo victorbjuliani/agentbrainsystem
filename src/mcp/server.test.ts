@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -9,6 +9,7 @@ import { __clearDeleteCacheForTests } from '../delete/delete.js';
 import type { EnsureResult } from '../indexer/index.js';
 import { readBinding } from '../ingest/index.js';
 import { type Memory, openMemory } from '../memory.js';
+import { isRebuildLocked, REBUILD_FAILED_KEY, rebuildLockPath } from '../store/index.js';
 import {
   backgroundEnsure,
   createMcpServer,
@@ -367,6 +368,56 @@ describe('background startup rebuild (MCP boot latency)', () => {
   it('backgroundEnsure forwards the result on success', async () => {
     const ok = await backgroundEnsure(mem.indexer);
     expect(ok).toMatchObject({ reason: expect.any(String) });
+  });
+
+  it('persists a durable degraded flag on failure and releases the lock (#103)', async () => {
+    const failing = {
+      ensureIndex: () => Promise.reject(new Error('embed provider down')),
+    };
+    await backgroundEnsure(failing, {
+      store: mem.store,
+      dbPath: config().dbPath,
+      willRebuild: true,
+    });
+    expect(mem.store.getMeta(REBUILD_FAILED_KEY)).not.toBeNull();
+    // The lock is released even on the failure path.
+    expect(isRebuildLocked(config().dbPath)).toBe(false);
+  });
+
+  it('clears a stale degraded flag on a successful ensure (#103)', async () => {
+    mem.store.setMeta(REBUILD_FAILED_KEY, '2026-01-01T00:00:00.000Z');
+    await backgroundEnsure(mem.indexer, {
+      store: mem.store,
+      dbPath: config().dbPath,
+      willRebuild: false,
+    });
+    expect(mem.store.getMeta(REBUILD_FAILED_KEY)).toBeNull();
+  });
+
+  it('holds the rebuild lock DURING a rebuild, releases after (#103)', async () => {
+    let lockedDuring = false;
+    const stub = {
+      ensureIndex: async () => {
+        lockedDuring = isRebuildLocked(config().dbPath);
+        return {
+          rebuilt: true,
+          reason: 'count-drift',
+          status: mem.indexer.status(),
+        } as EnsureResult;
+      },
+    };
+    await backgroundEnsure(stub, { store: mem.store, dbPath: config().dbPath, willRebuild: true });
+    expect(lockedDuring).toBe(true);
+    expect(isRebuildLocked(config().dbPath)).toBe(false);
+  });
+
+  it('does NOT take the lock when no rebuild is due (willRebuild=false) (#103)', async () => {
+    await backgroundEnsure(mem.indexer, {
+      store: mem.store,
+      dbPath: config().dbPath,
+      willRebuild: false,
+    });
+    expect(existsSync(rebuildLockPath(config().dbPath))).toBe(false);
   });
 });
 

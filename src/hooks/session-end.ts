@@ -17,6 +17,7 @@
  * drifted index self-heals, then always close the store.
  */
 import { sweepAnchors } from '../anchoring/index.js';
+import { loadConfig } from '../config.js';
 import {
   createGroundTruthProvider,
   type GroundTruthProvider,
@@ -24,6 +25,7 @@ import {
 } from '../ground-truth/index.js';
 import { ingestSingleSession } from '../ingest/index.js';
 import { openMemory } from '../memory.js';
+import { INGEST_DEFERRED_KEY, isRebuildLocked } from '../store/index.js';
 import type { HookPayload } from './payload.js';
 
 /** Max claimed anchors a single SessionEnd promotes — bounds the out-of-hot-path cost. */
@@ -53,6 +55,34 @@ export async function handleSessionEnd(
     await deps.ingest(transcriptPath);
     return undefined;
   }
+  // If the MCP server is mid-rebuild it holds the cross-process write lock; racing
+  // our ingest writes into it would block on busy_timeout and then fail-open,
+  // SILENTLY losing this session's memory (#103). Defer instead: record a durable
+  // marker + log one line. Nothing is lost — the transcript's byte-cursor is not
+  // advanced, so a later `abs ingest` (or the next unlocked SessionEnd) re-pulls it.
+  const { dbPath } = loadConfig();
+  if (isRebuildLocked(dbPath)) {
+    // The stderr log is the RELIABLE defer signal — emit it first, unconditionally.
+    // The kv_meta marker is a best-effort nicety: writing it touches the same DB the
+    // rebuild writer is holding, so under contention it could hit busy_timeout. We
+    // must never let that throw and undo the defer, so it is swallowed.
+    process.stderr.write(
+      '[abs] session-end ingest deferred: an index rebuild is in progress; ' +
+        'this session will be re-ingested later (no data lost).\n',
+    );
+    try {
+      const memory = await openMemory(undefined, { ensure: false });
+      try {
+        memory.store.setMeta(INGEST_DEFERRED_KEY, new Date().toISOString());
+      } finally {
+        memory.close();
+      }
+    } catch {
+      // best-effort marker — the stderr log above already records the deferral.
+    }
+    return undefined;
+  }
+
   const memory = await openMemory();
   try {
     await ingestSingleSession(memory, transcriptPath);

@@ -2,8 +2,10 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { loadConfig } from '../config.js';
 import type { GroundTruthProvider, ResolvedSymbol } from '../ground-truth/index.js';
 import { type Memory, openMemory } from '../memory.js';
+import { acquireRebuildLock, INGEST_DEFERRED_KEY } from '../store/index.js';
 import { handleSessionEnd } from './session-end.js';
 
 describe('handleSessionEnd — auto-ingest, $0, no injection', () => {
@@ -91,5 +93,41 @@ describe('SessionEnd wires the anchor sweep (claimed → verified, #26 integrati
 
     memory = await openMemory(); // reopen to assert (afterEach closes this one)
     expect(memory.store.getAnchorsForObservation(obsId)[0]?.state).toBe('verified');
+  });
+});
+
+describe('SessionEnd defers ingest while a rebuild holds the write lock (#103)', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'abs-se-defer-'));
+    process.env.ABS_HOME = dir;
+  });
+  afterEach(() => {
+    delete process.env.ABS_HOME;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('records a deferral marker and skips ingest instead of racing into busy_timeout', async () => {
+    const cfg = loadConfig();
+    // Materialize the db dir then hold the cross-process rebuild lock.
+    (await openMemory(undefined, { ensure: false })).close();
+    const lock = acquireRebuildLock(cfg.dbPath);
+
+    const t = join(dir, 't.jsonl');
+    writeFileSync(t, '{"role":"user","text":"hi"}\n');
+
+    // Real path (no injected ingest) → the lock check must short-circuit it.
+    const result = await handleSessionEnd({ transcriptPath: t, cwd: dir });
+    expect(result).toBeUndefined();
+
+    const mem = await openMemory(undefined, { ensure: false });
+    try {
+      expect(mem.store.getMeta(INGEST_DEFERRED_KEY)).not.toBeNull();
+      // Nothing was ingested while deferred.
+      expect(mem.store.counts().observations).toBe(0);
+    } finally {
+      mem.close();
+    }
+    lock.release();
   });
 });

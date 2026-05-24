@@ -26,6 +26,7 @@
 import { basename } from 'node:path';
 import { readBinding } from '../ingest/index.js';
 import { openMemory } from '../memory.js';
+import { REBUILD_FAILED_KEY } from '../store/index.js';
 import { buildContextOutput, type HookPayload } from './payload.js';
 import { evaluateStaleness, OPTIMIZE_CURSOR_KEY } from './staleness.js';
 
@@ -65,7 +66,11 @@ async function gatherFactsFromStore(sessionId?: string): Promise<SessionStartFac
       flagged,
       // status() is read-only (no rebuild — ensure:false above); it reports the
       // staleness verdict that is otherwise computed but never surfaced (#101).
-      indexStale: memory.indexer.status().stale,
+      // A background rebuild that FAILED (#103) records a durable flag — treat that
+      // as degraded too, since its drift may have been partially repaired yet the
+      // index is not trustworthy.
+      indexStale:
+        memory.indexer.status().stale || memory.store.getMeta(REBUILD_FAILED_KEY) !== null,
     };
     if (sessionId) {
       facts.hasBinding = readBinding(memory.store, sessionId) !== null;
