@@ -11,11 +11,15 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { healAnchors } from '../anchoring/heal.js';
+import { sweepAnchors } from '../anchoring/sweep.js';
 import type { EmbeddingProvider } from '../embedding/index.js';
+import type { GroundTruthProvider, ResolvedSymbol } from '../ground-truth/index.js';
 import { handleSessionEnd } from '../hooks/session-end.js';
 import { Indexer } from '../indexer/index.js';
 import type { Memory } from '../memory.js';
 import { projectSlug } from '../optimize/targets.js';
+import { annotateFreshness } from '../recall/freshness.js';
 import { Recall } from '../recall/index.js';
 import { MemoryStore } from '../store/index.js';
 import { ingestClaudeProjects, ingestSingleSession, surveyClaudeProjects } from './ingest.js';
@@ -902,6 +906,167 @@ describe('Copilot ingest (byte cursor + compaction guard, #69)', () => {
       10,
     );
     expect(cursor).toBe(Buffer.byteLength(truncated + newTail, 'utf8'));
+    memory.close();
+  });
+});
+
+describe('ingestClaudeProjects — turn-scoped freshness propagation (sibling prose ← edit)', () => {
+  const CWD = '/Users/me/Devs/foo';
+  const FILE = '/Users/me/Devs/foo/src/fresh.ts';
+
+  /** A scripted ground-truth provider resolving only the files in its allow-set. */
+  class FakeGroundTruth implements GroundTruthProvider {
+    constructor(private readonly files: Set<string>) {}
+    isAvailable(): boolean {
+      return true;
+    }
+    resolveSymbol(): ResolvedSymbol | null {
+      return null;
+    }
+    resolveFile(filePath: string): ResolvedSymbol | null {
+      return this.files.has(filePath)
+        ? { qualifiedName: filePath, filePath, commitSha: 'c1' }
+        : null;
+    }
+    currentBranch(): string | undefined {
+      return 'main';
+    }
+    close(): void {}
+  }
+
+  /**
+   * One Claude Code code turn = TWO sibling JSONL lines sharing one `message.id`:
+   * (1) prose-only assistant text (no tool, no anchors), (2) edit-only assistant
+   * tool_use on a real file. The prose line carries the searchable narrative; the
+   * edit line carries the anchors.
+   */
+  function proseLine(messageId: string, requestId: string, text: string, uuid: string): string {
+    return JSON.stringify({
+      type: 'assistant',
+      sessionId: 'sess-1',
+      cwd: CWD,
+      uuid,
+      requestId,
+      timestamp: '2026-05-20T10:01:00.000Z',
+      message: { id: messageId, role: 'assistant', content: [{ type: 'text', text }] },
+    });
+  }
+
+  function editLine(
+    messageId: string,
+    requestId: string,
+    parentUuid: string,
+    filePath: string,
+    uuid: string,
+  ): string {
+    return JSON.stringify({
+      type: 'assistant',
+      sessionId: 'sess-1',
+      cwd: CWD,
+      uuid,
+      parentUuid,
+      requestId,
+      timestamp: '2026-05-20T10:01:01.000Z',
+      message: {
+        id: messageId,
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            name: 'Edit',
+            input: { file_path: filePath, new_string: 'export function fold() {}' },
+          },
+        ],
+      },
+    });
+  }
+
+  function writeTurn(lines: string[]): Memory {
+    const projDir = join(projectsDir, '-Users-me-Devs-foo');
+    mkdirSync(projDir, { recursive: true });
+    writeFileSync(join(projDir, 'session.jsonl'), `${lines.join('\n')}\n`);
+    return newMemory();
+  }
+
+  it('propagates the file-level anchor onto the sibling prose obs (same message.id)', async () => {
+    const memory = writeTurn([
+      proseLine('msg-A', 'req-A', 'refactored the freshness fold', 'u1'),
+      editLine('msg-A', 'req-A', 'u1', FILE, 'u2'),
+    ]);
+    await ingestClaudeProjects(memory, { projectsDir });
+
+    const obs = memory.store.listObservations();
+    const prose = obs.find((o) => o.kind === 'assistant');
+    expect(prose).toBeTruthy();
+    const proseAnchors = memory.store.getAnchorsForObservation(prose?.id ?? -1);
+    // Propagation: prose obs now carries the edit's FILE anchor.
+    expect(proseAnchors.map((a) => a.filePath)).toContain(FILE);
+    // No inflation: file-level ONLY, deduped to one per distinct file, no symbols.
+    expect(proseAnchors).toHaveLength(1);
+    expect(proseAnchors[0]?.anchorKind).toBe('file');
+    expect(proseAnchors.every((a) => a.anchorKind === 'file')).toBe(true);
+    memory.close();
+  });
+
+  it('the recalled prose hit annotates ✓verified once the file resolves', async () => {
+    const memory = writeTurn([
+      proseLine('msg-A', 'req-A', 'refactored the freshness fold', 'u1'),
+      editLine('msg-A', 'req-A', 'u1', FILE, 'u2'),
+    ]);
+    await ingestClaudeProjects(memory, { projectsDir });
+
+    // Sweep claimed → verified against a ground truth where the file exists.
+    sweepAnchors(memory.store, new FakeGroundTruth(new Set([FILE])));
+
+    // The FTS-searchable narrative lives on the PROSE obs; recall surfaces it.
+    const hits = memory.store
+      .searchFts('refactored freshness fold', 10)
+      .map((hit) => memory.store.getObservation(hit.id))
+      .filter((o): o is NonNullable<typeof o> => o !== null)
+      .map((observation) => ({ observation, score: 1 }));
+    const proseHit = hits.find((h) => h.observation.kind === 'assistant');
+    expect(proseHit).toBeTruthy();
+
+    const [annotated] = annotateFreshness(memory.store, proseHit ? [proseHit] : []);
+    expect(annotated?.anchorState).toBe('verified');
+    memory.close();
+  });
+
+  it('the prose hit flips ⚠stale when the propagated file vanishes', async () => {
+    const memory = writeTurn([
+      proseLine('msg-A', 'req-A', 'refactored the freshness fold', 'u1'),
+      editLine('msg-A', 'req-A', 'u1', FILE, 'u2'),
+    ]);
+    await ingestClaudeProjects(memory, { projectsDir });
+
+    // First verify it (file present), then the file disappears → heal flips stale.
+    sweepAnchors(memory.store, new FakeGroundTruth(new Set([FILE])));
+    healAnchors(memory.store, new FakeGroundTruth(new Set())); // file gone now
+
+    const prose = memory.store.listObservations().find((o) => o.kind === 'assistant');
+    const observation = memory.store.getObservation(prose?.id ?? -1);
+    expect(observation).toBeTruthy();
+    const [annotated] = annotateFreshness(
+      memory.store,
+      observation ? [{ observation, score: 1 }] : [],
+    );
+    expect(annotated?.anchorState).toBe('stale');
+    memory.close();
+  });
+
+  it('does NOT propagate to a prose obs from a DIFFERENT message.id (turn-scoped, never session-wide)', async () => {
+    const memory = writeTurn([
+      proseLine('msg-OTHER', 'req-OTHER', 'unrelated narrative about something else', 'u0'),
+      proseLine('msg-A', 'req-A', 'refactored the freshness fold', 'u1'),
+      editLine('msg-A', 'req-A', 'u1', FILE, 'u2'),
+    ]);
+    await ingestClaudeProjects(memory, { projectsDir });
+
+    const obs = memory.store.listObservations();
+    const otherProse = obs.find((o) => o.content.includes('unrelated narrative'));
+    expect(otherProse).toBeTruthy();
+    // The unrelated prose (different message.id) inherits NOTHING.
+    expect(memory.store.getAnchorsForObservation(otherProse?.id ?? -1)).toHaveLength(0);
     memory.close();
   });
 });
