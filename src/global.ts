@@ -81,11 +81,8 @@ export async function promoteAction(
         error: 'curated text (--as) must not be empty',
       };
     }
-    // Serialize behind any background index rebuild (the MCP server opens with a
-    // background ensure) so the curated write can't be lost to a concurrent full
-    // rebuild — the same guard rememberAction/recall use. No-op when `ready` is
-    // undefined (the CLI opens synchronously).
-    if (memory.ready) await memory.ready;
+    // Readiness is enforced by `withReady` at the MCP `promote` tool boundary (#104);
+    // the CLI path that also calls this opens synchronously (no background rebuild).
     const kind = CURATED_KINDS.has(original.kind) ? original.kind : 'note';
     const newId = await memory.indexer.write({
       sessionId: getOrCreateGlobalSession(memory.store),

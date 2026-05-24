@@ -41,6 +41,17 @@ function jsonContent(value: unknown): { content: Array<{ type: 'text'; text: str
 }
 
 /**
+ * The single place the rebuild-readiness contract lives (#104): wait for the
+ * background startup rebuild (if any) before an index-touching tool runs, so no
+ * handler reads or mutates a half-built index. A no-op once `ready` has resolved,
+ * and on the synchronous (CLI) path where `ready` is undefined. Only tool CALLS
+ * await this — the MCP `initialize` handshake stays instant.
+ */
+export function withReady<T>(memory: Pick<Memory, 'ready'>, fn: () => Promise<T>): Promise<T> {
+  return memory.ready ? memory.ready.then(fn) : fn();
+}
+
+/**
  * Get-or-create a session by external id, tolerating a concurrent creator: if two
  * callers race and the second hits the UNIQUE(external_id) constraint, re-read the
  * row the winner inserted instead of surfacing the conflict.
@@ -77,45 +88,43 @@ export function createMcpServer(memory: Memory): McpServer {
           ),
       },
     },
-    async ({ query, limit, project }) => {
-      // Wait for the background startup rebuild (if any) so recall never reads a
-      // half-built index. No-op once it has resolved, or on the synchronous path.
-      if (memory.ready) await memory.ready;
-      // Explicit `project` wins (empty string = "no explicit project", not a
-      // zero-match filter). Otherwise resolve the scope from the session BINDING
-      // first, then the stored row, then the cwd slug (#47 `resolveRecallProject`)
-      // — a freshly-written `set_session_project` binding whose row isn't updated
-      // yet is honored, so recall can't leak store-wide before the next ingest
-      // (Codex review on #47). Under ABS_RECALL_SCOPE=global → undefined → store-wide.
-      const explicit = project && project.length > 0 ? project : undefined;
-      const scopeProject =
-        explicit ??
-        resolveRecallProject(memory.store, {
-          scope: loadConfig().recallScope,
-          sessionId: defaultRegistry().byId('claude-code')?.resolveSession({ env: process.env })
-            ?.sessionId,
-          cwd: process.cwd(),
+    async ({ query, limit, project }) =>
+      withReady(memory, async () => {
+        // Explicit `project` wins (empty string = "no explicit project", not a
+        // zero-match filter). Otherwise resolve the scope from the session BINDING
+        // first, then the stored row, then the cwd slug (#47 `resolveRecallProject`)
+        // — a freshly-written `set_session_project` binding whose row isn't updated
+        // yet is honored, so recall can't leak store-wide before the next ingest
+        // (Codex review on #47). Under ABS_RECALL_SCOPE=global → undefined → store-wide.
+        const explicit = project && project.length > 0 ? project : undefined;
+        const scopeProject =
+          explicit ??
+          resolveRecallProject(memory.store, {
+            scope: loadConfig().recallScope,
+            sessionId: defaultRegistry().byId('claude-code')?.resolveSession({ env: process.env })
+              ?.sessionId,
+            cwd: process.cwd(),
+          });
+        // includeGlobal: the curated cross-project global brain is recalled alongside
+        // the project (no-op when already store-wide). Keeps the MCP pull path in sync
+        // with the per-prompt hook injection.
+        const hits = await memory.recall.recall(query, {
+          limit,
+          project: scopeProject,
+          includeGlobal: true,
         });
-      // includeGlobal: the curated cross-project global brain is recalled alongside
-      // the project (no-op when already store-wide). Keeps the MCP pull path in sync
-      // with the per-prompt hook injection.
-      const hits = await memory.recall.recall(query, {
-        limit,
-        project: scopeProject,
-        includeGlobal: true,
-      });
-      return jsonContent(
-        hits.map((h) => ({
-          id: h.observation.id,
-          kind: h.observation.kind,
-          content: h.observation.content,
-          score: Number(h.score.toFixed(6)),
-          vectorRank: h.vectorRank,
-          ftsRank: h.ftsRank,
-          createdAt: h.observation.createdAt,
-        })),
-      );
-    },
+        return jsonContent(
+          hits.map((h) => ({
+            id: h.observation.id,
+            kind: h.observation.kind,
+            content: h.observation.content,
+            score: Number(h.score.toFixed(6)),
+            vectorRank: h.vectorRank,
+            ftsRank: h.ftsRank,
+            createdAt: h.observation.createdAt,
+          })),
+        );
+      }),
   );
 
   server.registerTool(
@@ -135,7 +144,7 @@ export function createMcpServer(memory: Memory): McpServer {
           ),
       },
     },
-    async (args) => jsonContent(await rememberAction(memory, args)),
+    async (args) => withReady(memory, async () => jsonContent(await rememberAction(memory, args))),
   );
 
   server.registerTool(
@@ -145,7 +154,7 @@ export function createMcpServer(memory: Memory): McpServer {
       description: 'Real index counts and staleness for the memory store.',
       inputSchema: {},
     },
-    async () => jsonContent(memory.indexer.status()),
+    async () => withReady(memory, async () => jsonContent(memory.indexer.status())),
   );
 
   // Optimize loop (#21). `optimize` generates evidence-backed candidate diffs
@@ -178,27 +187,28 @@ export function createMcpServer(memory: Memory): McpServer {
           .describe('Max candidates to return (default 20).'),
       },
     },
-    async ({ project, limit }) => {
-      const projectRoot = project ?? process.cwd();
-      const { candidates, estimate } = await generateOptimizations(memory, loadConfig(), {
-        projectRoot,
-        ...(limit !== undefined ? { limit } : {}),
-      });
-      optimizeCache.clear();
-      for (const c of candidates) optimizeCache.set(c.id, { candidate: c, projectRoot });
-      return jsonContent({
-        candidates: candidates.map((c) => ({
-          id: c.id,
-          priority: c.priority,
-          title: c.title,
-          rationale: c.rationale,
-          target: { kind: c.target.kind, path: c.target.absPath },
-          evidenceIds: c.evidenceIds,
-          diff: c.diff,
-        })),
-        estimate,
-      });
-    },
+    async ({ project, limit }) =>
+      withReady(memory, async () => {
+        const projectRoot = project ?? process.cwd();
+        const { candidates, estimate } = await generateOptimizations(memory, loadConfig(), {
+          projectRoot,
+          ...(limit !== undefined ? { limit } : {}),
+        });
+        optimizeCache.clear();
+        for (const c of candidates) optimizeCache.set(c.id, { candidate: c, projectRoot });
+        return jsonContent({
+          candidates: candidates.map((c) => ({
+            id: c.id,
+            priority: c.priority,
+            title: c.title,
+            rationale: c.rationale,
+            target: { kind: c.target.kind, path: c.target.absPath },
+            evidenceIds: c.evidenceIds,
+            diff: c.diff,
+          })),
+          estimate,
+        });
+      }),
   );
 
   server.registerTool(
@@ -213,19 +223,20 @@ export function createMcpServer(memory: Memory): McpServer {
           .describe('The id of a candidate returned by a prior `optimize` call.'),
       },
     },
-    async ({ candidateId }) => {
-      const entry = optimizeCache.get(candidateId);
-      if (!entry) {
-        return jsonContent({
-          error: `unknown candidate id '${candidateId}' — call optimize first to generate candidates`,
+    async ({ candidateId }) =>
+      withReady(memory, async () => {
+        const entry = optimizeCache.get(candidateId);
+        if (!entry) {
+          return jsonContent({
+            error: `unknown candidate id '${candidateId}' — call optimize first to generate candidates`,
+          });
+        }
+        const result = await applyApprovedCandidate(memory, entry.candidate, {
+          projectRoot: entry.projectRoot,
+          projectsDir: defaultClaudeProjectsDir(),
         });
-      }
-      const result = await applyApprovedCandidate(memory, entry.candidate, {
-        projectRoot: entry.projectRoot,
-        projectsDir: defaultClaudeProjectsDir(),
-      });
-      return jsonContent(result);
-    },
+        return jsonContent(result);
+      }),
   );
 
   // Selective hard-delete (Phase B). `forget_preview` resolves a selector to a
@@ -284,39 +295,40 @@ export function createMcpServer(memory: Memory): McpServer {
           .describe('Cap for the search selector (default uses the FTS default).'),
       },
     },
-    async ({ ids, session, project, nullProject, search, limit }) => {
-      const chosen = [
-        ids !== undefined,
-        session !== undefined,
-        project !== undefined,
-        nullProject === true,
-        search !== undefined,
-      ].filter(Boolean).length;
-      if (chosen !== 1) {
-        return jsonContent({
-          error:
-            'forget_preview requires exactly one selector: ids, session, project, nullProject, or search',
-        });
-      }
-      let selector: DeleteSelector;
-      if (ids !== undefined) selector = { byIds: ids };
-      else if (session !== undefined) selector = { bySession: session };
-      else if (project !== undefined) selector = { byProject: project };
-      else if (nullProject === true) selector = { byProject: null };
-      else
-        selector = {
-          bySearch: { query: search as string, ...(limit !== undefined ? { limit } : {}) },
-        };
+    async ({ ids, session, project, nullProject, search, limit }) =>
+      withReady(memory, async () => {
+        const chosen = [
+          ids !== undefined,
+          session !== undefined,
+          project !== undefined,
+          nullProject === true,
+          search !== undefined,
+        ].filter(Boolean).length;
+        if (chosen !== 1) {
+          return jsonContent({
+            error:
+              'forget_preview requires exactly one selector: ids, session, project, nullProject, or search',
+          });
+        }
+        let selector: DeleteSelector;
+        if (ids !== undefined) selector = { byIds: ids };
+        else if (session !== undefined) selector = { bySession: session };
+        else if (project !== undefined) selector = { byProject: project };
+        else if (nullProject === true) selector = { byProject: null };
+        else
+          selector = {
+            bySearch: { query: search as string, ...(limit !== undefined ? { limit } : {}) },
+          };
 
-      const result = preview(memory, selector);
-      return jsonContent({
-        handle: result.handle,
-        count: result.count,
-        items: result.items,
-        notFound: result.notFound,
-        selectorEcho: result.selectorEcho,
-      });
-    },
+        const result = preview(memory, selector);
+        return jsonContent({
+          handle: result.handle,
+          count: result.count,
+          items: result.items,
+          notFound: result.notFound,
+          selectorEcho: result.selectorEcho,
+        });
+      }),
   );
 
   server.registerTool(
@@ -329,17 +341,18 @@ export function createMcpServer(memory: Memory): McpServer {
         handle: z.string().describe('The handle returned by a prior forget_preview call.'),
       },
     },
-    async ({ handle }) => {
-      try {
-        const result = execute(memory, handle);
-        return jsonContent(result);
-      } catch (e) {
-        if (e instanceof DeleteRefusalError) {
-          return jsonContent({ error: e.message, reason: e.reason });
+    async ({ handle }) =>
+      withReady(memory, async () => {
+        try {
+          const result = execute(memory, handle);
+          return jsonContent(result);
+        } catch (e) {
+          if (e instanceof DeleteRefusalError) {
+            return jsonContent({ error: e.message, reason: e.reason });
+          }
+          throw e;
         }
-        throw e;
-      }
-    },
+      }),
   );
 
   // Session→project decision (#52, F6). The agent-mediated writer the SessionStart
@@ -372,6 +385,10 @@ export function createMcpServer(memory: Memory): McpServer {
           ),
       },
     },
+    // EXEMPT from withReady (#104): set_session_project writes only the session→project
+    // binding (and, on a confirmed skip, deletes that session's own rows) — it never
+    // reads or rebuilds the recall index, so it has no dependency on the background
+    // rebuild being finished. Gating it would needlessly delay a project decision.
     async (args) => jsonContent(setSessionProjectAction(memory, args)),
   );
 
@@ -395,10 +412,11 @@ export function createMcpServer(memory: Memory): McpServer {
           ),
       },
     },
-    async ({ id, as }) => {
-      const result = await promoteAction(memory, { id, as });
-      return jsonContent(result.error ? { error: result.error } : result);
-    },
+    async ({ id, as }) =>
+      withReady(memory, async () => {
+        const result = await promoteAction(memory, { id, as });
+        return jsonContent(result.error ? { error: result.error } : result);
+      }),
   );
 
   return server;
@@ -422,9 +440,8 @@ export async function rememberAction(
   memory: Memory,
   { content, kind, session, scope }: RememberArgs,
 ): Promise<Record<string, unknown>> {
-  // Serialize behind the background startup rebuild (if any) so an index-at-write
-  // can't race a concurrent full rebuild. No-op once resolved / on the sync path.
-  if (memory.ready) await memory.ready;
+  // Readiness is enforced by the `withReady` wrapper at the MCP tool boundary (#104);
+  // the CLI path that also calls this opens synchronously (no background rebuild).
   const sessionId =
     scope === 'global'
       ? getOrCreateGlobalSession(memory.store)
