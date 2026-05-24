@@ -233,15 +233,30 @@ export class MemoryStore {
 
   /**
    * Copy the (already integrity-checked) db to `<db>.bak` when a backup is due.
-   * Checkpoints the WAL first so the single-file copy is a consistent snapshot,
-   * not a stale pre-WAL state. Best-effort: a backup failure must never block open.
+   *
+   * The `.bak` is a single-file copy of `memory.db` alone, so it must contain
+   * every committed frame BEFORE the copy — otherwise restoring it silently
+   * loses recent writes still sitting in the WAL. `wal_checkpoint(TRUNCATE)`
+   * does not throw when readers/writers block it; it returns `busy = 1` and
+   * leaves frames behind. So we inspect the result and SKIP the backup when the
+   * checkpoint did not fully drain the WAL — a stale recovery point is worse
+   * than retrying on the next open. Best-effort: never blocks open.
    */
   private maybeBackup(path: string): void {
     try {
       const bak = this.backupPath(path);
       const bakMtime = existsSync(bak) ? statSync(bak).mtimeMs : null;
       if (!backupIsDue(bakMtime, Date.now())) return;
-      this.conn().pragma('wal_checkpoint(FULL)');
+      // TRUNCATE (not FULL) so a clean checkpoint also zeroes the WAL, leaving the
+      // single db file fully self-contained for the copy.
+      const [result] = this.conn().pragma('wal_checkpoint(TRUNCATE)') as Array<{
+        busy: number;
+        log: number;
+        checkpointed: number;
+      }>;
+      // busy !== 0 → the WAL was not fully flushed into the db file; copying now
+      // would capture an incomplete snapshot. Skip and retry on a later open.
+      if (result && result.busy !== 0) return;
       copyFileSync(path, bak);
     } catch {
       // A failed backup is non-fatal — the store is still usable this session.
