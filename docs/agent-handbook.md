@@ -80,7 +80,7 @@ storage/embedding decisions.
 
 ## Change Boundaries
 
-- The memory store schema and the index lifecycle are the highest-risk areas — change with tests.
+- The memory store schema and the index lifecycle are the highest-risk areas — change with tests. **The Tray companion reads the schema directly** (`src-tauri/src/lib.rs` queries `observations`/`sessions` and the columns `id`/`created_at`, read-only via `rusqlite`); a migration that renames those identifiers must update the Rust queries too (no compiler links them). Its dbPath precedence mirrors `config.ts` `loadConfig` — keep both in step.
 - The MCP tool contract is a public interface — version it deliberately.
 - **LLM consolidation** (`src/consolidate/`) writes lessons ONLY through the indexer (recallability invariant), is opt-in/idempotent, and treats ingested transcripts as untrusted (output constrained to the lesson/decision schema). See ADR 0003.
 - **Hooks** (`src/hooks/`) must stay non-fatal + timeout-bounded — any failure exits 0 and never blocks a Claude Code session (ADR 0004). The per-prompt injection path must stay FTS-first (no embedding cold-load) within the ADR 0005 latency baseline.
