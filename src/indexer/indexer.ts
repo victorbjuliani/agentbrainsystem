@@ -75,16 +75,22 @@ export class Indexer {
    * write path callers should use so nothing lands unindexed.
    */
   async write(input: CreateObservationInput): Promise<number> {
-    const obsId = this.store.createObservation(input);
-    try {
-      await this.indexObservation(obsId, input.content);
-    } catch (err) {
-      // Atomic write: if embedding fails, don't leave an unindexed orphan row
-      // that would be unrecallable this session (and duplicated on retry).
-      this.store.deleteObservation(obsId);
-      throw err;
-    }
-    return obsId;
+    // Embed BEFORE any write: embedding is async and cannot sit inside
+    // better-sqlite3's synchronous transaction. If it throws, nothing was
+    // written — no orphan row, no compensating delete that could itself fail.
+    const [vector] = await this.embedBatch([input.content]);
+    if (vector === undefined) throw new Error('embedding produced no vector for observation');
+
+    // Row + vector + FTS + signature commit as ONE unit: a throw or crash
+    // between the statements rolls the whole thing back (no torn observation),
+    // and the id is returned only after vector + FTS are committed together.
+    return this.store.transaction(() => {
+      const obsId = this.store.createObservation(input);
+      this.store.upsertVector(obsId, vector);
+      this.store.indexFts(obsId, input.content);
+      this.store.setMeta(SIGNATURE_KEY, this.signature());
+      return obsId;
+    })();
   }
 
   /** (Re)index a single existing observation by id. */
