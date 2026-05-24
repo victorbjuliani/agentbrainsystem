@@ -17,7 +17,7 @@ import { loadConfig } from '../config.js';
 import { consolidate } from '../consolidate/index.js';
 import { type DeleteSelector, executeIds, previewSelector } from '../delete/index.js';
 import { exportStore, importStore } from '../export/index.js';
-import { GLOBAL_PROJECT, getOrCreateGlobalSession } from '../global.js';
+import { GLOBAL_PROJECT, getOrCreateGlobalSession, promoteAction } from '../global.js';
 import type { OpencodeInstallReport } from '../harness/capabilities/opencode-plugin-installer.js';
 import { sqliteTranscriptSource } from '../harness/capabilities/sqlite-transcript-source.js';
 import { defaultRegistry, type HarnessAdapter } from '../harness/index.js';
@@ -121,7 +121,11 @@ Commands:
   remember "<text>" --global [--kind K]
                         Add a memory to the cross-project GLOBAL brain (recalled in
                         every project). --kind decision|lesson|note (default note).
-  promote <id>          Move an existing memory into the global brain.
+  promote <id> [--as "<text>"]
+                        Promote a memory into the global brain. Without --as, MOVES
+                        the whole memory. With --as, files a CURATED COPY of exactly
+                        that text and KEEPS the original (promote only the reusable
+                        part, leave project-specific/sensitive detail behind).
 
 Options:
   -h, --help            Show this help.
@@ -1241,10 +1245,19 @@ export async function cmdRemember(args: string[]): Promise<void> {
   }
 }
 
-/** `abs promote <observationId>` — move a project memory into the global brain. */
+/**
+ * `abs promote <id> [--as "<text>"]` — promote a project memory into the global brain.
+ * Without `--as` it moves the whole memory; with `--as` it files a curated copy of
+ * exactly that text and keeps the original (the leak-safe path). See `promoteAction`.
+ */
 export async function cmdPromote(args: string[]): Promise<void> {
   const json = args.includes('--json');
-  const idArg = positional(args);
+  const asPresent = args.includes('--as');
+  const asValue = optionValue(args, '--as');
+  // Resolve the id WITHOUT teaching the shared `positional()` about --as: drop the
+  // `--as <value>` pair from a local copy so the curated text can't be read as the id
+  // (e.g. `promote --as "use X" 42` must still resolve 42).
+  const idArg = positional(stripFlagPair(args, '--as'));
   const id = idArg ? Number.parseInt(idArg, 10) : Number.NaN;
   // Strict parse (matches the --session/--ids sites): reject "42a", "42.9", ≤ 0 —
   // parseInt would silently truncate and promote the wrong observation.
@@ -1253,16 +1266,34 @@ export async function cmdPromote(args: string[]): Promise<void> {
     process.exitCode = 1;
     return;
   }
+  if (asPresent && (asValue ?? '').trim().length === 0) {
+    err('error: promote --as requires non-empty text, e.g. `abs promote 42 --as "prefer X"`');
+    process.exitCode = 1;
+    return;
+  }
+  // A `--…`-looking value almost always means the user forgot the text (e.g.
+  // `promote 42 --as --json`), which would otherwise file the literal flag as a
+  // memory. Reject it; genuine curated text never needs to begin with `--`.
+  if (asPresent && (asValue ?? '').trim().startsWith('--')) {
+    err(
+      'error: promote --as value looks like a flag — pass the curated text, e.g. `abs promote 42 --as "prefer X"`',
+    );
+    process.exitCode = 1;
+    return;
+  }
   const memory = await openMemory(loadConfig(), { ensure: false });
   try {
-    if (!memory.store.getObservation(id)) {
-      err(`error: no observation with id ${id}`);
+    const result = await promoteAction(memory, { id, as: asPresent ? asValue : undefined });
+    if (result.error) {
+      err(`error: ${result.error}`);
       process.exitCode = 1;
       return;
     }
-    const globalSession = getOrCreateGlobalSession(memory.store);
-    memory.store.moveObservationToSession(id, globalSession);
-    if (json) out(JSON.stringify({ id, scope: 'global', applied: true }));
+    if (json) out(JSON.stringify(result));
+    else if (result.curated)
+      out(
+        `promoted observation ${id} to the global brain as new observation ${result.newId} (original kept).`,
+      );
     else out(`promoted observation ${id} to the global brain.`);
   } finally {
     memory.close();
@@ -1273,6 +1304,18 @@ export async function cmdPromote(args: string[]): Promise<void> {
 function optionValue(args: string[], flag: string): string | undefined {
   const i = args.indexOf(flag);
   return i >= 0 ? args[i + 1] : undefined;
+}
+
+/**
+ * A copy of `args` with the first `flag <value>` pair removed (value = the token
+ * after the flag, if any). Lets a command resolve its positional id without the
+ * shared `positional()` mistaking a flag's value for the positional.
+ */
+function stripFlagPair(args: string[], flag: string): string[] {
+  const i = args.indexOf(flag);
+  if (i < 0) return args;
+  const end = i + (args[i + 1] !== undefined ? 2 : 1);
+  return [...args.slice(0, i), ...args.slice(end)];
 }
 
 /** All values of a repeatable flag, e.g. `--project a --project b` → ['a','b']. */

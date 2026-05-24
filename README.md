@@ -147,7 +147,8 @@ claude mcp add agentbrainsystem -- node /absolute/path/to/agentbrainsystem/dist/
 
 The 9 MCP tools exposed to the agent: `recall`, `remember`, `memory_status`, `optimize`/`apply`
 (gated `CLAUDE.md` edits), `forget_preview`/`forget` (two-phase selective hard-delete),
-`set_session_project`, and `promote` (move a memory into the cross-project global brain). The same
+`set_session_project`, and `promote` (move — or, with `as`, curate-copy — a memory into the
+cross-project global brain). The same
 memory store is shared across every harness.
 
 ## Memory creature UI
@@ -183,6 +184,7 @@ abs status                # db path, schema, counts, index staleness
 abs project [...]         # set/confirm/skip the current session's project
 abs remember "…" --global # add a memory to the cross-project global brain
 abs promote <id>          # move an existing memory into the global brain
+abs promote <id> --as "…" # curate-copy: file exactly "…" globally, keep the original in its project
 abs export <path>         # write the whole store to a portable artifact
 abs import <path>         # load an artifact (merge | replace)
 abs ui [--port N]         # serve the interactive memory graph
