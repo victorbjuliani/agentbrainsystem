@@ -30,6 +30,7 @@ import {
   type OptimizeCandidate,
 } from '../optimize/index.js';
 import { resolveRecallProject } from '../recall/index.js';
+import { acquireRebuildLock, REBUILD_FAILED_KEY, REBUILD_HEARTBEAT_MS } from '../store/index.js';
 import { VERSION } from '../version.js';
 
 /** Default external session id used when a `remember` call omits one. */
@@ -497,12 +498,39 @@ type EnsureResult = Awaited<ReturnType<Memory['indexer']['ensureIndex']>>;
  * re-throw it — turning a degraded index into a persistent tool outage until
  * restart (Codex P1 on #76).
  */
-export function backgroundEnsure(
+export interface BackgroundEnsureContext {
+  /** Persist the degraded signal on failure so SessionStart (#101) can surface it. */
+  store: Pick<Memory['store'], 'setMeta' | 'deleteMeta'>;
+  /** Db path whose sibling `.rebuild.lock` makes concurrent ingest hooks defer (#103). */
+  dbPath: string;
+  /** Caller-computed `indexer.status().stale`: only hold the lock when a rebuild will actually run. */
+  willRebuild: boolean;
+}
+
+export async function backgroundEnsure(
   indexer: Pick<Memory['indexer'], 'ensureIndex'>,
+  ctx?: BackgroundEnsureContext,
 ): Promise<EnsureResult | void> {
-  return indexer.ensureIndex().catch((err) => {
+  // Hold the cross-process write lock ONLY when a rebuild is actually going to run
+  // (status was stale). A no-op ensure must not make hooks defer for nothing.
+  const lock = ctx?.willRebuild ? acquireRebuildLock(ctx.dbPath) : null;
+  const heartbeat = lock ? setInterval(() => lock.heartbeat(), REBUILD_HEARTBEAT_MS) : null;
+  heartbeat?.unref?.(); // don't keep the event loop alive for the heartbeat alone
+  try {
+    const result = await indexer.ensureIndex();
+    // A clean ensure clears any stale degraded flag from a PRIOR failed rebuild, so
+    // the SessionStart degraded note doesn't stick forever after one transient error.
+    ctx?.store.deleteMeta(REBUILD_FAILED_KEY);
+    return result;
+  } catch (err) {
+    // Degraded: record a DURABLE signal (not just stderr) so a later SessionStart
+    // can tell the user recall is degraded — a swallowed error used to be invisible.
+    ctx?.store.setMeta(REBUILD_FAILED_KEY, new Date().toISOString());
     process.stderr.write(`[abs] background index rebuild failed: ${String(err)}\n`);
-  });
+  } finally {
+    if (heartbeat) clearInterval(heartbeat);
+    lock?.release();
+  }
 }
 
 /** Boot the full stack and serve it over stdio. Used by the CLI / MCP packaging. */
@@ -512,11 +540,19 @@ export async function startStdio(): Promise<void> {
   // change re-embeds every observation, which can take seconds) would keep the
   // server from reading stdin, so `claude mcp list` probes time out as
   // "✗ Failed to connect" even though the server is healthy.
-  const memory = await openMemory(undefined, { ensure: false });
+  const config = loadConfig();
+  const memory = await openMemory(config, { ensure: false });
   // Bring the index up to date in the BACKGROUND; recall/remember await `ready` so
   // they never read or write a half-built index. `backgroundEnsure` never rejects,
   // so a rebuild failure stays non-fatal instead of poisoning every later call.
-  memory.ready = backgroundEnsure(memory.indexer);
+  // It holds the cross-process rebuild lock (only if a rebuild is actually due) so
+  // a concurrent ingest hook defers gracefully instead of starving on busy_timeout,
+  // and records a durable degraded flag if the rebuild fails (#103).
+  memory.ready = backgroundEnsure(memory.indexer, {
+    store: memory.store,
+    dbPath: config.dbPath,
+    willRebuild: memory.indexer.status().stale,
+  });
 
   const server = createMcpServer(memory);
   const transport = new StdioServerTransport();

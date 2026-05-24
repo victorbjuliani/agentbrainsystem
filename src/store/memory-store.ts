@@ -198,6 +198,10 @@ export class MemoryStore {
       db.pragma('journal_mode = WAL'); // durability across restarts
       db.pragma('busy_timeout = 5000'); // wait up to 5s for a concurrent writer before SQLITE_BUSY
       db.pragma('foreign_keys = ON'); // honour ON DELETE CASCADE
+      // Bound the -wal on a long-lived read-mostly server (the MCP stdio process):
+      // checkpoint into the db roughly every 1000 pages instead of letting the WAL
+      // grow unbounded between the infrequent writes (#103).
+      db.pragma('wal_autocheckpoint = 1000');
       this.db = db;
 
       // Fast structural integrity check, once per process open. quick_check skips
@@ -284,6 +288,14 @@ export class MemoryStore {
   /** Close the underlying connection. Safe to call when already closed. */
   close(): void {
     if (!this.db) return;
+    // Fold the WAL back into the db on the way out so the -wal doesn't linger and
+    // a backup/copy of the db file is current (#103). Best-effort — a busy
+    // checkpoint must never prevent close.
+    try {
+      this.db.pragma('wal_checkpoint(TRUNCATE)');
+    } catch {
+      // ignore — closing anyway
+    }
     this.db.close();
     this.db = null;
   }
