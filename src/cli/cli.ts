@@ -571,8 +571,12 @@ async function cmdInstallHooks(args: string[]): Promise<void> {
   for (const adapter of harnesses) {
     const report = await adapter.install(cliPath);
     surfaceJsoncManual(adapter.displayName, report);
+    const alreadyPresent = report.alreadyPresent ?? [];
     if (report.wired.length > 0) {
       out(`registered hooks (${adapter.displayName}): ${report.wired.join(', ')}`);
+    } else if (alreadyPresent.length > 0) {
+      // Idempotent re-run: nothing newly wired, every moment already present (ADR-0004).
+      out(`hooks already present (${adapter.displayName}): ${alreadyPresent.join(', ')}`);
     } else {
       out(`no hooks to register (${adapter.displayName})`);
     }
@@ -648,7 +652,12 @@ async function cmdSetup(args: string[]): Promise<void> {
   }
 
   const hooks = await adapter.install(cliPath);
+  const hooksAlreadyPresent = hooks.alreadyPresent ?? [];
   if (hooks.wired.length > 0) out(`✓ hooks registered: ${hooks.wired.join(', ')}`);
+  // Idempotent re-run: `wired` is now newly-wired only, so report the already-present
+  // set too — otherwise a repeat `abs setup` goes silent on hooks (reads as "not set up").
+  else if (hooksAlreadyPresent.length > 0)
+    out(`✓ hooks already present: ${hooksAlreadyPresent.join(', ')}`);
   // W3: surface the trust warning when wiring Codex hooks into an untrusted project.
   if ('trustWarning' in hooks && hooks.trustWarning) out(`! ${hooks.trustWarning}`);
   surfaceJsoncManual(adapter.displayName, hooks);
