@@ -27,7 +27,7 @@
 import { realpathSync } from 'node:fs';
 import { basename } from 'node:path';
 import { loadConfig } from '../config.js';
-import { createGroundTruthProvider } from '../ground-truth/index.js';
+import { createGroundTruthProvider, refreshIndex } from '../ground-truth/index.js';
 import { extractToolAnchors, type ToolAnchorSeed } from '../ingest/claude-jsonl.js';
 import { type Memory, openMemory } from '../memory.js';
 import { resolveRecallProject } from '../recall/index.js';
@@ -164,6 +164,10 @@ export async function handlePreToolUse(
 
   const seeds = extractToolAnchors([{ type: 'tool_use', name: toolName, input: toolInput }]);
   if (seeds.length === 0) return undefined; // not an anchorable Edit/Write on code
+
+  // Make the native symbol index current before the duplication lens reads it. Skipped when a
+  // test injects its own memory/provider; fail-open (non-git cwd → refreshIndex is a no-op).
+  if (!deps.memory) await refreshIndex(payload.cwd ?? process.cwd());
 
   // 1) Duplication (ground truth) — priority, block-eligible.
   const dup = checkDuplication(payload, seeds);
