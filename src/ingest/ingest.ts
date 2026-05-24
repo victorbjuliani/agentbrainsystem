@@ -89,6 +89,13 @@ function seedAnchors(memory: Memory, observationId: number, anchors: ToolAnchorS
 }
 
 /**
+ * Max live entries in the per-file turn→prose buffer. Edits are adjacent to their
+ * prose, so this only needs to cover the largest realistic prose→edit gap; 64 is
+ * far beyond that while keeping the buffer O(1) instead of O(turns).
+ */
+const TURN_BUFFER_CAP = 64;
+
+/**
  * Propagate the edit's anchors onto its sibling PROSE observation (#90), so the
  * narrative that recall actually surfaces (FTS lives on the prose, not the
  * edit-summary obs) carries the same freshness signal. FILE-LEVEL ONLY and
@@ -300,6 +307,14 @@ async function writeEntry(
   // strictly — keyed on `turnKey`, never session-wide; absent ⇒ never buffered.
   if (hasText && entry.turnKey && entry.toolAnchors.length === 0) {
     turnProse.set(entry.turnKey, obsId);
+    // Bound the buffer so ingest stays streaming (no O(turns) growth to EOF; ADR
+    // 0001 footprint discipline). A turn's edit sibling is adjacent to its prose
+    // (next line[s]), so a generous cap never evicts a key whose edit is still
+    // pending — by the time CAP newer prose turns arrive, the old turn's edit has
+    // long since propagated. Map iteration is insertion-ordered → evict oldest.
+    if (turnProse.size > TURN_BUFFER_CAP) {
+      turnProse.delete(turnProse.keys().next().value as string);
+    }
   }
   if (entry.toolAnchors.length > 0) {
     tally.seeded += seedAnchors(memory, obsId, entry.toolAnchors);
