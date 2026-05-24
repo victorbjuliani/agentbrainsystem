@@ -13,6 +13,12 @@ node_modules
 dist/
 build/
 *.tsbuildinfo
+
+# === Tauri tray companion (src-tauri) ===
+# Build output + Tauri-generated schemas/bindings (regenerated on build). The Rust
+# sources, tauri.conf.json, capabilities, ui/ and icons/ ARE committed.
+src-tauri/target/
+src-tauri/gen/
 *.tgz
 .npm/
 .pnpm-store/

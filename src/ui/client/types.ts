@@ -7,26 +7,18 @@
  */
 import type { GraphEdge, GraphNode, NodeType } from '../graph-types.js';
 
-/** A node as force-graph sees it: our data + the layout fields it writes in place. */
-export interface ViewNode extends GraphNode {
-  x?: number;
-  y?: number;
-  vx?: number;
-  vy?: number;
-  fx?: number;
-  fy?: number;
-  /** Cached canvas radius (world units), derived from sizeDriver. */
-  radius: number;
-  /** Per-node phase offset (0..2π) so breathing is DESYNCHRONIZED (DESIGN §9 #2). */
-  phase: number;
-  /** Per-node breathing speed jitter so the pulse never reads as a metronome. */
-  breathRate: number;
-}
+/**
+ * A node as the renderer sees it. The creature renderer (ADR-0015) derives all of
+ * its geometry from the wire fields (`type`/`sizeDriver`/`createdAt`/`sessionId`)
+ * and owns layout internally, so no extra per-node state leaks into the view model
+ * (the retired force-graph renderer added x/y + radius/phase/breathRate here).
+ */
+export type ViewNode = GraphNode;
 
 /**
- * An edge as force-graph sees it. force-graph rewrites `source`/`target` in place
- * from the wire string ids to the resolved node objects once the layout runs, so
- * we widen those two fields (the rest of GraphEdge — kind/weight — is preserved).
+ * An edge in the view model. `source`/`target` are widened to allow a resolved
+ * node object (a renderer may swap the wire string id for the node), with the rest
+ * of GraphEdge — kind/weight — preserved.
  */
 export interface ViewEdge extends Omit<GraphEdge, 'source' | 'target'> {
   source: string | ViewNode;
