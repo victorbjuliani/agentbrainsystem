@@ -88,6 +88,32 @@ function seedAnchors(memory: Memory, observationId: number, anchors: ToolAnchorS
   return count;
 }
 
+/**
+ * Propagate the edit's anchors onto its sibling PROSE observation (#90), so the
+ * narrative that recall actually surfaces (FTS lives on the prose, not the
+ * edit-summary obs) carries the same freshness signal. FILE-LEVEL ONLY and
+ * deduped by `(observationId, filePath)`: a turn with N edits to M distinct
+ * files adds at most M anchors and never a symbol anchor — avoids double-counting
+ * and the status skew symbol propagation would cause. The propagated claims flow
+ * through the same sweep/heal as the edit's own, so a removed file flips BOTH the
+ * prose and the edit obs stale together. Returns the number of anchors created.
+ */
+function propagateFileAnchors(
+  memory: Memory,
+  proseObsId: number,
+  anchors: ToolAnchorSeed[],
+): number {
+  const seen = new Set(memory.store.getAnchorsForObservation(proseObsId).map((a) => a.filePath));
+  let count = 0;
+  for (const filePath of new Set(anchors.map((a) => a.filePath))) {
+    if (seen.has(filePath)) continue;
+    seen.add(filePath);
+    memory.store.createAnchor({ observationId: proseObsId, anchorKind: 'file', filePath });
+    count++;
+  }
+  return count;
+}
+
 /** Default Claude Code projects root, resolved cross-platform via os/path. */
 export function defaultClaudeProjectsDir(): string {
   return join(homedir(), '.claude', 'projects');
@@ -220,6 +246,7 @@ function resolveSession(
 interface WriteTally {
   added: number;
   skipped: number;
+  /** Anchors created — edit-seeded PLUS turn-scoped file anchors propagated onto sibling prose obs (#90). Informational count; nothing branches on it meaning "edit anchors only". */
   seeded: number;
 }
 
@@ -239,6 +266,7 @@ async function writeEntry(
   entry: ParsedEntry,
   absPath: string,
   tally: WriteTally,
+  turnProse: Map<string, number>,
 ): Promise<void> {
   const sessionId = resolveSession(
     memory,
@@ -266,8 +294,21 @@ async function writeEntry(
     ...(entry.uuid ? { metadata: { uuid: entry.uuid } } : {}),
   });
   tally.added++;
+  // Remember a textless-or-not PROSE obs by its turn key so a sibling edit can
+  // back-propagate file anchors onto it (#90). Only the anchorless prose line is
+  // a propagation target; the edit line seeds its own anchors below. Turn-scoped
+  // strictly — keyed on `turnKey`, never session-wide; absent ⇒ never buffered.
+  if (hasText && entry.turnKey && entry.toolAnchors.length === 0) {
+    turnProse.set(entry.turnKey, obsId);
+  }
   if (entry.toolAnchors.length > 0) {
     tally.seeded += seedAnchors(memory, obsId, entry.toolAnchors);
+    // Back-propagate FILE-level anchors onto this turn's sibling prose obs, if one
+    // was buffered for the same turn key (fail-open: missing key ⇒ skip silently).
+    const proseObsId = entry.turnKey ? turnProse.get(entry.turnKey) : undefined;
+    if (proseObsId !== undefined) {
+      tally.seeded += propagateFileAnchors(memory, proseObsId, entry.toolAnchors);
+    }
   }
 }
 
@@ -294,6 +335,10 @@ async function ingestFile(
   const sessionCache = new Map<string, number>();
   const bindingCache = new Map<string, SessionBinding | null>();
   const tally: WriteTally = { added: 0, skipped: 0, seeded: 0 };
+  // Turn-scoped buffer (#90): turnKey → its prose obs id, for back-propagating a
+  // sibling edit's file anchors onto the anchorless narrative obs. Per file-ingest
+  // run — never crosses files or sessions.
+  const turnProse = new Map<string, number>();
 
   if (isGeminiTranscript(absPath)) {
     // Whole-file JSON, NOT line-delimited and NOT incremental: Gemini rewrites the
@@ -333,6 +378,7 @@ async function ingestFile(
         entry,
         absPath,
         tally,
+        turnProse,
       );
     }
     // Advance the watermark to the LAST entry's id (the new tail). On an unchanged
@@ -374,6 +420,7 @@ async function ingestFile(
         entry,
         absPath,
         tally,
+        turnProse,
       );
     }
     const observedCwd = parser.observedCwd();
@@ -401,6 +448,7 @@ async function ingestFile(
         entry,
         absPath,
         tally,
+        turnProse,
       );
     }
     // Persist the header cwd this read observed (if the slice included a header),
@@ -432,6 +480,7 @@ async function ingestFile(
         entry,
         absPath,
         tally,
+        turnProse,
       );
     }
   }

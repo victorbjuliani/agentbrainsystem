@@ -87,6 +87,16 @@ export interface ParsedEntry {
   uuid?: string;
   /** Gemini message id (`randomUUID`); the id-watermark anchor (W-NEW-1, #68). Unset for Claude/Codex. */
   id?: string;
+  /**
+   * Turn identity shared by a code turn's sibling messages (#90). Claude Code
+   * emits an assistant turn's prose and its Edit/Write `tool_use` as TWO JSONL
+   * lines carrying the SAME `message.id` (with `requestId` as a fallback). Ingest
+   * uses this to propagate the edit's file anchors onto the anchorless prose obs
+   * so freshness annotation seals the recall-surfaced narrative, not just the
+   * edit summary. Optional so other-harness parsers may populate it later (parity
+   * follow-up); absent ⇒ no propagation (fail-open, turn-scoped only).
+   */
+  turnKey?: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -211,6 +221,12 @@ export function parseLine(line: string): ParsedEntry | null {
   // A thinking-only or unrelated tool-only turn (e.g. Bash) lands here.
   if (text.length === 0 && toolAnchors.length === 0) return null;
 
+  // Turn key (#90): a code turn's prose and its Edit/Write tool_use are separate
+  // JSONL lines sharing the SAME `message.id`. Prefer it; fall back to the
+  // top-level `requestId` (also identical across siblings). Absent ⇒ undefined,
+  // and ingest simply skips anchor propagation for this entry (fail-open).
+  const turnKey = asString(message.id) ?? asString(obj.requestId);
+
   return {
     sessionId,
     role,
@@ -219,5 +235,6 @@ export function parseLine(line: string): ParsedEntry | null {
     cwd: asString(obj.cwd),
     timestamp: asString(obj.timestamp),
     uuid: asString(obj.uuid),
+    ...(turnKey ? { turnKey } : {}),
   };
 }
