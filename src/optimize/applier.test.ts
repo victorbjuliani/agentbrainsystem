@@ -4,7 +4,7 @@ import { lstat, mkdir, readdir, readFile, symlink, writeFile } from 'node:fs/pro
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { type ApplierFs, GatedApplier } from './applier.js';
+import { type ApplierFs, GatedApplier, MAX_BACKUPS_PER_FILE } from './applier.js';
 import { autoMemoryDir, autoMemoryEntryPath, claudeMdPath } from './targets.js';
 import type { OptimizeCandidate, OptimizeTarget } from './types.js';
 
@@ -49,6 +49,7 @@ function fsWithFailingRename(): ApplierFs {
     chmod: nodeFsp.chmod,
     mkdir: nodeFsp.mkdir,
     rm: nodeFsp.rm,
+    readdir: nodeFsp.readdir,
     rename: () => Promise.reject(new Error('boom on rename')),
   };
 }
@@ -97,6 +98,29 @@ describe('GatedApplier — CLAUDE.md applier', () => {
     if (result.backupPath) {
       expect(await readFile(result.backupPath, 'utf8')).toBe('# Project\n');
     }
+  });
+});
+
+describe('GatedApplier — backup retention (#114)', () => {
+  it('keeps at most MAX_BACKUPS_PER_FILE backups, pruning the oldest', async () => {
+    await mkdir(projectRoot, { recursive: true });
+    await writeFile(claudeMdPath(projectRoot), '# Project\n', 'utf8');
+    const target: OptimizeTarget = { kind: 'claude-md', absPath: claudeMdPath(projectRoot) };
+
+    // N+2 applies → N+2 backups created, but prune caps each file at N.
+    for (let i = 0; i < MAX_BACKUPS_PER_FILE + 2; i++) {
+      const result = await applier.apply(candidate(target, `\n- line ${i}\n`), {
+        projectRoot,
+        projectsDir,
+      });
+      expect(result.applied).toBe(true);
+      // The backup stamp is millisecond-resolution; space applies so each gets a
+      // distinct name (COPYFILE_EXCL would otherwise collide within one ms).
+      await new Promise((r) => setTimeout(r, 5));
+    }
+
+    const backups = (await readdir(projectRoot)).filter((n) => n.startsWith('CLAUDE.md.abs-bak-'));
+    expect(backups.length).toBe(MAX_BACKUPS_PER_FILE);
   });
 });
 
