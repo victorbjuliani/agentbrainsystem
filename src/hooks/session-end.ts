@@ -16,20 +16,14 @@
  * is never blocked (ADR-0004). We open memory with the default ensure gate so a
  * drifted index self-heals, then always close the store.
  */
-import { sweepAnchors } from '../anchoring/index.js';
+
 import { loadConfig } from '../config.js';
-import {
-  createGroundTruthProvider,
-  type GroundTruthProvider,
-  refreshIndex,
-} from '../ground-truth/index.js';
+import type { GroundTruthProvider } from '../ground-truth/index.js';
 import { ingestSingleSession } from '../ingest/index.js';
+import { runPostCaptureMaintenance } from '../maintenance/index.js';
 import { openMemory } from '../memory.js';
 import { INGEST_DEFERRED_KEY, isRebuildLocked } from '../store/index.js';
 import type { HookPayload } from './payload.js';
-
-/** Max claimed anchors a single SessionEnd promotes — bounds the out-of-hot-path cost. */
-const SWEEP_LIMIT = 200;
 
 export interface SessionEndDeps {
   /** Injection seam for tests — defaults to the real openMemory + ingest. */
@@ -87,20 +81,15 @@ export async function handleSessionEnd(
   try {
     await ingestSingleSession(memory, transcriptPath);
 
-    // #26 integration: promote the just-seeded `claimed` anchors against ground truth,
-    // OUT of the interactive hot path (this is exactly where sweep.ts intends to run).
-    // Fail-open (ADR-0004): an unavailable provider (not a git repo) is a clean no-op,
-    // preserving offline/$0; a sweep error never undoes a successful ingest.
+    // #26/#107 integration: promote the just-seeded `claimed` anchors against ground
+    // truth, OUT of the interactive hot path. Shared with the OpenCode capture path so
+    // every harness verifies anchors the same way (#107). Fail-open (ADR-0004).
     const cwd = payload.cwd ?? process.cwd();
-    if (!deps.groundTruth) await refreshIndex(cwd); // make the native symbol index current first
-    const provider = deps.groundTruth ?? createGroundTruthProvider(cwd);
-    try {
-      sweepAnchors(memory.store, provider, { limit: SWEEP_LIMIT });
-    } catch {
-      // swallow — ingest already succeeded
-    } finally {
-      if (!deps.groundTruth) provider.close();
-    }
+    await runPostCaptureMaintenance(
+      memory.store,
+      cwd,
+      deps.groundTruth ? { groundTruth: deps.groundTruth } : {},
+    );
   } finally {
     memory.close();
   }

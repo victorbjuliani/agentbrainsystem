@@ -204,9 +204,9 @@ function renderPlugin(nodeLiteral: string, cliLiteral: string, absCommand?: stri
   // The shell-out prefix that precedes `opencode-capture`/`opencode-recall`.
   // Default: the absolute `${NODE} ${CLI}` pair (C2). Test: a single injected token.
   const capturePrefix = absCommand
-    ? `$\`${absCommand} opencode-capture --session \${id}\``
-    : // biome-ignore lint/suspicious/noTemplateCurlyInString: emitted verbatim into the Bun plugin; ${NODE}/${CLI}/${id} are interpolated by opencode's `$` at runtime, not here.
-      '$`${NODE} ${CLI} opencode-capture --session ${id}`';
+    ? `$\`${absCommand} opencode-capture --session \${id} --cwd \${directory}\``
+    : // biome-ignore lint/suspicious/noTemplateCurlyInString: emitted verbatim into the Bun plugin; ${NODE}/${CLI}/${id}/${directory} are interpolated by opencode's `$` at runtime, not here.
+      '$`${NODE} ${CLI} opencode-capture --session ${id} --cwd ${directory}`';
   const recallPrefix = absCommand
     ? `$\`${absCommand} opencode-recall --session \${input.sessionID} --cwd \${directory}\``
     : // biome-ignore lint/suspicious/noTemplateCurlyInString: emitted verbatim into the Bun plugin; interpolated by opencode's `$` at runtime, not here.
