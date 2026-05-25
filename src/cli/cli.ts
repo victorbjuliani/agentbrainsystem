@@ -39,6 +39,7 @@ import {
   writeBinding,
 } from '../ingest/index.js';
 import { createLlmProvider } from '../llm/index.js';
+import { type PostCaptureDeps, runPostCaptureMaintenance } from '../maintenance/index.js';
 import { startStdio } from '../mcp/index.js';
 import { openMemory } from '../memory.js';
 import {
@@ -503,7 +504,10 @@ async function cmdHook(args: string[]): Promise<void> {
  * SessionEnd). The PLUGIN is the fail-open boundary (`.nothrow()`), so a hard error
  * here cleanly exits 1 (the plugin swallows it); success is silent (plugin `.quiet()`s).
  */
-export async function cmdOpencodeCapture(args: string[]): Promise<void> {
+export async function cmdOpencodeCapture(
+  args: string[],
+  deps: PostCaptureDeps = {},
+): Promise<void> {
   const sessionId = optionValue(args, '--session');
   if (!sessionId) {
     err('opencode-capture: --session <ses_…> is required');
@@ -511,9 +515,17 @@ export async function cmdOpencodeCapture(args: string[]): Promise<void> {
     return;
   }
   const dbPath = optionValue(args, '--db'); // optional override (tests / non-default store)
+  // The plugin passes the session's project dir (#107) so the post-capture anchor
+  // sweep roots ground truth correctly; default to the process cwd otherwise.
+  const cwd = optionValue(args, '--cwd') ?? process.cwd();
   const memory = await openMemory(loadConfig());
   try {
     await sqliteTranscriptSource(dbPath ? { dbPath } : {}).ingestSession(memory, sessionId);
+    // #107: OpenCode has no SessionEnd, so run the same claimed→verified anchor sweep
+    // here that the SessionEnd handler runs for every other harness. The helper is
+    // fail-open (never throws), so a sweep miss can't fail the capture. Tests inject
+    // `groundTruth` so the real refreshIndex (tree-sitter wasm + repo scan) is skipped.
+    await runPostCaptureMaintenance(memory.store, cwd, deps);
   } catch (e) {
     err(`opencode-capture: ${e instanceof Error ? e.message : String(e)}`);
     process.exitCode = 1;

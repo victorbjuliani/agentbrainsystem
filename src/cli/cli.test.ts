@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { loadConfig } from '../config.js';
 import { __clearDeleteCacheForTests } from '../delete/delete.js';
 import { getOrCreateGlobalSession } from '../global.js';
+import type { GroundTruthProvider, ResolvedSymbol } from '../ground-truth/index.js';
 import { buildOpencodeDb } from '../harness/capabilities/__fixtures__/opencode-db.js';
 import type { HarnessAdapter } from '../harness/index.js';
 import { type Memory, openMemory } from '../memory.js';
@@ -919,6 +920,23 @@ describe('cmdOpencodeCapture / cmdOpencodeRecall (#72, hermetic, real local prov
   const PROJ_DIR = '/Users/test/Devs/ChessTrainer';
   const PROJ_SLUG = '-Users-test-Devs-ChessTrainer';
 
+  // Inject a ground-truth provider so the post-capture sweep (#107) stays hermetic:
+  // it skips the real refreshIndex (tree-sitter wasm + repo scan) the helper would
+  // otherwise run against process.cwd(). `gtNull` resolves nothing (sweep is a no-op);
+  // `gtFor(name)` resolves exactly one symbol so a claimed anchor can verify.
+  const gtNull: GroundTruthProvider = {
+    isAvailable: () => true,
+    currentBranch: () => 'main',
+    resolveSymbol: () => null,
+    resolveFile: () => null,
+    close: () => {},
+  };
+  const gtFor = (name: string): GroundTruthProvider => ({
+    ...gtNull,
+    resolveSymbol: (n: string): ResolvedSymbol | null =>
+      n === name ? { qualifiedName: n, filePath: 'src/x.ts', line: 10, commitSha: 'abc' } : null,
+  });
+
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'abs-cli-opencode-'));
     process.env.ABS_HOME = dir;
@@ -959,7 +977,9 @@ describe('cmdOpencodeCapture / cmdOpencodeRecall (#72, hermetic, real local prov
 
   it('(a) opencode-capture ingests a temp DB → observations under opencode:ses_', async () => {
     seedDb();
-    await cmdOpencodeCapture(['--session', SES, '--db', join(dir, 'opencode.db')]);
+    await cmdOpencodeCapture(['--session', SES, '--db', join(dir, 'opencode.db')], {
+      groundTruth: gtNull,
+    });
     const mem = await openMemory(loadConfig(), { ensure: false });
     const session = mem.store.getSessionByExternalId(`opencode:${SES}`);
     expect(session).not.toBeNull();
@@ -976,7 +996,9 @@ describe('cmdOpencodeCapture / cmdOpencodeRecall (#72, hermetic, real local prov
 
   it('(c) opencode-recall with seeded observations → fenced recalled-memory block scoped to project', async () => {
     seedDb();
-    await cmdOpencodeCapture(['--session', SES, '--db', join(dir, 'opencode.db')]);
+    await cmdOpencodeCapture(['--session', SES, '--db', join(dir, 'opencode.db')], {
+      groundTruth: gtNull,
+    });
     outLines = [];
     await cmdOpencodeRecall(['--session', SES, '--cwd', PROJ_DIR]);
     const text = outLines.join('');
@@ -1005,7 +1027,9 @@ describe('cmdOpencodeCapture / cmdOpencodeRecall (#72, hermetic, real local prov
 
   it('(f) consent: first recall prepends the notice; the second does NOT (flag consumed)', async () => {
     seedDb();
-    await cmdOpencodeCapture(['--session', SES, '--db', join(dir, 'opencode.db')]);
+    await cmdOpencodeCapture(['--session', SES, '--db', join(dir, 'opencode.db')], {
+      groundTruth: gtNull,
+    });
     outLines = [];
     await cmdOpencodeRecall(['--session', SES, '--cwd', PROJ_DIR]);
     const first = outLines.join('');
@@ -1022,6 +1046,47 @@ describe('cmdOpencodeCapture / cmdOpencodeRecall (#72, hermetic, real local prov
     const text = outLines.join('');
     expect(text).toContain('agentbrainsystem — memory notice.');
     expect(text).not.toContain('<recalled-memory>');
+  });
+
+  // #107: OpenCode has no SessionEnd, so the capture path must run the same anchor
+  // sweep that every other harness gets — claimed → verified against ground truth.
+  it('(h) capture sweeps anchors: a claimed anchor becomes verified when ground truth resolves it', async () => {
+    // Pre-seed an observation with a CLAIMED anchor in the same tmp store the capture
+    // path will open (ABS_HOME=dir), then close so the capture gets its own connection.
+    const seed = await openMemory(loadConfig(), { ensure: false });
+    const sid = seed.store.createSession({ externalId: 'opencode:pre', project: PROJ_SLUG });
+    const obsId = seed.store.createObservation({
+      sessionId: sid,
+      kind: 'decision',
+      content: 'castle must check king-path safety',
+    });
+    seed.store.createAnchor({
+      observationId: obsId,
+      anchorKind: 'symbol',
+      qualifiedName: 'castle',
+      filePath: 'src/x.ts',
+    });
+    expect(seed.store.getAnchorsForObservation(obsId)[0]?.state).toBe('claimed');
+    seed.close();
+
+    seedDb();
+    // Capture with a provider that resolves `castle` → the post-capture sweep promotes
+    // the claimed anchor to verified.
+    await cmdOpencodeCapture(['--session', SES, '--db', join(dir, 'opencode.db')], {
+      groundTruth: gtFor('castle'),
+    });
+
+    let mem = await openMemory(loadConfig(), { ensure: false });
+    expect(mem.store.getAnchorsForObservation(obsId)[0]?.state).toBe('verified');
+    mem.close();
+
+    // Idempotent: a second capture re-runs the sweep without harm (still verified).
+    await cmdOpencodeCapture(['--session', SES, '--db', join(dir, 'opencode.db')], {
+      groundTruth: gtFor('castle'),
+    });
+    mem = await openMemory(loadConfig(), { ensure: false });
+    expect(mem.store.getAnchorsForObservation(obsId)[0]?.state).toBe('verified');
+    mem.close();
   });
 });
 
