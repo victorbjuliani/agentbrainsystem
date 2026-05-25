@@ -43,9 +43,20 @@ describe('copilotAdapter (#69)', () => {
     expect(result.status).toBe('registered');
     expect(seen.every((s) => s.cmd === 'copilot')).toBe(true);
     const add = seen.find((s) => s.args[0] === 'mcp' && s.args[1] === 'add');
-    // separator style: `copilot mcp add agentbrainsystem -- node /cli.js start`
+    // separator style + harness suffix (#109):
+    // `copilot mcp add agentbrainsystem -- node /cli.js start --harness copilot`
     expect(add?.args).toContain('--');
-    expect(add?.args).toEqual(['mcp', 'add', 'agentbrainsystem', '--', 'node', '/cli.js', 'start']);
+    expect(add?.args).toEqual([
+      'mcp',
+      'add',
+      'agentbrainsystem',
+      '--',
+      'node',
+      '/cli.js',
+      'start',
+      '--harness',
+      'copilot',
+    ]);
   });
 
   it('surfaces the manual command in separator shape when the binary is absent', async () => {
@@ -53,7 +64,9 @@ describe('copilotAdapter (#69)', () => {
     const result = await copilotAdapter().registerMcp('/cli.js', run);
     expect(result.status).toBe('unavailable');
     if (result.status === 'unavailable') {
-      expect(result.manualCommand).toBe('copilot mcp add agentbrainsystem -- node /cli.js start');
+      expect(result.manualCommand).toBe(
+        'copilot mcp add agentbrainsystem -- node /cli.js start --harness copilot',
+      );
     }
   });
 });

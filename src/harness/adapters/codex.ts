@@ -20,7 +20,7 @@ export function codexAdapter(): HarnessAdapter {
   // W3: pass the current working dir so install() can warn when the target project
   // is not a trusted Codex project (Codex silently skips managed hooks otherwise).
   const installer = codexLifecycleInstaller({ projectCwd: process.cwd() });
-  const registrar = cliMcpRegistrar({ binary: 'codex' });
+  const registrar = cliMcpRegistrar({ binary: 'codex', harnessId: 'codex' });
   return {
     id: 'codex',
     displayName: 'Codex CLI',

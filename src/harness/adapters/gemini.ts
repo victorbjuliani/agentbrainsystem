@@ -24,7 +24,12 @@ import type { HarnessAdapter } from '../types.js';
 export function geminiAdapter(): HarnessAdapter {
   const resolve = payloadFirstResolver(); // payload-only — no GEMINI_* session-id env
   const installer = geminiLifecycleInstaller();
-  const registrar = cliMcpRegistrar({ binary: 'gemini', argStyle: 'positional', scope: 'user' });
+  const registrar = cliMcpRegistrar({
+    binary: 'gemini',
+    argStyle: 'positional',
+    scope: 'user',
+    harnessId: 'gemini',
+  });
   return {
     id: 'gemini',
     displayName: 'Gemini CLI',

@@ -13,6 +13,8 @@ export interface CliMcpRegistrarOptions {
   argStyle?: 'separator' | 'positional';
   /** Scope for the positional style (`--scope user|project`); positional only. */
   scope?: 'user' | 'project';
+  /** Harness id baked into the launch command as `start --harness <id>` (#109). */
+  harnessId?: string;
 }
 
 /** MCP registrar for CLI-driven harnesses (`<cli> mcp add ...`). */
@@ -23,6 +25,7 @@ export function cliMcpRegistrar(options: CliMcpRegistrarOptions = {}): McpRegist
         binary: options.binary,
         argStyle: options.argStyle,
         scope: options.scope,
+        harnessId: options.harnessId,
       });
       if (result.status === 'no-claude') {
         return { status: 'unavailable', manualCommand: result.manualCommand };

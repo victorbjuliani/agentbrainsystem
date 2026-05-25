@@ -24,7 +24,7 @@ export function copilotAdapter(): HarnessAdapter {
   const resolve = payloadFirstResolver(); // payload/path-only — no COPILOT_* session-id env
   const installer = copilotLifecycleInstaller();
   // DEFAULT separator style: `copilot mcp add agentbrainsystem -- node <cli> start`.
-  const registrar = cliMcpRegistrar({ binary: 'copilot' });
+  const registrar = cliMcpRegistrar({ binary: 'copilot', harnessId: 'copilot' });
   return {
     id: 'copilot',
     displayName: 'GitHub Copilot CLI',
