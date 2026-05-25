@@ -4,7 +4,13 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { BACKUP_INTERVAL_MS, backupIsDue, CorruptStoreError, MemoryStore } from './memory-store.js';
+import {
+  BACKUP_INTERVAL_MS,
+  backupIsDue,
+  CorruptStoreError,
+  MemoryStore,
+  SchemaDowngradeError,
+} from './memory-store.js';
 import { CURRENT_SCHEMA_VERSION, MIGRATIONS } from './schema.js';
 
 const DIM = 384;
@@ -57,6 +63,32 @@ describe('MemoryStore', () => {
       s.open();
       expect(s.schemaVersion()).toBe(CURRENT_SCHEMA_VERSION);
       s.close();
+    });
+
+    it('refuses to open a DB stamped by a NEWER abs — forward-only guard (#112)', () => {
+      // The beforeEach store already migrated to CURRENT; stamp a future version
+      // into the ledger to simulate a db written by a newer binary.
+      store.close();
+      const raw = new Database(dbPath);
+      sqliteVec.load(raw);
+      raw
+        .prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)')
+        .run(CURRENT_SCHEMA_VERSION + 1, 'future-migration', new Date().toISOString());
+      raw.close();
+
+      const reopened = new MemoryStore({ dbPath, dimensions: DIM });
+      let thrown: unknown;
+      try {
+        reopened.open();
+      } catch (e) {
+        thrown = e;
+      } finally {
+        reopened.close();
+      }
+      expect(thrown).toBeInstanceOf(SchemaDowngradeError);
+      expect((thrown as Error).message).toMatch(/newer abs/);
+      expect((thrown as SchemaDowngradeError).dbVersion).toBe(CURRENT_SCHEMA_VERSION + 1);
+      expect((thrown as SchemaDowngradeError).codeVersion).toBe(CURRENT_SCHEMA_VERSION);
     });
   });
 

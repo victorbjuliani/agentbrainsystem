@@ -23,7 +23,7 @@ import { dirname } from 'node:path';
 import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
 import { observationContentHash } from './content-hash.js';
-import { MIGRATIONS, runDdl } from './schema.js';
+import { CURRENT_SCHEMA_VERSION, MIGRATIONS, runDdl } from './schema.js';
 import type {
   AnchorState,
   CountsResult,
@@ -145,6 +145,32 @@ export class CorruptStoreError extends Error {
     );
     this.name = 'CorruptStoreError';
     this.dbPath = dbPath;
+  }
+}
+
+/**
+ * Thrown when `memory.db` was stamped by a NEWER `abs` than the running code
+ * (its applied schema version exceeds {@link CURRENT_SCHEMA_VERSION}). Migrations
+ * are forward-only (`schema.ts`), so running the old code against a newer DB could
+ * silently misbehave — we refuse instead (#112). Distinct type so callers can give
+ * an actionable upgrade message rather than an obscure query failure later. Hooks
+ * still fail-open (ADR-0004): the runner swallows it to stderr.
+ */
+export class SchemaDowngradeError extends Error {
+  readonly dbPath: string;
+  readonly dbVersion: number;
+  readonly codeVersion: number;
+  constructor(dbPath: string, dbVersion: number, codeVersion: number) {
+    super(
+      `memory.db (${dbPath}) was created by a newer abs (schema v${dbVersion}); ` +
+        `this abs only understands schema v${codeVersion}. ` +
+        'Upgrade abs (`git pull && npm run build`), or export from the newer abs and ' +
+        'reimport. Refusing to run against a newer database.',
+    );
+    this.name = 'SchemaDowngradeError';
+    this.dbPath = dbPath;
+    this.dbVersion = dbVersion;
+    this.codeVersion = codeVersion;
   }
 }
 
@@ -329,6 +355,13 @@ export class MemoryStore {
       .prepare('SELECT COALESCE(MAX(version), 0) AS v FROM schema_migrations')
       .get() as { v: number };
     const applied = appliedRow.v;
+
+    // Forward-only guard (#112): a DB stamped by a NEWER abs must NOT be opened by
+    // this (older) code — migrations only go up, so we cannot reconcile a newer
+    // schema and queries could silently misbehave. Refuse with an actionable error.
+    if (applied > CURRENT_SCHEMA_VERSION) {
+      throw new SchemaDowngradeError(this.dbPath, applied, CURRENT_SCHEMA_VERSION);
+    }
 
     const record = db.prepare(
       'INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)',
