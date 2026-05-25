@@ -109,6 +109,13 @@ export async function consolidate(
   // the prior set on --force. So a mid-write failure rolls back this run's writes
   // and leaves the prior consolidation intact — write-nothing-on-error, including
   // --force (never a zero/partial state).
+  //
+  // Content-hash idempotence (#105) makes this saga identity-aware: a new lesson
+  // whose (session, content, source) matches a prior consolidation row REUSES that
+  // row's id instead of creating a fresh one. We track which prior ids the writes
+  // aliased and exclude them from BOTH the rollback (never delete a prior row we
+  // only re-used) and the force-replace (a reused row IS one of the new lessons).
+  const priorIds = new Set(prior.map((o) => o.id));
   const writtenIds: number[] = [];
   try {
     for (const candidate of candidates) {
@@ -116,14 +123,21 @@ export async function consolidate(
       writtenIds.push(id);
     }
   } catch (err) {
-    // W1 — roll back every write made this run, then rethrow.
-    for (const id of writtenIds) memory.store.deleteObservation(id);
+    // W1 — roll back only rows this run genuinely CREATED. An aliased prior row was
+    // not created here; deleting it would corrupt the intact prior set.
+    for (const id of writtenIds) {
+      if (!priorIds.has(id)) memory.store.deleteObservation(id);
+    }
     throw err;
   }
 
-  // All new lessons persisted — safe to replace the prior set (force).
+  // All new lessons persisted — safe to replace the prior set (force). Delete only
+  // the prior rows this run did NOT reuse (a reused row is now a new lesson).
   if (options.force) {
-    for (const obs of prior) memory.store.deleteObservation(obs.id);
+    const reused = new Set(writtenIds);
+    for (const obs of prior) {
+      if (!reused.has(obs.id)) memory.store.deleteObservation(obs.id);
+    }
   }
 
   return { sessionId, written: candidates.length, dryRun: false, candidates, estimate };

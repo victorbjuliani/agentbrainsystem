@@ -22,6 +22,7 @@ import { copyFileSync, existsSync, mkdirSync, statSync } from 'node:fs';
 import { dirname } from 'node:path';
 import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
+import { observationContentHash } from './content-hash.js';
 import { MIGRATIONS, runDdl } from './schema.js';
 import type {
   AnchorState,
@@ -465,10 +466,16 @@ export class MemoryStore {
   createObservation(input: CreateObservationInput): number {
     const db = this.conn();
     const createdAt = input.createdAt ?? nowIso();
+    // Content-hash idempotence (#105): identical (session, content, source) is the
+    // same observation. ON CONFLICT DO NOTHING makes a re-ingest a no-op rather than
+    // a duplicate row; on conflict we return the EXISTING row's id so the write path
+    // (index-at-write) stays a stable upsert on that id.
+    const contentHash = observationContentHash(input.sessionId, input.content, input.source);
     const info = db
       .prepare(
-        `INSERT INTO observations (session_id, kind, content, metadata, source, created_at)
-         VALUES (@sessionId, @kind, @content, @metadata, @source, @createdAt)`,
+        `INSERT INTO observations (session_id, kind, content, metadata, source, created_at, content_hash)
+         VALUES (@sessionId, @kind, @content, @metadata, @source, @createdAt, @contentHash)
+         ON CONFLICT(content_hash) DO NOTHING`,
       )
       .run({
         sessionId: input.sessionId,
@@ -477,8 +484,15 @@ export class MemoryStore {
         metadata: input.metadata ? JSON.stringify(input.metadata) : null,
         source: input.source ?? null,
         createdAt,
+        contentHash,
       });
-    return Number(info.lastInsertRowid);
+    if (info.changes > 0) return Number(info.lastInsertRowid);
+    // Conflict → the row already exists; return its id (idempotent re-ingest).
+    const existing = db
+      .prepare('SELECT id FROM observations WHERE content_hash = ?')
+      .get(contentHash) as { id: number } | undefined;
+    if (existing) return existing.id;
+    throw new Error('content_hash conflict but no existing observation found');
   }
 
   getObservation(id: number): Observation | null {

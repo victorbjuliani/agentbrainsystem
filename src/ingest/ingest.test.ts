@@ -761,7 +761,9 @@ describe('Gemini ingest (whole-file JSON, id-watermark + .project_root, #68)', (
     );
     await ingestSingleSession(memory, geminiPath);
     expect(memory.store.counts().observations).toBeGreaterThanOrEqual(3); // NO silent drop
-    expect(memory.store.counts().observations).toBe(6); // re-synced whole file
+    // Re-sync re-presents the whole file: m1('q1') is identical to the stored row,
+    // so content-hash idempotence (#105) dedupes it; only m4,m5 are new → 3 + 2 = 5.
+    expect(memory.store.counts().observations).toBe(5);
     expect(memory.store.searchFts('q3', 10).length).toBeGreaterThan(0); // new turn landed
     expect(memory.store.listSessions().length).toBe(1);
     memory.close();
