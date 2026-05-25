@@ -23,6 +23,15 @@ describe('parseGeminiChat (#68)', () => {
     expect(e.every((x) => x.cwd === undefined)).toBe(true); // C-NEW-1: parser emits NO cwd
   });
 
+  it('sets turnKey = the per-message id for prose←edit anchor parity (#108)', () => {
+    const raw = readFileSync(fixture('gemini-session.json'), 'utf8');
+    const e = parseGeminiChat(raw, SAMPLE_PATH);
+    // Every entry's turnKey mirrors its id so #99's propagation activates the moment
+    // Gemini gains tool-anchor extraction — turn-scoped, never session-wide.
+    expect(e.length).toBeGreaterThan(0);
+    expect(e.every((x) => x.turnKey === x.id)).toBe(true);
+  });
+
   it('skips info/error chrome and malformed JSON', () => {
     expect(parseGeminiChat('not json', '/p/chats/session-x.json')).toEqual([]);
     const doc = JSON.stringify({

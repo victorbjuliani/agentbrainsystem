@@ -159,6 +159,10 @@ export function createCopilotLineParser(absPath: string, cwdHint?: string): Copi
         role === 'assistant' && data ? extractCopilotAnchors(data.toolRequests) : [];
       if (text.length === 0 && toolAnchors.length === 0) return undefined; // nothing to keep
 
+      // turnKey parity (#108): NOT NEEDED. Copilot puts an assistant turn's prose AND
+      // its toolRequest anchors on ONE observation (text + toolAnchors below), so the
+      // freshness seal already lands on the recall-surfaced obs directly — there is no
+      // prose/edit split to back-propagate across (unlike Claude). Immune by construction.
       return {
         sessionId,
         role,

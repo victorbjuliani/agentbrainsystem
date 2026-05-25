@@ -79,6 +79,27 @@ describe('createCopilotLineParser (#69)', () => {
     );
   });
 
+  it('lands prose AND its edit anchors on ONE obs — immune to the prose←edit split (#108)', () => {
+    // Copilot, unlike Claude, never splits an assistant turn into a prose line + a
+    // separate edit line: the content and the toolRequest anchors arrive on the SAME
+    // message → the freshness seal lands on the recall-surfaced obs directly, so no
+    // turnKey back-propagation is needed.
+    const parser = createCopilotLineParser(REAL_PATH, CWD);
+    const e = parser.pushLine(
+      JSON.stringify({
+        id: 'c1',
+        timestamp: 't',
+        type: 'assistant.message',
+        data: {
+          content: 'patched the parser',
+          toolRequests: [{ name: 'Write', arguments: { file_path: 'src/x.ts', content: 'x' } }],
+        },
+      }),
+    );
+    expect(e?.text).toBe('patched the parser'); // prose present
+    expect(e?.toolAnchors.some((a) => a.tool === 'Write')).toBe(true); // AND anchors — one obs
+  });
+
   it('degrades to no anchors when toolRequests shape is unrecognized', () => {
     const parser = createCopilotLineParser(REAL_PATH, CWD);
     const line = JSON.stringify({
