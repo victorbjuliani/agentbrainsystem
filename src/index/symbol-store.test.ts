@@ -51,6 +51,31 @@ describe('SymbolStore', () => {
     expect(store.getMeta('indexed_commit')).toBe('abc123');
   });
 
+  it('applyBatch upserts + deletes and stamps the commit in one shot (#106)', () => {
+    store.upsertFile('old.ts', [{ name: 'gone', kind: 'k', line: 1 }]);
+    store.applyBatch(
+      [
+        { filePath: 'a.ts', defs: [{ name: 'foo', kind: 'k', line: 1 }] },
+        { filePath: 'old.ts', defs: null }, // delete
+      ],
+      'commitABC',
+    );
+    expect(store.queryByName('foo')).toHaveLength(1);
+    expect(store.queryByName('gone')).toHaveLength(0); // deleted
+    expect(store.getMeta('indexed_commit')).toBe('commitABC'); // stamped atomically
+  });
+
+  it('applyBatch without a stamp applies ops but never touches indexed_commit (#106)', () => {
+    store.setMeta('indexed_commit', 'prior');
+    store.applyBatch([{ filePath: 'a.ts', defs: [{ name: 'foo', kind: 'k', line: 1 }] }]);
+    expect(store.queryByName('foo')).toHaveLength(1);
+    expect(store.getMeta('indexed_commit')).toBe('prior'); // overlay never stamps a commit
+  });
+
+  it('exposes the backing db path for the per-repo refresh lock (#106)', () => {
+    expect(store.dbPath).toMatch(/\.db$/);
+  });
+
   it('isolates stores per repo root (distinct db files)', () => {
     store.upsertFile('a.ts', [{ name: 'foo', kind: 'k', line: 1 }]);
     const other = openSymbolStore('/other/repo');
