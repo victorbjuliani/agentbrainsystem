@@ -9,5 +9,5 @@ export { assertDimensions, DimensionMismatchError } from './guard.js';
 export type { GeminiProviderOptions, VoyageProviderOptions } from './hosted.js';
 export { GeminiEmbeddingProvider, VoyageEmbeddingProvider } from './hosted.js';
 export type { LocalProviderOptions } from './local.js';
-export { LocalEmbeddingProvider } from './local.js';
+export { EmbeddingLoadTimeoutError, LocalEmbeddingProvider } from './local.js';
 export type { EmbeddingProvider } from './provider.js';

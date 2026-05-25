@@ -17,4 +17,11 @@ export interface EmbeddingProvider {
    * Each returned vector has length === `dimensions` (enforced by the guard).
    */
   embed(texts: string[]): Promise<number[][]>;
+  /**
+   * Optionally warm the backend (e.g. load a local model) up front, bounded by
+   * `budgetMs`. Backends with no load cost (hosted APIs) may omit it. The local
+   * backend rejects with `EmbeddingLoadTimeoutError` when a budgeted first-run
+   * download exceeds the budget, so a hook can fail open instead of hanging (#111).
+   */
+  ensureReady?(opts?: { budgetMs?: number }): Promise<void>;
 }

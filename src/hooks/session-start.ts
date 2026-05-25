@@ -26,7 +26,7 @@
 import { basename } from 'node:path';
 import { readBinding } from '../ingest/index.js';
 import { openMemory } from '../memory.js';
-import { REBUILD_FAILED_KEY } from '../store/index.js';
+import { EMBED_DEGRADED_KEY, REBUILD_FAILED_KEY } from '../store/index.js';
 import { buildContextOutput, type HookPayload } from './payload.js';
 import { evaluateStaleness, OPTIMIZE_CURSOR_KEY } from './staleness.js';
 
@@ -68,9 +68,12 @@ async function gatherFactsFromStore(sessionId?: string): Promise<SessionStartFac
       // staleness verdict that is otherwise computed but never surfaced (#101).
       // A background rebuild that FAILED (#103) records a durable flag — treat that
       // as degraded too, since its drift may have been partially repaired yet the
-      // index is not trustworthy.
+      // index is not trustworthy. A hook-path embed that timed out on the first-run
+      // model download (#111) likewise leaves the index behind until the model caches.
       indexStale:
-        memory.indexer.status().stale || memory.store.getMeta(REBUILD_FAILED_KEY) !== null,
+        memory.indexer.status().stale ||
+        memory.store.getMeta(REBUILD_FAILED_KEY) !== null ||
+        memory.store.getMeta(EMBED_DEGRADED_KEY) !== null,
     };
     if (sessionId) {
       facts.hasBinding = readBinding(memory.store, sessionId) !== null;
