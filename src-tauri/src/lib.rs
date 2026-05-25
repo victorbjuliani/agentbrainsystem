@@ -112,6 +112,47 @@ fn get_stats() -> Result<Stats, String> {
     read_stats()
 }
 
+/// Build the command that launches the `abs` sidecar so it resolves from a GUI app
+/// too. macOS/Linux GUI processes (launchd, etc.) DON'T inherit the shell PATH, so a
+/// bare `Command::new("abs")` fails even when `abs` works fine in a terminal. We honor
+/// an explicit `ABS_BIN` override (an absolute path to the binary) and otherwise
+/// augment PATH with the common npm-global bin locations so the spawn can find it.
+fn abs_command() -> Command {
+    if let Ok(bin) = env::var("ABS_BIN") {
+        if !bin.is_empty() {
+            return Command::new(bin);
+        }
+    }
+    let mut cmd = Command::new("abs");
+    cmd.env("PATH", augmented_path());
+    cmd
+}
+
+/// The current PATH plus the usual npm-global bin dirs, appended so an existing PATH
+/// still wins. Cross-platform via `env::join_paths`; covers the Homebrew prefixes, the
+/// default npm prefix, and a user-set `~/.npm-global`/`~/.local` prefix.
+fn augmented_path() -> std::ffi::OsString {
+    let mut dirs: Vec<PathBuf> = env::var_os("PATH")
+        .map(|p| env::split_paths(&p).collect())
+        .unwrap_or_default();
+    let mut add = |p: PathBuf| {
+        if !dirs.contains(&p) {
+            dirs.push(p);
+        }
+    };
+    add(PathBuf::from("/usr/local/bin")); // npm default prefix (Intel mac / Linux)
+    add(PathBuf::from("/opt/homebrew/bin")); // Homebrew on Apple Silicon
+    if let Some(home) = env::var_os("HOME").map(PathBuf::from) {
+        add(home.join(".npm-global/bin")); // `npm config set prefix ~/.npm-global`
+        add(home.join(".local/bin"));
+    }
+    #[cfg(target_os = "windows")]
+    if let Some(appdata) = env::var_os("APPDATA").map(PathBuf::from) {
+        add(appdata.join("npm")); // npm global on Windows
+    }
+    env::join_paths(dirs).unwrap_or_default()
+}
+
 /// "Abrir oceano": spawn `abs ui --no-open`, read the URL it prints on stdout, and
 /// host it in a dedicated webview window. Falls back to the system browser if the
 /// sidecar can't be launched or the window can't be built.
@@ -123,7 +164,7 @@ fn open_ocean(app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Resul
         return Ok(());
     }
 
-    let mut child = Command::new("abs")
+    let mut child = abs_command()
         .args(["ui", "--no-open"])
         .stdout(Stdio::piped())
         .spawn()
