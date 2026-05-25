@@ -42,4 +42,14 @@ describe('toFtsQuery', () => {
     // "OR" as a bare token would be an operator; quoting neutralizes it
     expect(toFtsQuery('cat OR dog')).toBe('"cat" OR "or" OR "dog"');
   });
+
+  it('default (no opts) stays EXACT — recall semantics are unchanged (#129)', () => {
+    expect(toFtsQuery('migration')).toBe('"migration"');
+  });
+
+  it('prefix mode appends a trailing * so a stem matches word variants (#129)', () => {
+    // UI search opts in: "migrat" should reach "migration"/"migrations".
+    expect(toFtsQuery('migration', { prefix: true })).toBe('"migration"*');
+    expect(toFtsQuery('a big queue', { prefix: true })).toBe('"big"* OR "queue"*');
+  });
 });

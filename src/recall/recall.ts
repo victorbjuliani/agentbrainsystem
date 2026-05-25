@@ -61,9 +61,11 @@ export interface RecallFtsOptions {
 /**
  * Turn free text into a safe FTS5 MATCH expression: word tokens OR-ed together,
  * each quoted so punctuation/operators in the query can't break the parser or
- * inject FTS syntax. Returns null when there is nothing searchable.
+ * inject FTS syntax. Returns null when there is nothing searchable. With
+ * `{ prefix: true }` each token becomes a prefix match (`"migrat"*`) — opt-in for
+ * the UI's forgiving search; recall keeps the default exact match (#129).
  */
-export function toFtsQuery(text: string): string | null {
+export function toFtsQuery(text: string, opts: { prefix?: boolean } = {}): string | null {
   const tokens = text.toLowerCase().match(/[\p{L}\p{N}]+/gu);
   if (!tokens || tokens.length === 0) return null;
   const seen = new Set<string>();
@@ -71,7 +73,10 @@ export function toFtsQuery(text: string): string | null {
   for (const t of tokens) {
     if (t.length < 2 || seen.has(t)) continue;
     seen.add(t);
-    terms.push(`"${t}"`);
+    // `prefix` opts a token into FTS5 prefix matching (`"migrat"*` → migration,
+    // migrations). The UI search uses it for forgiving keyword lookup (#129); recall
+    // leaves it OFF so its per-prompt FTS leg keeps its exact, validated semantics.
+    terms.push(opts.prefix ? `"${t}"*` : `"${t}"`);
   }
   return terms.length > 0 ? terms.join(' OR ') : null;
 }
