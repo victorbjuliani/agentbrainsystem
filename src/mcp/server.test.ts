@@ -282,6 +282,14 @@ describe('MCP server', () => {
     expect(claudeMd).toBeDefined();
     if (!claudeMd) return;
 
+    // With a NON-empty cache, an unrecognized id is a genuinely unknown candidate
+    // (not a restart) — the message says so, distinct from the empty-cache case (#114).
+    const unknown = parse(
+      await client.callTool({ name: 'apply', arguments: { candidateId: 'cand-does-not-exist' } }),
+    ) as { error?: string };
+    expect(unknown.error).toMatch(/unknown candidate id/i);
+    expect(unknown.error).toMatch(/not among the current candidates/i);
+
     const applied = parse(
       await client.callTool({ name: 'apply', arguments: { candidateId: claudeMd.id } }),
     ) as { applied: boolean; absPath: string };
@@ -291,12 +299,16 @@ describe('MCP server', () => {
     expect(existsSync(join(projectRoot, 'CLAUDE.md'))).toBe(true);
   });
 
-  it('apply refuses an unknown candidate id (no prior optimize)', async () => {
+  it('apply on a fresh server (empty cache) returns the restart message (#114)', async () => {
+    // No `optimize` ran on THIS server → the in-memory candidate cache is empty,
+    // which is exactly what a post-restart `apply` of an old id looks like. The
+    // message must name the restart cause, not an opaque "unknown id".
     const client = await connectedClient();
     const res = parse(
       await client.callTool({ name: 'apply', arguments: { candidateId: 'cand-999' } }),
     ) as { error?: string };
-    expect(res.error).toMatch(/unknown candidate/i);
+    expect(res.error).toMatch(/do not survive a server restart|not loaded/i);
+    expect(res.error).toMatch(/re-run `optimize`/i);
   });
 
   it('memory_status reports real counts', async () => {
