@@ -330,6 +330,22 @@ describe('GeminiEmbeddingProvider retry integration', () => {
     // L2-normalized: a single non-zero component becomes 1.
     expect(vectors[0]?.[0]).toBeCloseTo(1);
   });
+
+  it('sends the API key in the x-goog-api-key header, never in the URL (#114)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(makeResponse(200, geminiPayload(768)));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const provider = new GeminiEmbeddingProvider({
+      retry: { sleep: async () => {}, random: () => 1 },
+    });
+    await provider.embed(['hello']);
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    // The key must NOT ride in the query string (likeliest to leak into logs).
+    expect(url).not.toContain('key=');
+    expect(url).not.toContain('test-key');
+    expect((init.headers as Record<string, string>)['x-goog-api-key']).toBe('test-key');
+  });
 });
 
 describe('VoyageEmbeddingProvider retry integration', () => {

@@ -90,9 +90,12 @@ export class GeminiEmbeddingProvider implements EmbeddingProvider {
 
   async embed(texts: string[]): Promise<number[][]> {
     if (texts.length === 0) return [];
+    // Authenticate with the `x-goog-api-key` HEADER, not a `?key=` query param.
+    // A key in the URL is the likeliest thing to leak into a proxy/access log or a
+    // retry trace; keeping it in a header avoids that (#114). The URL is never logged.
     const url =
       `https://generativelanguage.googleapis.com/v1beta/models/${this.model}` +
-      `:batchEmbedContents?key=${encodeURIComponent(this.apiKey)}`;
+      `:batchEmbedContents`;
     const body = {
       requests: texts.map((text) => ({
         model: `models/${this.model}`,
@@ -103,7 +106,7 @@ export class GeminiEmbeddingProvider implements EmbeddingProvider {
       url,
       {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', 'x-goog-api-key': this.apiKey },
         body: JSON.stringify(body),
       },
       this.retry,

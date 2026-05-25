@@ -25,7 +25,7 @@
  */
 import { constants as FS } from 'node:fs';
 import * as nodeFsp from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { isProtectedMemoryType, parseFrontmatterType, resolveTarget } from './targets.js';
 import type { ApplyResult, OptimizeCandidate } from './types.js';
 
@@ -47,6 +47,8 @@ export interface ApplierFs {
   rename: typeof nodeFsp.rename;
   mkdir: typeof nodeFsp.mkdir;
   rm: typeof nodeFsp.rm;
+  /** `readdir` — used to prune old `.abs-bak-*` backups down to the retention cap. */
+  readdir: typeof nodeFsp.readdir;
 }
 
 /** The real Node filesystem, used unless a test injects a seam. */
@@ -60,7 +62,16 @@ const DEFAULT_FS: ApplierFs = {
   rename: nodeFsp.rename,
   mkdir: nodeFsp.mkdir,
   rm: nodeFsp.rm,
+  readdir: nodeFsp.readdir,
 };
+
+/**
+ * Keep at most this many `.abs-bak-*` copies per file. Each backup is a plaintext
+ * copy of a possibly-sensitive file (CLAUDE.md / auto-memory); without a cap they
+ * accumulate next to the original forever (#114). Five is enough to recover from a
+ * bad recent apply while bounding the on-disk sprawl of secrets.
+ */
+export const MAX_BACKUPS_PER_FILE = 5;
 
 /** Options the applier needs to resolve + guard a candidate's target. */
 export interface ApplyOptions {
@@ -207,7 +218,32 @@ export class GatedApplier implements Applier {
       throw err;
     }
 
+    // Write succeeded → prune older backups for this file down to the cap so
+    // plaintext copies of sensitive files don't accumulate forever (#114). The
+    // just-created backup is the newest and is always kept.
+    if (backupPath) await this.pruneBackups(absPath);
+
     return backupPath ? { applied: true, absPath, backupPath } : { applied: true, absPath };
+  }
+
+  /**
+   * Delete all but the newest {@link MAX_BACKUPS_PER_FILE} `<file>.abs-bak-*`
+   * copies in the file's directory. The suffix begins with `Date.now()`, so a
+   * lexicographic sort of the fixed-width millisecond stamp is chronological.
+   * Best-effort: a failure here never affects the (already-committed) write.
+   */
+  private async pruneBackups(absPath: string): Promise<void> {
+    const dir = dirname(absPath);
+    const prefix = `${basename(absPath)}.abs-bak-`;
+    try {
+      const backups = (await this.fs.readdir(dir)).filter((name) => name.startsWith(prefix)).sort(); // ascending → oldest first
+      const excess = backups.length - MAX_BACKUPS_PER_FILE;
+      for (let i = 0; i < excess; i++) {
+        await this.fs.rm(join(dir, backups[i] as string), { force: true }).catch(() => {});
+      }
+    } catch {
+      // readdir failed (e.g. dir vanished) — pruning is non-critical, never throw.
+    }
   }
 
   /**
