@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+  schedule:
+    # Nightly (06:00 UTC) so the heavier Playwright UI suite can't rot silently
+    # between main pushes — see the `e2e-ui` job (#113).
+    - cron: "0 6 * * *"
 
 jobs:
   check:
@@ -21,3 +26,39 @@ jobs:
       - name: Assert UI bundle is packaged
         run: npm pack --dry-run --json > /tmp/pack.json && node -e "const f=require('/tmp/pack.json'); const files=(f[0]?.files||[]).map(x=>x.path); if(!files.some(p=>p.endsWith('dist/ui/static/app.js'))) { console.error('UI bundle missing from package'); process.exit(1) }"
       - run: npm test
+
+  # Headless system E2E (CLI / MCP stdio / hooks / ingest / optimize / delete).
+  # Runs on EVERY PR: it's fast (~10-20s + a one-time ~35s first-run model
+  # download) and it is what would have caught the #92 install-hooks regression
+  # that rotted unnoticed because the suite never ran in CI (#113). The first
+  # vitest-e2e run downloads the local embedding model from the network; we accept
+  # that cost rather than bundle/cache it (out of scope per #113).
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run test:e2e:vitest
+
+  # Playwright UI / creature E2E. Heavier (browser download + render), and the UI
+  # is outside the backend's hot path, so it does NOT gate every PR — it runs on
+  # main pushes, the nightly schedule, and manual dispatch (#113). PRs that change
+  # the UI can trigger it via the Actions "Run workflow" button.
+  e2e-ui:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e:pw
