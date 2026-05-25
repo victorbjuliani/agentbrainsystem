@@ -31,6 +31,7 @@ import {
 } from '../recall/index.js';
 import type { MemoryStore } from '../store/index.js';
 import { buildContextOutput, type HookPayload } from './payload.js';
+import { neutralizeFenceTokens } from './recall-fence.js';
 import { renderNotice } from './session-start.js';
 
 /** Max hits pulled from FTS before dedupe/budget trimming. */
@@ -117,7 +118,10 @@ export function renderRecallBlock(hits: RecallHit[], header: string = fenceHeade
     const kind = hit.observation.kind;
     const globalTag = hit.global ? ' 🌐global' : '';
     const branchTag = hit.crossBranch ? ' ⎇other-branch' : '';
-    const line = `- [${kind}${freshnessTag(hit.anchorState)}${globalTag}${branchTag}] ${content.replace(/\s+/g, ' ')}`;
+    // Neutralize any spoofed fence token in the content (#110) BEFORE it enters the DATA
+    // envelope, so a stored `</recalled-memory>` can't close it early. \s+ collapse after.
+    const safe = neutralizeFenceTokens(content).replace(/\s+/g, ' ');
+    const line = `- [${kind}${freshnessTag(hit.anchorState)}${globalTag}${branchTag}] ${safe}`;
     // Stop once adding this line would blow the budget (keep at least one line).
     if (items.length > 0 && used + line.length > CHAR_BUDGET) break;
     items.push(line.length > CHAR_BUDGET ? `${line.slice(0, CHAR_BUDGET - 1)}…` : line);
