@@ -34,33 +34,38 @@ export interface McpRegisterOptions {
   argStyle?: 'separator' | 'positional';
   /** Scope for the positional style (`--scope user|project`); positional only. */
   scope?: 'user' | 'project';
+  /** Harness id baked into the launch command as `start --harness <id>` (#109). */
+  harnessId?: string;
 }
 
 /** Arg-style options for the add-args / manual-command builders. */
 interface ArgStyleOptions {
   argStyle?: 'separator' | 'positional';
   scope?: string;
+  /** Harness id appended to the launch command as `start --harness <id>` (#109). */
+  harnessId?: string;
+}
+
+/** `start` plus the optional `--harness <id>` suffix (#109) — the launched server
+ * resolves env-based sessions through this harness instead of a hard-coded
+ * claude-code. Omitted → just `start` (byte-identical to the pre-#109 command). */
+function startArgs(harnessId?: string): string[] {
+  return harnessId ? ['start', '--harness', harnessId] : ['start'];
 }
 
 /**
- * `<binary> mcp add agentbrainsystem -- node <cli> start` (default, claude/codex)
- * OR the positional `… --scope <scope> node <cli> start` form for Gemini (#68),
- * which rejects the `--` separator (yargs parse failure). The default is byte-identical.
+ * `<binary> mcp add agentbrainsystem -- node <cli> start [--harness <id>]` (default,
+ * claude/codex/copilot) OR the positional `… --scope <scope> node <cli> start …` form
+ * for Gemini (#68), which rejects the `--` separator (yargs parse failure). The two
+ * forms differ only in the add-flag style; the trailing `start [--harness <id>]` is
+ * identical across harnesses.
  */
 export function buildMcpAddArgs(cliPath: string, opts: ArgStyleOptions = {}): string[] {
+  const launch = ['node', cliPath, ...startArgs(opts.harnessId)];
   if (opts.argStyle === 'positional') {
-    return [
-      'mcp',
-      'add',
-      MCP_SERVER_NAME,
-      '--scope',
-      opts.scope ?? 'user',
-      'node',
-      cliPath,
-      'start',
-    ];
+    return ['mcp', 'add', MCP_SERVER_NAME, '--scope', opts.scope ?? 'user', ...launch];
   }
-  return ['mcp', 'add', MCP_SERVER_NAME, '--', 'node', cliPath, 'start'];
+  return ['mcp', 'add', MCP_SERVER_NAME, '--', ...launch];
 }
 export function buildMcpListArgs(): string[] {
   return ['mcp', 'list'];
@@ -90,10 +95,11 @@ export function manualMcpCommand(
   binary = 'claude',
   opts: ArgStyleOptions = {},
 ): string {
+  const launch = `node ${cliPath} ${startArgs(opts.harnessId).join(' ')}`;
   if (opts.argStyle === 'positional') {
-    return `${binary} mcp add ${MCP_SERVER_NAME} --scope ${opts.scope ?? 'user'} node ${cliPath} start`;
+    return `${binary} mcp add ${MCP_SERVER_NAME} --scope ${opts.scope ?? 'user'} ${launch}`;
   }
-  return `${binary} mcp add ${MCP_SERVER_NAME} -- node ${cliPath} start`;
+  return `${binary} mcp add ${MCP_SERVER_NAME} -- ${launch}`;
 }
 
 /**
@@ -108,7 +114,11 @@ export async function registerMcpServer(
   options: McpRegisterOptions = {},
 ): Promise<RegisterResult> {
   const binary = options.binary ?? 'claude';
-  const argStyleOpts: ArgStyleOptions = { argStyle: options.argStyle, scope: options.scope };
+  const argStyleOpts: ArgStyleOptions = {
+    argStyle: options.argStyle,
+    scope: options.scope,
+    harnessId: options.harnessId,
+  };
   const manualCommand = manualMcpCommand(cliPath, binary, argStyleOpts);
 
   let probe: RunResult;

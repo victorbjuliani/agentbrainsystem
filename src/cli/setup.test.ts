@@ -42,6 +42,29 @@ describe('setup core — argv + manual command', () => {
   it('formats a copy-pasteable manual command', () => {
     expect(manualMcpCommand(CLI)).toBe(`claude mcp add ${MCP_SERVER_NAME} -- node ${CLI} start`);
   });
+
+  // #109 — the harness id is baked into the launch command so the server resolves
+  // env-based sessions through the launching harness, not a hard-coded claude-code.
+  it('appends `start --harness <id>` when a harnessId is given', () => {
+    expect(buildMcpAddArgs(CLI, { harnessId: 'codex' })).toEqual([
+      'mcp',
+      'add',
+      MCP_SERVER_NAME,
+      '--',
+      'node',
+      CLI,
+      'start',
+      '--harness',
+      'codex',
+    ]);
+    expect(manualMcpCommand(CLI, 'codex', { harnessId: 'codex' })).toBe(
+      `codex mcp add ${MCP_SERVER_NAME} -- node ${CLI} start --harness codex`,
+    );
+  });
+
+  it('omits the --harness suffix when no harnessId is given (legacy byte-identical)', () => {
+    expect(buildMcpAddArgs(CLI)).not.toContain('--harness');
+  });
 });
 
 describe('Gemini positional arg style (#68 — Gemini rejects the -- separator)', () => {

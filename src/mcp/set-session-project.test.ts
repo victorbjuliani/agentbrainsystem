@@ -48,6 +48,30 @@ describe('setSessionProjectAction (#52)', () => {
       const r = setSessionProjectAction(memory, { action: 'skip', session: 'arg-sess' });
       expect(r.session).toBe('arg-sess');
     });
+
+    // #109 — harness-aware env resolution. The server is launched with
+    // `--harness <id>`; shared code must resolve through THAT adapter, not a
+    // hard-coded claude-code, so a leaked CLAUDE_CODE_SESSION_ID never binds a
+    // non-Claude session.
+    it('a codex-launched server does NOT bind a leaked CLAUDE_CODE_SESSION_ID', () => {
+      process.env.CLAUDE_CODE_SESSION_ID = 'leaked-claude';
+      const r = setSessionProjectAction(memory, { action: 'skip' }, 'codex');
+      // Codex is payload-only (no session-id env) → no binding, not the Claude id.
+      expect(r.error).toContain('no session id');
+      expect(r.session).toBeUndefined();
+    });
+
+    it('claude-code harness still resolves CLAUDE_CODE_SESSION_ID (unchanged)', () => {
+      process.env.CLAUDE_CODE_SESSION_ID = 'env-sess';
+      const r = setSessionProjectAction(memory, { action: 'skip' }, 'claude-code');
+      expect(r).toMatchObject({ session: 'env-sess', applied: true });
+    });
+
+    it('the explicit session arg wins even for a non-Claude harness', () => {
+      process.env.CLAUDE_CODE_SESSION_ID = 'leaked-claude';
+      const r = setSessionProjectAction(memory, { action: 'skip', session: 'arg-sess' }, 'gemini');
+      expect(r.session).toBe('arg-sess');
+    });
   });
 
   describe('include (no custom name — the project is always the folder)', () => {
