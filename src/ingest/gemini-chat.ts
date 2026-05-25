@@ -81,7 +81,12 @@ export function parseGeminiChat(raw: string, _absPath: string): ParsedEntry[] {
     const role = type === 'gemini' ? 'assistant' : 'user';
     const text = extractParts(m.content);
     if (!text) continue; // prose-only MVP (anchors are a follow-on)
-    out.push({ sessionId, role, text, toolAnchors: [], id });
+    // turnKey parity (#108): reuse the per-message id as the turn key so that, the
+    // moment Gemini gains tool-anchor extraction (the prose-only follow-on above),
+    // #99's prose←edit anchor back-propagation seals recalled Gemini prose with no
+    // further wiring. Dormant today (every Gemini entry is prose-only → no sibling
+    // edit to propagate from), but turn-scoped and correct by construction.
+    out.push({ sessionId, role, text, toolAnchors: [], id, turnKey: id });
   }
   return out;
 }

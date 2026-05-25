@@ -107,6 +107,12 @@ export function createCodexLineParser(absPath: string, cwdHint?: string): CodexL
   const keyOf = (role: 'user' | 'assistant', text: string): string =>
     `${role} ${text.replace(/\s+/g, ' ').trim().toLowerCase()}`;
 
+  // turnKey parity (#108): GATED. Codex is prose-only here — it seeds NO tool anchors
+  // (toolAnchors is always []), and a turn is a single response_item (its event_msg
+  // twin is deduped, not a separate edit obs). With no anchor seeding and no prose/edit
+  // split there is nothing to back-propagate, so a turnKey would be dead. Wire it from
+  // the response_item id WHEN Codex tool-anchor extraction lands (gated on that, per the
+  // #108 spec); until then it is intentionally absent.
   const build = (
     role: 'user' | 'assistant',
     text: string,
