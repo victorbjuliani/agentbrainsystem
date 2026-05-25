@@ -1,9 +1,11 @@
 import { copyFileSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import Database from 'better-sqlite3';
+import * as sqliteVec from 'sqlite-vec';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { BACKUP_INTERVAL_MS, backupIsDue, CorruptStoreError, MemoryStore } from './memory-store.js';
-import { CURRENT_SCHEMA_VERSION } from './schema.js';
+import { CURRENT_SCHEMA_VERSION, MIGRATIONS } from './schema.js';
 
 const DIM = 384;
 
@@ -791,5 +793,99 @@ describe('MemoryStore — corruption resilience (#101)', () => {
     expect(store.quickCheck().ok).toBe(true);
     expect(store.listSessions().length).toBe(1);
     store.close();
+  });
+});
+
+describe('MemoryStore — content-hash idempotence (#105)', () => {
+  let dir: string;
+  let store: MemoryStore;
+  let sessionId: number;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'abs-idem-'));
+    store = new MemoryStore({ dbPath: join(dir, 'memory.db'), dimensions: DIM }).open();
+    sessionId = store.createSession({ externalId: 's1' });
+  });
+
+  afterEach(() => {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('a re-ingest of identical (session, content, source) is one row, same id', () => {
+    const a = store.createObservation({ sessionId, kind: 'note', content: 'dup', source: 'f' });
+    const b = store.createObservation({ sessionId, kind: 'note', content: 'dup', source: 'f' });
+    expect(b).toBe(a);
+    expect(store.counts().observations).toBe(1);
+  });
+
+  it('distinct content, session, or source produce separate rows', () => {
+    const base = store.createObservation({ sessionId, kind: 'note', content: 'x', source: 'f' });
+    const diffContent = store.createObservation({
+      sessionId,
+      kind: 'note',
+      content: 'y',
+      source: 'f',
+    });
+    const diffSource = store.createObservation({
+      sessionId,
+      kind: 'note',
+      content: 'x',
+      source: 'g',
+    });
+    const other = store.createSession({ externalId: 's2' });
+    const diffSession = store.createObservation({
+      sessionId: other,
+      kind: 'note',
+      content: 'x',
+      source: 'f',
+    });
+    expect(new Set([base, diffContent, diffSource, diffSession]).size).toBe(4);
+    expect(store.counts().observations).toBe(4);
+    // present-vs-absent source is also distinct
+    const noSource = store.createObservation({ sessionId, kind: 'note', content: 'x' });
+    expect(noSource).not.toBe(base);
+  });
+
+  it('the v5 migration backfills + dedupes a populated v4 store and adds the unique index', () => {
+    // Build a pre-v5 store (schema through v4, no content_hash), insert duplicates
+    // the way the old at-least-once path could, then run the v5 migration alone.
+    const db = new Database(':memory:');
+    sqliteVec.load(db);
+    for (const m of MIGRATIONS) if (m.version <= 4) m.up(db, DIM);
+    db.exec("INSERT INTO sessions (external_id, created_at) VALUES ('s', '2026-01-01')");
+    const ins = db.prepare(
+      "INSERT INTO observations (session_id, kind, content, source, created_at) VALUES (1,'note',?,?, '2026-01-01')",
+    );
+    ins.run('dup', 'src'); // id 1
+    ins.run('dup', 'src'); // id 2 — duplicate of 1
+    ins.run('dup', 'src'); // id 3 — duplicate of 1
+    ins.run('unique', 'src'); // id 4
+    expect((db.prepare('SELECT COUNT(*) c FROM observations').get() as { c: number }).c).toBe(4);
+
+    const v5 = MIGRATIONS.find((m) => m.version === 5);
+    expect(v5).toBeDefined();
+    v5?.up(db, DIM);
+
+    // Dedupe kept the lowest id per hash: one 'dup' (id 1) + 'unique' (id 4).
+    const ids = (
+      db.prepare('SELECT id FROM observations ORDER BY id').all() as Array<{
+        id: number;
+      }>
+    ).map((r) => r.id);
+    expect(ids).toEqual([1, 4]);
+    // content_hash backfilled, unique index enforced.
+    const dupHash = (
+      db.prepare('SELECT content_hash h FROM observations WHERE id = 1').get() as { h: string }
+    ).h;
+    expect(dupHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(() =>
+      db
+        .prepare(
+          "INSERT INTO observations (session_id, kind, content, source, created_at, content_hash) VALUES (1,'note','dup','src','2026-01-01', ?)",
+        )
+        .run(dupHash),
+    ).toThrow(/UNIQUE/i);
+    db.close();
   });
 });
