@@ -394,9 +394,11 @@ interface ResolvedSet {
  * must degrade to "no results", never a 500.
  */
 function resolveSearch(store: MemoryStore, rawQuery: string): ResolvedSet {
-  // Prefix matching so the UI search is forgiving (`migrat` → migration/migrations).
-  // Opt-in here only; recall's per-prompt FTS leg stays exact (#129).
-  const expr = toFtsQuery(rawQuery, { prefix: true });
+  // Forgiving UI search: prefix matching (`migrat` → migration/migrations) plus
+  // cross-language stemming (en default + pt/es) so a query reaches its whole word
+  // family in the bilingual store. Opt-in here only; recall's per-prompt FTS leg
+  // stays exact (#129).
+  const expr = toFtsQuery(rawQuery, { prefix: true, stem: true });
   if (expr === null) return { sessions: [], observations: [], truncated: false };
 
   let hits: ReturnType<MemoryStore['searchFts']>;
