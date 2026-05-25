@@ -112,26 +112,99 @@ fn get_stats() -> Result<Stats, String> {
     read_stats()
 }
 
-/// Build the command that launches the `abs` sidecar so it resolves from a GUI app
-/// too. macOS/Linux GUI processes (launchd, etc.) DON'T inherit the shell PATH, so a
-/// bare `Command::new("abs")` fails even when `abs` works fine in a terminal. We honor
-/// an explicit `ABS_BIN` override (an absolute path to the binary) and otherwise
-/// augment PATH with the common npm-global bin locations so the spawn can find it.
+/// UI language: English by default, Portuguese only when the OS locale is pt-*. The
+/// product ships EN-first (international launch); pt-BR users get Portuguese. Best
+/// effort via the standard locale env vars — a GUI launch that sets none correctly
+/// falls back to EN.
+#[derive(Clone, Copy, PartialEq)]
+enum Lang {
+    En,
+    Pt,
+}
+
+fn ui_lang() -> Lang {
+    // macOS GUI apps rarely inherit LANG, so read the user's preferred language from
+    // AppleLanguages (the first entry, e.g. "pt-BR" or "en-US").
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(out) = Command::new("defaults")
+            .args(["read", "-g", "AppleLanguages"])
+            .output()
+        {
+            let s = String::from_utf8_lossy(&out.stdout);
+            if let Some(first) = s.split('"').nth(1) {
+                return if first.to_lowercase().starts_with("pt") {
+                    Lang::Pt
+                } else {
+                    Lang::En
+                };
+            }
+        }
+    }
+    for key in ["LC_ALL", "LC_MESSAGES", "LANG"] {
+        if let Ok(v) = env::var(key) {
+            if v.is_empty() {
+                continue;
+            }
+            return if v.to_lowercase().starts_with("pt") {
+                Lang::Pt
+            } else {
+                Lang::En
+            };
+        }
+    }
+    Lang::En
+}
+
+/// Expose the resolved UI language to the popover webview so its strings match the
+/// tray menu (same source of truth).
+#[tauri::command]
+fn get_lang() -> &'static str {
+    match ui_lang() {
+        Lang::En => "en",
+        Lang::Pt => "pt",
+    }
+}
+
+/// Build the command that launches the `abs` sidecar so it works from a GUI app.
+/// Two hazards, both invisible from a terminal:
+///   1. GUI processes (macOS launchd, etc.) DON'T inherit the shell PATH, so a bare
+///      `Command::new("abs")` can't even find `abs`.
+///   2. `abs` is a Node CLI with a NATIVE module (better-sqlite3) whose prebuilt
+///      binary is ABI-locked to the Node version that installed it. If the PATH
+///      resolves a *different* `node` (e.g. an old /usr/local/bin/node), the sidecar
+///      dies on load before printing its URL.
+/// Fix: honor an explicit `ABS_BIN` override; otherwise locate `abs` on an augmented
+/// PATH and PREPEND its own directory, so the co-located `node` (same npm prefix/bin —
+/// the one that installed `abs`) wins and the native ABI matches.
 fn abs_command() -> Command {
     if let Ok(bin) = env::var("ABS_BIN") {
         if !bin.is_empty() {
-            return Command::new(bin);
+            let path = PathBuf::from(&bin);
+            let mut cmd = Command::new(&path);
+            if let Some(dir) = path.parent() {
+                cmd.env("PATH", prepend_dir(dir, &search_path()));
+            }
+            return cmd;
         }
     }
+    let search = search_path();
+    if let Some(abs_path) = which_in("abs", &search) {
+        let mut cmd = Command::new(&abs_path);
+        if let Some(dir) = abs_path.parent() {
+            cmd.env("PATH", prepend_dir(dir, &search));
+        }
+        return cmd;
+    }
+    // Last resort: let the OS resolve `abs` against the augmented PATH.
     let mut cmd = Command::new("abs");
-    cmd.env("PATH", augmented_path());
+    cmd.env("PATH", search);
     cmd
 }
 
-/// The current PATH plus the usual npm-global bin dirs, appended so an existing PATH
-/// still wins. Cross-platform via `env::join_paths`; covers the Homebrew prefixes, the
-/// default npm prefix, and a user-set `~/.npm-global`/`~/.local` prefix.
-fn augmented_path() -> std::ffi::OsString {
+/// PATH to search for `abs`: the inherited PATH plus the usual npm-global bin dirs, so
+/// a GUI launch (with its bare PATH) can still find a user-installed `abs`.
+fn search_path() -> std::ffi::OsString {
     let mut dirs: Vec<PathBuf> = env::var_os("PATH")
         .map(|p| env::split_paths(&p).collect())
         .unwrap_or_default();
@@ -140,8 +213,8 @@ fn augmented_path() -> std::ffi::OsString {
             dirs.push(p);
         }
     };
-    add(PathBuf::from("/usr/local/bin")); // npm default prefix (Intel mac / Linux)
     add(PathBuf::from("/opt/homebrew/bin")); // Homebrew on Apple Silicon
+    add(PathBuf::from("/usr/local/bin")); // npm default prefix (Intel mac / Linux)
     if let Some(home) = env::var_os("HOME").map(PathBuf::from) {
         add(home.join(".npm-global/bin")); // `npm config set prefix ~/.npm-global`
         add(home.join(".local/bin"));
@@ -153,11 +226,45 @@ fn augmented_path() -> std::ffi::OsString {
     env::join_paths(dirs).unwrap_or_default()
 }
 
+/// First directory in `path` holding an executable `name`. Follows symlinks (npm
+/// installs `abs` as a symlink into prefix/bin), and tries the Windows launcher exts.
+fn which_in(name: &str, path: &std::ffi::OsString) -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    let names = [
+        name.to_string(),
+        format!("{name}.cmd"),
+        format!("{name}.exe"),
+    ];
+    #[cfg(not(target_os = "windows"))]
+    let names = [name.to_string()];
+    for dir in env::split_paths(path) {
+        for n in &names {
+            let candidate = dir.join(n);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+/// `dir` prepended to `base` (deduped) so the binary co-located with `abs` wins.
+fn prepend_dir(dir: &std::path::Path, base: &std::ffi::OsString) -> std::ffi::OsString {
+    let mut dirs: Vec<PathBuf> = vec![dir.to_path_buf()];
+    for d in env::split_paths(base) {
+        if !dirs.contains(&d) {
+            dirs.push(d);
+        }
+    }
+    env::join_paths(dirs).unwrap_or_default()
+}
+
 /// "Abrir oceano": spawn `abs ui --no-open`, read the URL it prints on stdout, and
 /// host it in a dedicated webview window. Falls back to the system browser if the
 /// sidecar can't be launched or the window can't be built.
 #[tauri::command]
 fn open_ocean(app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let lang = ui_lang();
     // Already open? Focus it instead of spawning a second server.
     if let Some(win) = app.get_webview_window("ocean") {
         let _ = win.set_focus();
@@ -167,25 +274,52 @@ fn open_ocean(app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Resul
     let mut child = abs_command()
         .args(["ui", "--no-open"])
         .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("não consegui iniciar `abs ui`: {e}"))?;
+        .map_err(|e| match lang {
+            Lang::En => format!("couldn't launch `abs ui`: {e}"),
+            Lang::Pt => format!("não consegui iniciar `abs ui`: {e}"),
+        })?;
 
-    // The first stdout line is the URL (cli.ts cmdUi: `out(url)` before anything else).
+    let mut stderr = child.stderr.take();
+
+    // The first stdout line is the URL (cli.ts cmdUi prints it before anything else).
     let url = {
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| "sidecar sem stdout".to_string())?;
+        let stdout = child.stdout.take().ok_or_else(|| match lang {
+            Lang::En => "the sidecar produced no stdout".to_string(),
+            Lang::Pt => "o sidecar não produziu stdout".to_string(),
+        })?;
         let mut reader = BufReader::new(stdout);
         let mut line = String::new();
-        reader
-            .read_line(&mut line)
-            .map_err(|e| format!("não li a URL do sidecar: {e}"))?;
+        reader.read_line(&mut line).map_err(|e| match lang {
+            Lang::En => format!("couldn't read the sidecar URL: {e}"),
+            Lang::Pt => format!("não li a URL do sidecar: {e}"),
+        })?;
         line.trim().to_string()
     };
     if url.is_empty() {
+        // The sidecar died before emitting a URL. Surface its stderr (e.g. a native
+        // better-sqlite3 ABI mismatch) so the failure is diagnosable, not just "no URL".
         let _ = child.kill();
-        return Err("sidecar não emitiu uma URL".to_string());
+        let detail = stderr
+            .as_mut()
+            .and_then(|s| {
+                let mut buf = String::new();
+                std::io::Read::read_to_string(s, &mut buf).ok().map(|_| buf)
+            })
+            .unwrap_or_default();
+        let last = detail
+            .lines()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("")
+            .trim();
+        return Err(match (lang, last.is_empty()) {
+            (Lang::En, true) => "the sidecar emitted no URL".to_string(),
+            (Lang::Pt, true) => "o sidecar não emitiu uma URL".to_string(),
+            (Lang::En, false) => format!("`abs ui` failed to start: {last}"),
+            (Lang::Pt, false) => format!("`abs ui` falhou ao iniciar: {last}"),
+        });
     }
 
     // Keep the sidecar alive for the window's lifetime (replacing any prior one).
@@ -196,11 +330,16 @@ fn open_ocean(app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Resul
         *slot = Some(child);
     }
 
-    let parsed = url
-        .parse()
-        .map_err(|_| format!("URL inválida do sidecar: {url}"))?;
+    let parsed = url.parse().map_err(|_| match lang {
+        Lang::En => format!("invalid sidecar URL: {url}"),
+        Lang::Pt => format!("URL inválida do sidecar: {url}"),
+    })?;
+    let title = match lang {
+        Lang::En => "agentbrainsystem — ocean",
+        Lang::Pt => "agentbrainsystem — oceano",
+    };
     let built = WebviewWindowBuilder::new(&app, "ocean", WebviewUrl::External(parsed))
-        .title("agentbrainsystem — oceano")
+        .title(title)
         .inner_size(1100.0, 760.0)
         .min_inner_size(640.0, 480.0)
         .build();
@@ -224,12 +363,20 @@ fn open_in_browser(url: &str) {
 
 /// Human tray tooltip — counts + last activity, glanceable without opening anything.
 fn tooltip_text(s: &Stats) -> String {
-    match &s.last_activity {
-        Some(ts) => format!(
+    match (ui_lang(), &s.last_activity) {
+        (Lang::En, Some(ts)) => format!(
+            "agentbrainsystem\n{} observations · {} sessions\nlast activity: {}",
+            s.observations, s.sessions, ts
+        ),
+        (Lang::En, None) => format!(
+            "agentbrainsystem\n{} observations · {} sessions",
+            s.observations, s.sessions
+        ),
+        (Lang::Pt, Some(ts)) => format!(
             "agentbrainsystem\n{} observações · {} sessões\núltima atividade: {}",
             s.observations, s.sessions, ts
         ),
-        None => format!(
+        (Lang::Pt, None) => format!(
             "agentbrainsystem\n{} observações · {} sessões",
             s.observations, s.sessions
         ),
@@ -240,7 +387,7 @@ fn tooltip_text(s: &Stats) -> String {
 pub fn run() {
     tauri::Builder::default()
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![get_stats, open_ocean])
+        .invoke_handler(tauri::generate_handler![get_stats, open_ocean, get_lang])
         .setup(|app| {
             // The popover: a small, frameless, always-on-top window hidden until the
             // tray is clicked. Loads the bundled popover (ui/index.html).
@@ -250,21 +397,42 @@ pub fn run() {
                     .inner_size(300.0, 380.0)
                     .resizable(false)
                     .decorations(false)
+                    // Transparent so the popover's rounded card shows through instead of
+                    // sitting on an opaque window rect (the white corners). Needs
+                    // macOSPrivateApi + the macos-private-api feature on macOS.
+                    .transparent(true)
                     .always_on_top(true)
                     .skip_taskbar(true)
                     .visible(false)
                     .build()?;
             let _ = popover.hide();
 
+            // Dismiss on focus loss (click outside) — the expected menu-bar popover
+            // feel, since it's frameless and intentionally can't be moved or minimized.
+            let popover_dismiss = popover.clone();
+            popover.on_window_event(move |event| {
+                if let tauri::WindowEvent::Focused(false) = event {
+                    let _ = popover_dismiss.hide();
+                }
+            });
+
             // Tray menu (right-click / platform menu): open the ocean or quit.
-            let open_item = MenuItemBuilder::with_id("open", "Abrir oceano").build(app)?;
-            let quit_item = MenuItemBuilder::with_id("quit", "Sair").build(app)?;
+            // Labels follow the UI language (EN default, PT on a pt-* locale).
+            let (open_label, quit_label) = match ui_lang() {
+                Lang::En => ("Open ocean", "Quit"),
+                Lang::Pt => ("Abrir oceano", "Sair"),
+            };
+            let open_item = MenuItemBuilder::with_id("open", open_label).build(app)?;
+            let quit_item = MenuItemBuilder::with_id("quit", quit_label).build(app)?;
             let menu = MenuBuilder::new(app)
                 .items(&[&open_item, &quit_item])
                 .build()?;
 
             let tray = TrayIconBuilder::with_id("abs-tray")
                 .icon(app.default_window_icon().unwrap().clone())
+                // Render as a monochrome template so the icon adapts to the menu bar
+                // (light/dark, like the native status items) instead of a colored square.
+                .icon_as_template(true)
                 .tooltip("agentbrainsystem")
                 .menu(&menu)
                 .show_menu_on_left_click(false)

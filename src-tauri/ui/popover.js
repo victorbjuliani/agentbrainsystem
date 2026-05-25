@@ -4,6 +4,35 @@
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
+// i18n: English by default, Portuguese on a pt-* locale. The language is resolved by
+// the tray (the `get_lang` command — same source of truth as the menu), with the
+// webview locale as a fallback so the first paint isn't blank.
+const STRINGS = {
+  en: {
+    observations: "observations",
+    sessions: "sessions",
+    openOcean: "open ocean",
+    lastActivity: "last activity",
+    emptyMemory: "memory empty",
+  },
+  pt: {
+    observations: "observações",
+    sessions: "sessões",
+    openOcean: "abrir oceano",
+    lastActivity: "última atividade",
+    emptyMemory: "memória vazia",
+  },
+};
+let lang = (navigator.language || "en").toLowerCase().startsWith("pt") ? "pt" : "en";
+const t = (key) => (STRINGS[lang] || STRINGS.en)[key];
+
+function applyStaticStrings() {
+  document.documentElement.lang = lang === "pt" ? "pt-BR" : "en";
+  for (const el of document.querySelectorAll("[data-i18n]")) {
+    el.textContent = t(el.dataset.i18n);
+  }
+}
+
 const els = {
   obs: document.getElementById("obs"),
   sessions: document.getElementById("sessions"),
@@ -17,8 +46,8 @@ function render(stats) {
   els.obs.textContent = String(stats.observations ?? 0);
   els.sessions.textContent = String(stats.sessions ?? 0);
   els.ts.textContent = stats.last_activity
-    ? `última atividade: ${stats.last_activity}`
-    : "memória vazia";
+    ? `${t("lastActivity")}: ${stats.last_activity}`
+    : t("emptyMemory");
 }
 
 function pulse() {
@@ -34,6 +63,16 @@ els.open.addEventListener("click", () => {
   });
 });
 
-invoke("get_stats").then(render).catch(() => {});
+// Resolve the language from the tray (matches the menu), then paint strings + stats.
+invoke("get_lang")
+  .then((l) => {
+    if (l === "pt" || l === "en") lang = l;
+  })
+  .catch(() => {})
+  .finally(() => {
+    applyStaticStrings();
+    invoke("get_stats").then(render).catch(() => {});
+  });
+
 listen("stats", (event) => render(event.payload));
 listen("pulse", () => pulse());
