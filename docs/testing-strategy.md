@@ -41,9 +41,11 @@
 A real, full-system suite that drives the **built** binary (`dist/cli/cli.js`), the MCP
 server over stdio, the lifecycle hooks, the optimize/delete write-paths, and the
 localhost UI in a headless browser — the surfaces the module-level `*.test.ts` do not
-exercise end to end. Run it before a release or after touching a cross-surface contract.
+exercise end to end. CI runs it (see below), so it no longer relies on someone
+remembering to run it by hand after touching a cross-surface contract (#113).
 
-- **Command:** `npm run test:e2e` = `npm run build` → `vitest run -c vitest.e2e.config.ts` (scenarios A–H) → `playwright test -c playwright.config.ts` (UI scenarios I–J). One-time browser install: `npx playwright install chromium`.
+- **Command:** `npm run test:e2e` = `npm run build` → `npm run test:e2e:vitest` (`vitest run -c vitest.e2e.config.ts`, scenarios A–H) → `npm run test:e2e:pw` (`playwright test -c playwright.config.ts`, UI scenarios I–J). The two halves are also split scripts so CI can run them in separate jobs. One-time browser install: `npx playwright install chromium`.
+- **CI (#113):** the `e2e` job runs `test:e2e:vitest` on **every PR** (fast; it is what catches contract rot like the #92 install-hooks regression). The `e2e-ui` job runs Playwright on **main pushes + a nightly schedule + manual dispatch** (`if: github.event_name != 'pull_request'`) — kept off the PR path because the browser render is heavier and the UI is outside the backend hot path. A UI-touching PR can trigger it from the Actions "Run workflow" button.
 - **Runners (disjoint globs, never overlap):** Vitest picks up `e2e/**/*.e2e.ts`; Playwright picks up `e2e/**/*.pw.ts`; the default `vitest.config.ts` (`src/**`) picks up neither.
 - **Total isolation (the "leave no trace" contract):** every spawned `abs` process inherits a throwaway `HOME` + `ABS_HOME` from `e2e/harness.ts` → `makeHome()`. `ABS_HOME` isolates the store; `HOME` isolates the hooks' `settings.json` and optimize's auto-memory dir. Teardown is `rm -rf` of the temp home. The real `~/.agentbrainsystem` and `~/.claude` are **never** touched.
 - **Offline / $0:** the embedding model cache lives in `node_modules/@huggingface/transformers/.cache` (not under `HOME`), so the temp-`HOME` override is safe and does not re-download. Offline is a consequence of the cache being warm — there is **no** env flag that enforces it (`@huggingface/transformers@4.x` ignores `TRANSFORMERS_OFFLINE`/`HF_HUB_OFFLINE`). The Vitest `globalSetup` (`e2e/global-setup.ts`) warms the cache once (the only step allowed to hit the network) and guards that `dist/` is built. The LLM path (consolidate) is exercised against a **fake localhost OpenAI-compatible server**, never a real endpoint.

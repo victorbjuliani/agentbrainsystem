@@ -31,7 +31,9 @@
     "pretest": "npm run build:ui",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "npm run build && vitest run -c vitest.e2e.config.ts && playwright test -c playwright.config.ts",
+    "test:e2e:vitest": "vitest run -c vitest.e2e.config.ts",
+    "test:e2e:pw": "playwright test -c playwright.config.ts",
+    "test:e2e": "npm run build && npm run test:e2e:vitest && npm run test:e2e:pw",
     "dev": "tsx src/index.ts",
     "bench": "tsx bench/bench.ts",
     "check": "npm run lint && npm run typecheck && npm run test"
