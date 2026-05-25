@@ -32,6 +32,7 @@ import { extractToolAnchors, type ToolAnchorSeed } from '../ingest/claude-jsonl.
 import { type Memory, openMemory } from '../memory.js';
 import { resolveRecallProject } from '../recall/index.js';
 import { buildPreToolUseOutput, type HookPayload } from './payload.js';
+import { neutralizeFenceTokens } from './recall-fence.js';
 
 /** Injection seam for tests/eval — defaults to opening the real store read-only. */
 export interface PreToolUseDeps {
@@ -100,9 +101,10 @@ function checkDuplication(payload: HookPayload, seeds: ToolAnchorSeed[]): string
   }
 }
 
-/** Truncate content to a single bounded line. */
+/** Truncate recalled content to a single bounded line, neutralizing any spoofed fence
+ * token first (#110) so it can't close the `<recalled-decisions>` DATA envelope early. */
 function oneLine(text: string): string {
-  const flat = text.replace(/\s+/g, ' ').trim();
+  const flat = neutralizeFenceTokens(text).replace(/\s+/g, ' ').trim();
   return flat.length > CONTENT_CAP ? `${flat.slice(0, CONTENT_CAP - 1)}…` : flat;
 }
 
