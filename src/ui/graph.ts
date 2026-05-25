@@ -168,17 +168,13 @@ export function buildGraph(store: MemoryStore, query: GraphQuery): GraphData {
   // NODE_CAP guard below then drops the lowest-priority (scope) tail, not the pins.
   // NOT applied in search mode: a search defines its own result set explicitly.
   if (mode !== 'search') {
-    // Pass the active project filter through so pins respect it — otherwise a
-    // project-scoped view leaks other projects' consolidated lesson/decision (#129).
-    // In session scope query.project is undefined → pins stay store-wide (the #35
-    // cross-session surfacing that scope intends).
-    const merged = mergePinnedConsolidated(
-      store,
-      observations,
-      sessions,
-      nodeBudget,
-      query.project,
-    );
+    // Scope pins to the project ONLY in topN mode — there the project picker drives
+    // the window, so unscoped pins would leak other projects' lesson/decision (#129).
+    // Session mode ignores `project` for its own window (see above), so its pins must
+    // too: a `?session=X&project=Y` request must keep the intentional cross-session
+    // pin surfacing (#35), not silently filter it. Gate by mode (Codex review).
+    const pinProject = mode === 'topN' ? query.project : undefined;
+    const merged = mergePinnedConsolidated(store, observations, sessions, nodeBudget, pinProject);
     observations = merged.observations;
     sessions = merged.sessions;
   }

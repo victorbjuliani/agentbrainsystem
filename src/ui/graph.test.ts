@@ -234,6 +234,24 @@ describe('buildGraph', () => {
     expect(g.nodes.filter((n) => n.id === `o:${lessonId}`)).toHaveLength(1);
   });
 
+  it('session mode ignores project for pins — cross-session surfacing preserved (#129 Codex)', () => {
+    // parseGraphQuery allows session+project together. Session mode ignores project
+    // for its own window, so its pins must too — a non-matching project must NOT hide
+    // the intentional cross-session pin surfacing (#35).
+    const focus = store.createSession({ externalId: 'focus', project: 'proj-a' });
+    store.createObservation({ sessionId: focus, kind: 'user', content: 'q' });
+    const other = store.createSession({ externalId: 'other', project: 'proj-b' });
+    const lessonId = store.createObservation({
+      sessionId: other,
+      kind: 'lesson',
+      content: 'B lesson pinned',
+    });
+
+    const g = buildGraph(store, { session: focus, project: 'proj-a' });
+    const obsIds = new Set(g.nodes.filter((n) => n.type !== 'session').map((n) => n.id));
+    expect(obsIds.has(`o:${lessonId}`)).toBe(true); // pin from proj-b still surfaces
+  });
+
   it('UI search matches word variants via prefix — migrat → Migrations (#129)', () => {
     const s = store.createSession({ externalId: 'sess', project: 'p' });
     const o = store.createObservation({
