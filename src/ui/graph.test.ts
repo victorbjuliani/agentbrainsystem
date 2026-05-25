@@ -234,6 +234,40 @@ describe('buildGraph', () => {
     expect(g.nodes.filter((n) => n.id === `o:${lessonId}`)).toHaveLength(1);
   });
 
+  it('UI search matches word variants via prefix — migrat → Migrations (#129)', () => {
+    const s = store.createSession({ externalId: 'sess', project: 'p' });
+    const o = store.createObservation({
+      sessionId: s,
+      kind: 'lesson',
+      content: 'Migrations are forward-only',
+    });
+    store.indexFts(o, 'Migrations are forward-only'); // FTS is indexer-populated; seed it directly
+    const g = buildGraph(store, { search: 'migrat' });
+    expect(g.scope.mode).toBe('search');
+    // Exact FTS would miss the singular stem; the UI search opts into prefix matching.
+    expect(g.nodes.some((n) => n.id === `o:${o}`)).toBe(true);
+  });
+
+  it('scopes pins to the selected project — no cross-project leak in topN (#129)', () => {
+    // Project A has the consolidated pins (lesson/decision); project B has only a note.
+    const sa = store.createSession({ externalId: 'A', project: 'proj-a' });
+    store.createObservation({ sessionId: sa, kind: 'decision', content: 'A decision' });
+    store.createObservation({ sessionId: sa, kind: 'lesson', content: 'A lesson' });
+    const sb = store.createSession({ externalId: 'B', project: 'proj-b' });
+    const bNote = store.createObservation({ sessionId: sb, kind: 'note', content: 'B note' });
+
+    const g = buildGraph(store, { topN: 200, project: 'proj-b' });
+    const obsNodes = g.nodes.filter((n) => n.type !== 'session');
+    // Only project B's observation may appear — A's pinned lesson/decision must NOT leak.
+    expect(obsNodes.map((n) => n.id)).toEqual([`o:${bNote}`]);
+
+    // And the inverse: project A still sees its own pins (no over-filtering).
+    const ga = buildGraph(store, { topN: 200, project: 'proj-a' });
+    const aTypes = new Set(ga.nodes.filter((n) => n.type !== 'session').map((n) => n.type));
+    expect(aTypes.has('lesson')).toBe(true);
+    expect(aTypes.has('decision')).toBe(true);
+  });
+
   it('enforces the requested limit even after pinning consolidated nodes (#42 P1)', () => {
     const s = store.createSession({ externalId: 'sess', project: 'proj' });
     for (let i = 0; i < 30; i++) {

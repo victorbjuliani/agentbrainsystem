@@ -168,7 +168,17 @@ export function buildGraph(store: MemoryStore, query: GraphQuery): GraphData {
   // NODE_CAP guard below then drops the lowest-priority (scope) tail, not the pins.
   // NOT applied in search mode: a search defines its own result set explicitly.
   if (mode !== 'search') {
-    const merged = mergePinnedConsolidated(store, observations, sessions, nodeBudget);
+    // Pass the active project filter through so pins respect it — otherwise a
+    // project-scoped view leaks other projects' consolidated lesson/decision (#129).
+    // In session scope query.project is undefined → pins stay store-wide (the #35
+    // cross-session surfacing that scope intends).
+    const merged = mergePinnedConsolidated(
+      store,
+      observations,
+      sessions,
+      nodeBudget,
+      query.project,
+    );
     observations = merged.observations;
     sessions = merged.sessions;
   }
@@ -388,7 +398,9 @@ interface ResolvedSet {
  * must degrade to "no results", never a 500.
  */
 function resolveSearch(store: MemoryStore, rawQuery: string): ResolvedSet {
-  const expr = toFtsQuery(rawQuery);
+  // Prefix matching so the UI search is forgiving (`migrat` → migration/migrations).
+  // Opt-in here only; recall's per-prompt FTS leg stays exact (#129).
+  const expr = toFtsQuery(rawQuery, { prefix: true });
   if (expr === null) return { sessions: [], observations: [], truncated: false };
 
   let hits: ReturnType<MemoryStore['searchFts']>;
@@ -443,8 +455,16 @@ function mergePinnedConsolidated(
   observations: Observation[],
   sessions: Session[],
   nodeBudget: number,
+  project?: string,
 ): { observations: Observation[]; sessions: Session[] } {
-  const pinned = store.listObservations({ kinds: PIN_KINDS, order: 'desc', limit: PIN_CAP });
+  // `project` scopes the pins to the selected project's sessions (#129). Undefined
+  // → store-wide pins (session scope's intentional cross-session surfacing, #35).
+  const pinned = store.listObservations({
+    kinds: PIN_KINDS,
+    order: 'desc',
+    limit: PIN_CAP,
+    project,
+  });
   if (pinned.length === 0) return { observations, sessions };
 
   const scopeIds = new Set(observations.map((o) => o.id));
