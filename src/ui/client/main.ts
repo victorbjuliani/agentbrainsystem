@@ -18,6 +18,7 @@ import {
   previewDelete,
   StaleTokenError,
 } from './delete-client.js';
+import { t } from './i18n.js';
 import { mountOverlays } from './overlays.js';
 import { scopeToQuery } from './scope.js';
 import type { ScopeState, Theme, ViewEdge, ViewGraph, ViewNode } from './types.js';
@@ -74,6 +75,10 @@ async function main(): Promise<void> {
   const overlayRoot = document.getElementById('overlays');
   if (!mount || !overlayRoot) throw new Error('missing #graph / #overlays mount');
 
+  // The graph aria-label is EN-default in index.html (static copy a no-JS read gets);
+  // localize it for a Portuguese locale so AT users hear the right language.
+  mount.setAttribute('aria-label', t('graphAriaLabel'));
+
   applyTheme(loadTheme());
 
   // Open on the store-wide constellation with similarity edges (the "living brain"
@@ -95,7 +100,7 @@ async function main(): Promise<void> {
     try {
       const previewResult = await previewDelete(selector);
       if (previewResult.count === 0) {
-        showError('nothing matched — nothing to delete');
+        showError(t('nothingToDelete'));
         return;
       }
       const ok = await confirmDelete(previewResult, summary);
@@ -105,11 +110,9 @@ async function main(): Promise<void> {
       overlays.showInspector(null);
       await load(); // refresh the graph so the deleted nodes disappear
       // H1: confirm the positive outcome (don't drop notFound). Announced politely.
-      const n = result.deleted.length;
-      let msg = `excluídas ${n} ${n === 1 ? 'memória' : 'memórias'}`;
+      let msg = t('deletedN', { n: result.deleted.length });
       if (result.notFound.length > 0) {
-        const m = result.notFound.length;
-        msg += ` · ${m} já não ${m === 1 ? 'existia' : 'existiam'}`;
+        msg += ` · ${t('alreadyGoneN', { n: result.notFound.length })}`;
       }
       showStatus(msg);
     } catch (err) {
@@ -124,13 +127,13 @@ async function main(): Promise<void> {
       const id = Number(node.id.slice(2));
       return {
         selector: { sel: 'session', id },
-        summary: `Excluir todas as observações da sessão "${node.label}".`,
+        summary: t('deleteSessionSummary'),
       };
     }
     const id = Number(node.id.slice(2));
     return {
       selector: { sel: 'ids', ids: [id] },
-      summary: `Excluir esta observação (#${id}).`,
+      summary: t('deleteObsSummary'),
     };
   }
 
@@ -143,9 +146,7 @@ async function main(): Promise<void> {
     });
   } catch (err) {
     if (err instanceof CreatureUnsupportedError) {
-      showError(
-        'Esta visualização precisa de WebGL2. Atualize o navegador ou habilite a aceleração de hardware para ver a criatura.',
-      );
+      showError(t('webglUnsupported'));
       return;
     }
     throw err;
@@ -185,10 +186,7 @@ async function main(): Promise<void> {
     },
     onSearchDelete: () => {
       if (!lastSearch) return;
-      void runDelete(
-        { sel: 'search', q: lastSearch, limit: 50 },
-        `Excluir exatamente os itens previstos que correspondem a "${lastSearch}" (conjunto resolvido pela busca FTS, já limitado — não um total irrestrito).`,
-      );
+      void runDelete({ sel: 'search', q: lastSearch, limit: 50 }, t('deleteSearchSummary'));
     },
     onScopeChange: (next) => {
       // Changing scope (session/topN/similarity) exits search: clear the active

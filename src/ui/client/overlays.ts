@@ -19,6 +19,7 @@
  * intent up to main.ts (the container).
  */
 import type { GraphData, GraphMeta, NodeType } from '../graph-types.js';
+import { t } from './i18n.js';
 import { TAXONOMY } from './palette.js';
 import type { ScopeMode, Theme, ViewNode } from './types.js';
 import { nextVisibleTypes, presentTypes } from './visible-types.js';
@@ -81,7 +82,7 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
   const projectSelect = el('select', {
     id: 'scope-project',
     class: 'control select',
-    'aria-label': 'Escopo: projeto a exibir',
+    'aria-label': t('scopeProjectLabel'),
   });
   // Scope segmented control: "sessão" (the focused/most-recent session) vs "tudo"
   // (the store-wide constellation = topN mode). Replaces the old "top 200" button —
@@ -94,9 +95,9 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
       type: 'button',
       class: 'seg-btn',
       'aria-pressed': 'false',
-      'aria-label': 'Escopo: só a sessão em foco',
+      'aria-label': t('scopeSessionLabel'),
     },
-    ['sessão'],
+    [t('scopeSessionBtn')],
   );
   const scopeAllBtn = el(
     'button',
@@ -104,13 +105,13 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
       type: 'button',
       class: 'seg-btn',
       'aria-pressed': 'true',
-      'aria-label': 'Escopo: toda a memória (constelação)',
+      'aria-label': t('scopeAllLabel'),
     },
-    ['tudo'],
+    [t('scopeAllBtn')],
   );
   const scopeSeg = el(
     'div',
-    { class: 'segmented', role: 'group', 'aria-label': 'Escopo do grafo' },
+    { class: 'segmented', role: 'group', 'aria-label': t('scopeGroupLabel') },
     [scopeSessionBtn, scopeAllBtn],
   );
   /** Reflect the current `mode` onto the two segmented buttons. */
@@ -126,9 +127,9 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
       // Default scope opens with similarity ON — reflect that on first paint so the
       // control state isn't inverted for sighted/AT users before the first sync.
       'aria-pressed': 'true',
-      'aria-label': 'Alternar arestas de similaridade',
+      'aria-label': t('similarityLabel'),
     },
-    ['similaridade'],
+    [t('similarityBtn')],
   );
 
   // Defaults match the container's opening scope (main.ts): the store-wide
@@ -201,7 +202,7 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
     el('div', { class: 'brand' }, [
       el('span', { class: 'brand-dot', 'aria-hidden': 'true' }),
       el('span', { class: 'brand-name' }, ['agentbrainsystem']),
-      el('span', { class: 'brand-sub' }, ['memory graph']),
+      el('span', { class: 'brand-sub' }, [t('brandSub')]),
     ]),
     el('div', { class: 'scope-row' }, [projectSelect, scopeSeg, simBtn]),
     truncBanner,
@@ -212,10 +213,10 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
     type: 'search',
     id: 'search',
     class: 'control search',
-    placeholder: 'buscar memória…',
+    placeholder: t('searchPlaceholder'),
     autocomplete: 'off',
     spellcheck: 'false',
-    'aria-label': 'Buscar nós por conteúdo ou id',
+    'aria-label': t('searchLabel'),
   });
   let searchDebounce = 0;
   // "Delete the N matching" — hidden until the search box has a query (ADR-0007).
@@ -224,11 +225,10 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
     {
       type: 'button',
       class: 'control toggle search-delete',
-      'aria-label':
-        'Excluir as memórias previstas pela busca (conjunto limitado, não tudo que corresponde)',
+      'aria-label': t('searchDeleteLabel'),
       hidden: '',
     },
-    ['excluir busca'],
+    [t('searchDeleteBtn')],
   );
   searchDeleteBtn.addEventListener('click', () => cb.onSearchDelete());
   searchInput.addEventListener('input', () => {
@@ -243,7 +243,7 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
       type: 'button',
       id: 'theme-toggle',
       class: 'control icon-btn',
-      'aria-label': 'Alternar tema claro/escuro',
+      'aria-label': t('themeLabel'),
     },
     ['◐'],
   );
@@ -253,11 +253,11 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
     cb.onThemeChange(theme);
   });
 
-  const topRight = el('section', { class: 'overlay overlay-tr', 'aria-label': 'Busca e tema' }, [
-    searchInput,
-    searchDeleteBtn,
-    themeBtn,
-  ]);
+  const topRight = el(
+    'section',
+    { class: 'overlay overlay-tr', 'aria-label': t('topRightLabel') },
+    [searchInput, searchDeleteBtn, themeBtn],
+  );
 
   // --- Bottom-left: type-filter pills / legend -----------------------------
   const pillMap = new Map<NodeType, HTMLButtonElement>();
@@ -271,7 +271,7 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
         class: 'pill',
         'data-type': meta.type,
         'aria-pressed': 'true',
-        'aria-label': `Filtrar nós do tipo ${meta.label}`,
+        'aria-label': `${t('pillFilterLabel')} ${meta.label}`,
       },
       [swatch, el('span', { class: 'pill-label' }, [meta.label])],
     );
@@ -290,7 +290,7 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
   });
   const legend = el(
     'section',
-    { class: 'overlay overlay-bl', 'aria-label': 'Filtro por tipo de nó' },
+    { class: 'overlay overlay-bl', 'aria-label': t('legendLabel') },
     pills,
   );
 
@@ -299,14 +299,14 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
     id: 'inspector',
     class: 'overlay inspector',
     role: 'complementary',
-    'aria-label': 'Inspetor do nó selecionado',
+    'aria-label': t('inspectorLabel'),
     hidden: '',
   });
   function renderInspector(node: ViewNode): void {
     inspector.replaceChildren();
     const closeBtn = el(
       'button',
-      { type: 'button', class: 'icon-btn inspect-close', 'aria-label': 'Fechar inspetor' },
+      { type: 'button', class: 'icon-btn inspect-close', 'aria-label': t('inspectorClose') },
       ['×'],
     );
     closeBtn.addEventListener('click', () => cb.onInspectorClose());
@@ -319,8 +319,8 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
       {
         type: 'button',
         class: 'icon-btn inspect-delete',
-        'aria-label': node.type === 'session' ? 'Excluir toda a sessão' : 'Excluir esta observação',
-        title: node.type === 'session' ? 'excluir sessão' : 'excluir observação',
+        'aria-label': node.type === 'session' ? t('deleteSessionLabel') : t('deleteObsLabel'),
+        title: node.type === 'session' ? t('deleteSessionTitle') : t('deleteObsTitle'),
       },
       ['🗑'],
     );
@@ -359,11 +359,11 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
   // --- Empty state (centered, on-brand) ------------------------------------
   const emptyState = el('div', { id: 'empty-state', class: 'empty', hidden: '' }, [
     el('div', { class: 'empty-glyph', 'aria-hidden': 'true' }, ['◌']),
-    el('h1', { class: 'empty-title' }, ['memory is empty']),
+    el('h1', { class: 'empty-title' }, [t('emptyTitle')]),
     el('p', { class: 'empty-sub' }, [
-      'run ',
+      t('emptyRunPrefix'),
       el('code', { class: 'empty-code', translate: 'no' }, ['abs ingest']),
-      ' to populate the graph',
+      t('emptyRunSuffix'),
     ]),
   ]);
 
@@ -371,8 +371,8 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
   // A populated store that resolves to zero nodes must NOT read as "empty store".
   // Two flavours: a 0-hit search, or a non-search scope that resolves nothing
   // (e.g. a deleted/missing session id) — both get guidance, never a blank canvas.
-  const noResultsTitle = el('h1', { class: 'empty-title' }, ['nenhum resultado']);
-  const noResultsSub = el('p', { class: 'empty-sub' }, ['nenhuma memória corresponde à busca']);
+  const noResultsTitle = el('h1', { class: 'empty-title' }, [t('noResultsTitle')]);
+  const noResultsSub = el('p', { class: 'empty-sub' }, [t('noResultsSub')]);
   const noResults = el('div', { id: 'no-results', class: 'empty', hidden: '' }, [
     el('div', { class: 'empty-glyph', 'aria-hidden': 'true' }, ['⌕']),
     noResultsTitle,
@@ -395,7 +395,7 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
       // Project picker — store-wide options from meta.projects (not the rendered
       // window). Lead with "todos os projetos" (clears the filter).
       projectSelect.replaceChildren();
-      const allOpt = el('option', { value: '' }, ['todos os projetos']);
+      const allOpt = el('option', { value: '' }, [t('allProjects')]);
       if (!data.scope.project) allOpt.selected = true;
       projectSelect.append(allOpt);
       for (const p of data.meta.projects) {
@@ -427,7 +427,12 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
         truncBanner.hidden = false;
         // renderedNodes is scope-local; the store totals are store-wide — keep
         // the wording explicit so it never reads as "12 of 9000" in one scope.
-        truncBanner.textContent = `mostrando ${meta.renderedNodes} nós · store tem ${meta.totalObservations} obs / ${meta.totalSessions} sessões`;
+        truncBanner.textContent = t('truncBanner', {
+          n: meta.renderedNodes,
+          rendered: meta.renderedNodes,
+          obs: meta.totalObservations,
+          sessions: meta.totalSessions,
+        });
       } else {
         truncBanner.hidden = true;
       }
@@ -441,10 +446,8 @@ export function mountOverlays(root: HTMLElement, cb: OverlayCallbacks): Overlays
       noResults.hidden = !zeroOnPopulated;
       if (zeroOnPopulated) {
         const searching = data.scope.mode === 'search';
-        noResultsTitle.textContent = searching ? 'nenhum resultado' : 'escopo vazio';
-        noResultsSub.textContent = searching
-          ? 'nenhuma memória corresponde à busca'
-          : 'nenhum nó neste escopo — tente outro projeto ou top 200';
+        noResultsTitle.textContent = searching ? t('noResultsTitle') : t('emptyScopeTitle');
+        noResultsSub.textContent = searching ? t('noResultsSub') : t('emptyScopeSub');
       }
     },
     showInspector(node: ViewNode | null): void {

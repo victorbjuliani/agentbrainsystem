@@ -16,6 +16,8 @@
  *   - The selector travels in the query string (no request body) to match the server.
  */
 
+import { t } from './i18n.js';
+
 /** A delete selector, mirrored from the core `DeleteSelector` (query-string shape). */
 export type ClientSelector =
   | { sel: 'ids'; ids: number[] }
@@ -228,16 +230,15 @@ export function confirmDelete(preview: PreviewResult, summary: string): Promise<
       );
     }
     const more = preview.items.length - Math.min(preview.items.length, 12);
-    const extra = more > 0 ? [el('li', { class: 'delete-more' }, [`…and ${more} more`])] : [];
+    const extra =
+      more > 0 ? [el('li', { class: 'delete-more' }, [t('deleteMoreN', { n: more })])] : [];
 
     // L1: surface the preview's own notFound (ids that no longer exist) so the dialog
     // doesn't silently drop them — the count above already excludes them.
     if (preview.notFound.length > 0) {
       extra.push(
         el('li', { class: 'delete-notfound' }, [
-          `${preview.notFound.length} ${preview.notFound.length === 1 ? 'id' : 'ids'} já não ${
-            preview.notFound.length === 1 ? 'existe' : 'existem'
-          } (ignorado${preview.notFound.length === 1 ? '' : 's'})`,
+          t('deleteNotFoundN', { n: preview.notFound.length }),
         ]),
       );
     }
@@ -245,24 +246,24 @@ export function confirmDelete(preview: PreviewResult, summary: string): Promise<
     // M1 + B2: Cancel is the calm default (and gets initial focus); the destructive
     // confirm stays distinct (danger-colored) but is NOT styled as the focal primary.
     const cancelBtn = el('button', { type: 'button', class: 'control toggle delete-cancel' }, [
-      'cancelar',
+      t('deleteCancel'),
     ]);
     const confirmBtn = el('button', { type: 'button', class: 'control delete-confirm' }, [
-      `excluir ${preview.count}`,
+      t('deleteConfirmN', { n: preview.count }),
     ]);
     cancelBtn.addEventListener('click', () => close(false));
     confirmBtn.addEventListener('click', () => close(true));
 
     const dialog = el('div', { class: 'delete-dialog overlay' }, [
       el('header', { class: 'delete-head' }, [
-        el('span', { class: 'delete-title', id: titleId }, ['excluir memória']),
+        el('span', { class: 'delete-title', id: titleId }, [t('deleteDialogTitle')]),
         el('span', { class: 'delete-count', id: countId }, [
-          `${preview.count} ${preview.count === 1 ? 'item' : 'itens'}`,
+          t('deleteCountN', { n: preview.count }),
         ]),
       ]),
       el('p', { class: 'delete-summary', id: summaryId }, [summary]),
       el('ul', { class: 'delete-list-wrap' }, [list, ...extra]),
-      el('p', { class: 'delete-warn', id: warnId }, ['Exclusão permanente e irreversível.']),
+      el('p', { class: 'delete-warn', id: warnId }, [t('deleteWarn')]),
       el('div', { class: 'delete-actions' }, [cancelBtn, confirmBtn]),
     ]);
 
