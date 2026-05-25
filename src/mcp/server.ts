@@ -247,13 +247,16 @@ export function createMcpServer(memory: Memory, harnessId?: string): McpServer {
         const entry = optimizeCache.get(candidateId);
         if (!entry) {
           // Candidate ids live in this in-process Map (#114) and do NOT survive a
-          // server restart. An empty cache means no `optimize` has run on THIS
-          // server instance — almost always a restart since the ids were minted, so
-          // say so explicitly instead of an opaque "unknown id".
+          // server restart. An empty cache has two innocent causes — the last
+          // `optimize` produced no candidates, OR the server restarted since the ids
+          // were minted — so name BOTH rather than asserting a restart (the cache is
+          // also empty right after a zero-candidate optimize). A non-empty cache means
+          // this id is genuinely not among the current candidates.
           const error =
             optimizeCache.size === 0
-              ? `candidate id '${candidateId}' is not loaded — the MCP server has no candidates in memory ` +
-                '(they do not survive a server restart). Re-run `optimize` to refresh candidates, then apply.'
+              ? `candidate id '${candidateId}' is not loaded — no optimize candidates are in memory. ` +
+                'Either the last `optimize` produced none, or the MCP server restarted since the ids ' +
+                'were minted (they do not survive a restart). Re-run `optimize` to refresh candidates, then apply.'
               : `unknown candidate id '${candidateId}' — it is not among the current candidates. ` +
                 'Re-run `optimize` to refresh candidates, then apply.';
           return jsonContent({ error });

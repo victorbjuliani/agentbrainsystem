@@ -299,15 +299,17 @@ describe('MCP server', () => {
     expect(existsSync(join(projectRoot, 'CLAUDE.md'))).toBe(true);
   });
 
-  it('apply on a fresh server (empty cache) returns the restart message (#114)', async () => {
-    // No `optimize` ran on THIS server → the in-memory candidate cache is empty,
-    // which is exactly what a post-restart `apply` of an old id looks like. The
-    // message must name the restart cause, not an opaque "unknown id".
+  it('apply on a fresh server (empty cache) explains both causes, not just restart (#114)', async () => {
+    // No `optimize` ran on THIS server → the in-memory candidate cache is empty.
+    // That has two innocent causes (a zero-candidate optimize OR a restart), so the
+    // message must name BOTH, not assert a restart (Codex P2 on #128).
     const client = await connectedClient();
     const res = parse(
       await client.callTool({ name: 'apply', arguments: { candidateId: 'cand-999' } }),
     ) as { error?: string };
-    expect(res.error).toMatch(/do not survive a server restart|not loaded/i);
+    expect(res.error).toMatch(/not loaded/i);
+    expect(res.error).toMatch(/produced none/i); // the zero-candidate cause
+    expect(res.error).toMatch(/restart/i); // the restart cause
     expect(res.error).toMatch(/re-run `optimize`/i);
   });
 
