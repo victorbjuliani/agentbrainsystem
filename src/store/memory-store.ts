@@ -253,7 +253,16 @@ export class MemoryStore {
     // is a no-op on every subsequent open within the window.
     if (preexisting) this.maybeBackup(path);
 
-    this.runMigrations();
+    // runMigrations runs OUTSIDE the bring-up try/catch above, but it can still throw
+    // (SchemaDowngradeError on a newer-than-code DB, #112). Mirror the corruption path:
+    // never leak the live connection on a failed open, or a caller that fails open
+    // (hooks, ADR-0004) would retain a WAL/lock-holding handle for the whole process.
+    try {
+      this.runMigrations();
+    } catch (e) {
+      this.close();
+      throw e;
+    }
     return this;
   }
 

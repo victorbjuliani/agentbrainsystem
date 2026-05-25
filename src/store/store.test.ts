@@ -89,6 +89,10 @@ describe('MemoryStore', () => {
       expect((thrown as Error).message).toMatch(/newer abs/);
       expect((thrown as SchemaDowngradeError).dbVersion).toBe(CURRENT_SCHEMA_VERSION + 1);
       expect((thrown as SchemaDowngradeError).codeVersion).toBe(CURRENT_SCHEMA_VERSION);
+      // The failed open must NOT leak the live connection — open() closes before it
+      // throws, so a method that needs the handle now reports it's closed (no WAL/lock
+      // left dangling for a fail-open caller).
+      expect(() => reopened.schemaVersion()).toThrow(/not open/);
     });
   });
 
