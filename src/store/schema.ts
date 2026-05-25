@@ -11,9 +11,10 @@
  * guarded by a `schema_migrations` ledger, so opening an existing DB is a no-op.
  */
 import type { Database } from 'better-sqlite3';
+import { observationContentHash } from './content-hash.js';
 
 /** The schema version the running code expects. Bump when adding a migration. */
-export const CURRENT_SCHEMA_VERSION = 4;
+export const CURRENT_SCHEMA_VERSION = 5;
 
 /**
  * Run a multi-statement DDL/SQL batch on the connection. Thin wrapper over
@@ -143,6 +144,51 @@ export const MIGRATIONS: readonly Migration[] = [
       // branch). Recall uses it to tag cross-branch facts. Nullable: claimed
       // anchors and offline/no-git contexts simply leave it unset.
       runDdl(db, 'ALTER TABLE fact_anchors ADD COLUMN branch TEXT;');
+    },
+  },
+  {
+    version: 5,
+    name: 'content-hash-idempotence',
+    up(db) {
+      // Content-hash idempotence (#105): a UNIQUE key on hash(session_id, content,
+      // source) so a re-ingest of identical content is a no-op INSERT, not a
+      // duplicate row. Forward-only and transactional (the runner wraps `up`).
+      runDdl(db, 'ALTER TABLE observations ADD COLUMN content_hash TEXT;');
+
+      // Backfill the hash for existing rows. SQLite has no sha256, so compute it in
+      // JS — one-time cost on first open after upgrade.
+      const rows = db
+        .prepare('SELECT id, session_id, content, source FROM observations')
+        .all() as Array<{ id: number; session_id: number; content: string; source: string | null }>;
+      const setHash = db.prepare('UPDATE observations SET content_hash = ? WHERE id = ?');
+      for (const r of rows) {
+        setHash.run(observationContentHash(r.session_id, r.content, r.source), r.id);
+      }
+
+      // A populated store may already hold duplicates (the bug this fixes), which
+      // would make the UNIQUE index creation fail. Dedupe first: keep the lowest id
+      // per hash, drop the rest AND their vector/FTS entries (those tables are keyed
+      // by the observation rowid; deleting the observation row alone would orphan
+      // them). fact_anchors cascade via their FK.
+      const dupes = db
+        .prepare(
+          `SELECT id FROM observations
+           WHERE id NOT IN (SELECT MIN(id) FROM observations GROUP BY content_hash)`,
+        )
+        .all() as Array<{ id: number }>;
+      const delVec = db.prepare('DELETE FROM vec_observations WHERE rowid = ?');
+      const delFts = db.prepare('DELETE FROM fts_observations WHERE rowid = ?');
+      const delObs = db.prepare('DELETE FROM observations WHERE id = ?');
+      for (const { id } of dupes) {
+        delVec.run(BigInt(id)); // vec0 rowid binds as BigInt (ADR 0001)
+        delFts.run(id);
+        delObs.run(id);
+      }
+
+      runDdl(
+        db,
+        'CREATE UNIQUE INDEX idx_observations_content_hash ON observations(content_hash);',
+      );
     },
   },
 ];
