@@ -10,6 +10,7 @@ import type { EmbeddingProvider } from '../embedding/index.js';
 import { GLOBAL_PROJECT } from '../global.js';
 import type { AnchorState, MemoryStore, Observation } from '../store/index.js';
 import { DEFAULT_RRF_K, reciprocalRankFusion } from './rrf.js';
+import { stemVariants } from './stemming.js';
 
 export interface RecallOptions {
   /** Max results to return. */
@@ -61,22 +62,35 @@ export interface RecallFtsOptions {
 /**
  * Turn free text into a safe FTS5 MATCH expression: word tokens OR-ed together,
  * each quoted so punctuation/operators in the query can't break the parser or
- * inject FTS syntax. Returns null when there is nothing searchable. With
- * `{ prefix: true }` each token becomes a prefix match (`"migrat"*`) — opt-in for
- * the UI's forgiving search; recall keeps the default exact match (#129).
+ * inject FTS syntax. Returns null when there is nothing searchable.
+ *
+ * Two opt-ins, both used only by the UI's forgiving search — recall's per-prompt
+ * FTS leg passes neither, so it keeps its exact, validated semantics (#129):
+ *   - `{ prefix: true }`  → each term becomes a prefix match (`"migrat"*`).
+ *   - `{ stem: true }`    → each token expands to its stems across en/pt/es so a
+ *     query reaches its whole word family in the bilingual store (English is the
+ *     default; pt/es are extra coverage). Pairs with `prefix` for the widest reach.
  */
-export function toFtsQuery(text: string, opts: { prefix?: boolean } = {}): string | null {
+export function toFtsQuery(
+  text: string,
+  opts: { prefix?: boolean; stem?: boolean } = {},
+): string | null {
   const tokens = text.toLowerCase().match(/[\p{L}\p{N}]+/gu);
   if (!tokens || tokens.length === 0) return null;
   const seen = new Set<string>();
   const terms: string[] = [];
   for (const t of tokens) {
-    if (t.length < 2 || seen.has(t)) continue;
-    seen.add(t);
-    // `prefix` opts a token into FTS5 prefix matching (`"migrat"*` → migration,
-    // migrations). The UI search uses it for forgiving keyword lookup (#129); recall
-    // leaves it OFF so its per-prompt FTS leg keeps its exact, validated semantics.
-    terms.push(opts.prefix ? `"${t}"*` : `"${t}"`);
+    if (t.length < 2) continue;
+    // Stemming expands one token into its word-family roots (en/pt/es); without it
+    // the term is just the token. Each distinct term is then quoted (and, when
+    // `prefix`, suffixed with `*` for FTS5 prefix matching). Dedup is term-wide so
+    // overlapping stems across tokens collapse.
+    const variants = opts.stem ? stemVariants(t) : [t];
+    for (const v of variants) {
+      if (v.length < 2 || seen.has(v)) continue;
+      seen.add(v);
+      terms.push(opts.prefix ? `"${v}"*` : `"${v}"`);
+    }
   }
   return terms.length > 0 ? terms.join(' OR ') : null;
 }

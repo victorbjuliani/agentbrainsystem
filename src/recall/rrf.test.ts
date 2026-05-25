@@ -52,4 +52,29 @@ describe('toFtsQuery', () => {
     expect(toFtsQuery('migration', { prefix: true })).toBe('"migration"*');
     expect(toFtsQuery('a big queue', { prefix: true })).toBe('"big"* OR "queue"*');
   });
+
+  it('stem mode expands a token to its word-family root (english is the default)', () => {
+    // The original term is kept alongside the stem, both OR-ed.
+    expect(toFtsQuery('running', { stem: true })).toBe('"running" OR "run"');
+    expect(toFtsQuery('migrations', { stem: true, prefix: true })).toBe(
+      '"migrations"* OR "migrat"*',
+    );
+  });
+
+  it('stem mode covers Portuguese too (bilingual store)', () => {
+    expect(toFtsQuery('migrações', { stem: true, prefix: true })).toBe(
+      '"migrações"* OR "migraçõ"*',
+    );
+  });
+
+  it('stem mode dedupes overlapping roots across query terms', () => {
+    // "migration" and "migrations" both stem to "migrat" → one shared term.
+    expect(toFtsQuery('migration migrations', { stem: true, prefix: true })).toBe(
+      '"migration"* OR "migrat"* OR "migrations"*',
+    );
+  });
+
+  it('stem mode is off by default — recall stays exact (#129)', () => {
+    expect(toFtsQuery('running')).toBe('"running"');
+  });
 });
