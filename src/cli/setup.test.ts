@@ -65,6 +65,33 @@ describe('setup core — argv + manual command', () => {
   it('omits the --harness suffix when no harnessId is given (legacy byte-identical)', () => {
     expect(buildMcpAddArgs(CLI)).not.toContain('--harness');
   });
+
+  // #109 Codex review: the positional (Gemini) form needs an argv terminator before
+  // the dash-leading `--harness`, or Gemini's parser eats it as a `mcp add` flag.
+  it('inserts a `--` terminator before --harness in the positional (Gemini) form', () => {
+    expect(
+      buildMcpAddArgs(CLI, { argStyle: 'positional', scope: 'user', harnessId: 'gemini' }),
+    ).toEqual([
+      'mcp',
+      'add',
+      MCP_SERVER_NAME,
+      '--scope',
+      'user',
+      'node',
+      CLI,
+      'start',
+      '--',
+      '--harness',
+      'gemini',
+    ]);
+    expect(
+      manualMcpCommand(CLI, 'gemini', {
+        argStyle: 'positional',
+        scope: 'user',
+        harnessId: 'gemini',
+      }),
+    ).toBe(`gemini mcp add ${MCP_SERVER_NAME} --scope user node ${CLI} start -- --harness gemini`);
+  });
 });
 
 describe('Gemini positional arg style (#68 — Gemini rejects the -- separator)', () => {

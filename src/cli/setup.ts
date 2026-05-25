@@ -48,20 +48,29 @@ interface ArgStyleOptions {
 
 /** `start` plus the optional `--harness <id>` suffix (#109) — the launched server
  * resolves env-based sessions through this harness instead of a hard-coded
- * claude-code. Omitted → just `start` (byte-identical to the pre-#109 command). */
-function startArgs(harnessId?: string): string[] {
-  return harnessId ? ['start', '--harness', harnessId] : ['start'];
+ * claude-code. Omitted → just `start` (byte-identical to the pre-#109 command).
+ *
+ * `positional` (Gemini) needs an argv terminator before the dash-leading `--harness`
+ * arg, or Gemini's yargs parser eats it as a `mcp add` flag and never forwards it to
+ * the launched server (Codex review on #109) — leaving Gemini on the claude-code
+ * fallback. The separator form already opens with its own `--`, so `--harness` after
+ * `start` is unambiguously part of the launched command. */
+function startArgs(harnessId: string | undefined, argStyle: ArgStyleOptions['argStyle']): string[] {
+  if (!harnessId) return ['start'];
+  return argStyle === 'positional'
+    ? ['start', '--', '--harness', harnessId]
+    : ['start', '--harness', harnessId];
 }
 
 /**
  * `<binary> mcp add agentbrainsystem -- node <cli> start [--harness <id>]` (default,
- * claude/codex/copilot) OR the positional `… --scope <scope> node <cli> start …` form
- * for Gemini (#68), which rejects the `--` separator (yargs parse failure). The two
- * forms differ only in the add-flag style; the trailing `start [--harness <id>]` is
- * identical across harnesses.
+ * claude/codex/copilot) OR the positional `… --scope <scope> node <cli> start [-- --harness <id>]`
+ * form for Gemini (#68), which rejects a LEADING `--` separator (yargs parse failure)
+ * but needs a terminator before the dash-leading `--harness` arg (#109). The two
+ * forms differ only in the add-flag style.
  */
 export function buildMcpAddArgs(cliPath: string, opts: ArgStyleOptions = {}): string[] {
-  const launch = ['node', cliPath, ...startArgs(opts.harnessId)];
+  const launch = ['node', cliPath, ...startArgs(opts.harnessId, opts.argStyle)];
   if (opts.argStyle === 'positional') {
     return ['mcp', 'add', MCP_SERVER_NAME, '--scope', opts.scope ?? 'user', ...launch];
   }
@@ -95,7 +104,7 @@ export function manualMcpCommand(
   binary = 'claude',
   opts: ArgStyleOptions = {},
 ): string {
-  const launch = `node ${cliPath} ${startArgs(opts.harnessId).join(' ')}`;
+  const launch = `node ${cliPath} ${startArgs(opts.harnessId, opts.argStyle).join(' ')}`;
   if (opts.argStyle === 'positional') {
     return `${binary} mcp add ${MCP_SERVER_NAME} --scope ${opts.scope ?? 'user'} ${launch}`;
   }
