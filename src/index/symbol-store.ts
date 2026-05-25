@@ -16,9 +16,25 @@ export interface SymbolHit {
   line: number;
 }
 
+/** One parsed file ready to apply: `defs` to upsert, or `null` to delete the file. */
+export interface FileOp {
+  filePath: string;
+  defs: Definition[] | null;
+}
+
 export interface SymbolStore {
+  /** Absolute path of the backing `<slug>.db` — used to key the per-repo refresh lock (#106). */
+  readonly dbPath: string;
   upsertFile(filePath: string, defs: Definition[]): void;
   deleteFile(filePath: string): void;
+  /**
+   * Apply a batch of already-parsed file ops in ONE transaction (#106). When `stamp`
+   * is given, `indexed_commit` is set inside the SAME transaction as the upserts/
+   * deletes — so the commit can never be recorded ahead of the state it describes
+   * (a crash rolls back both). Pass `stamp` only when the batch is the COMPLETE diff
+   * for that commit; omit it for the working-tree overlay or a budget-truncated build.
+   */
+  applyBatch(ops: FileOp[], stamp?: string): void;
   queryByName(name: string, filePath?: string): SymbolHit[];
   getMeta(key: string): string | undefined;
   setMeta(key: string, value: string): void;
@@ -46,7 +62,8 @@ export function openSymbolStore(repoRoot: string): SymbolStore {
   } catch {
     /* path may not exist (tests use synthetic roots) — fall back to the given path */
   }
-  const db = new Database(join(dir, `${projectSlug(canonical)}.db`));
+  const dbPath = join(dir, `${projectSlug(canonical)}.db`);
+  const db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
   db.exec(
     `CREATE TABLE IF NOT EXISTS symbols (
@@ -68,7 +85,16 @@ export function openSymbolStore(repoRoot: string): SymbolStore {
   );
   const delFile = db.prepare('DELETE FROM symbols WHERE file_path = ?');
 
+  const setMetaStmt = db.prepare(
+    'INSERT INTO meta (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+  );
+  const applyOne = (op: FileOp): void => {
+    delFile.run(op.filePath);
+    if (op.defs) for (const d of op.defs) insDef.run(op.filePath, d.name, d.kind, d.line);
+  };
+
   return {
+    dbPath,
     upsertFile(filePath, defs): void {
       const tx = db.transaction(() => {
         delFile.run(filePath);
@@ -78,6 +104,13 @@ export function openSymbolStore(repoRoot: string): SymbolStore {
     },
     deleteFile(filePath): void {
       delFile.run(filePath);
+    },
+    applyBatch(ops, stamp): void {
+      const tx = db.transaction(() => {
+        for (const op of ops) applyOne(op);
+        if (stamp !== undefined) setMetaStmt.run('indexed_commit', stamp);
+      });
+      tx();
     },
     queryByName(name, filePath): SymbolHit[] {
       const rows = (

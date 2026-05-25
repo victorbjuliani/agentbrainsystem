@@ -78,9 +78,83 @@ describe('refreshIndex', () => {
     store.close();
   });
 
-  it('is a no-op on a non-git dir (never throws)', async () => {
+  it('is a no-op on a non-git dir (never throws, not ready)', async () => {
     const nogit = mkdtempSync(join(tmpdir(), 'abs-nogit-'));
-    await expect(refreshIndex(nogit)).resolves.toBeUndefined();
+    await expect(refreshIndex(nogit)).resolves.toEqual({ ready: false });
     rmSync(nogit, { recursive: true, force: true });
+  });
+
+  // #106 — interactive time-box, single-flight per repo, atomic commit stamp.
+  it('reports ready=true once the committed index reflects HEAD', async () => {
+    writeFileSync(join(repo, 'a.ts'), 'export function foo(){}');
+    commit('init');
+    const r = await refreshIndex(repo);
+    expect(r.ready).toBe(true);
+    const store = openSymbolStore(repo);
+    expect(store.getMeta('indexed_commit')).toBeTruthy(); // stamped
+    store.close();
+  });
+
+  it('budget=0 truncates the cold build: nothing stamped, not ready, idempotent recovery', async () => {
+    writeFileSync(join(repo, 'a.ts'), 'export function foo(){}');
+    writeFileSync(join(repo, 'b.ts'), 'export function bar(){}');
+    commit('init');
+    // A zero budget trips before the first parse → no ops applied, commit NOT stamped.
+    const truncated = await refreshIndex(repo, { budgetMs: 0 });
+    expect(truncated.ready).toBe(false);
+    const s1 = openSymbolStore(repo);
+    expect(s1.getMeta('indexed_commit')).toBeUndefined(); // never stamped ahead of state
+    s1.close();
+    // An unbudgeted refresh finishes the build and stamps.
+    const full = await refreshIndex(repo);
+    expect(full.ready).toBe(true);
+    const s2 = openSymbolStore(repo);
+    expect(s2.queryByName('foo')).toHaveLength(1);
+    expect(s2.getMeta('indexed_commit')).toBeTruthy();
+    s2.close();
+  });
+
+  it('budgeted path skips an oversized file (deferred, not stamped); unbudgeted indexes it', async () => {
+    // A >256KB file whose tree-sitter parse could blow the interactive budget mid-await.
+    const filler = `// pad\n${'x'.repeat(300 * 1024)}\n`;
+    writeFileSync(join(repo, 'big.ts'), `export function huge(){}\n${filler}`);
+    commit('init');
+    // Budgeted (but generous time): the size guard, not the clock, defers the big file.
+    const budgeted = await refreshIndex(repo, { budgetMs: 60_000 });
+    expect(budgeted.ready).toBe(false); // deferred file → build incomplete → not ready
+    const s1 = openSymbolStore(repo);
+    expect(s1.queryByName('huge')).toHaveLength(0); // skipped on the interactive path
+    expect(s1.getMeta('indexed_commit')).toBeUndefined(); // not stamped ahead of state
+    s1.close();
+    // Unbudgeted refresh has no size guard → indexes the big file and stamps.
+    const full = await refreshIndex(repo);
+    expect(full.ready).toBe(true);
+    const s2 = openSymbolStore(repo);
+    expect(s2.queryByName('huge')).toHaveLength(1);
+    s2.close();
+  });
+
+  it('single-flight: a refresh skips (reuses the index) while another holds the repo lock', async () => {
+    writeFileSync(join(repo, 'a.ts'), 'export function foo(){}');
+    commit('init');
+    await refreshIndex(repo); // warm the index → at HEAD
+    // Simulate a concurrent holder by taking the lock file ourselves.
+    const store = openSymbolStore(repo);
+    const lockPath = `${store.dbPath}.refresh.lock`;
+    store.close();
+    writeFileSync(lockPath, `${process.pid} ${Date.now()}`);
+    // A new uncommitted file: if the refresh ran the overlay it would index `bar`.
+    writeFileSync(join(repo, 'b.ts'), 'export function bar(){}');
+    try {
+      // The lock is held + fresh → this refresh must SKIP the build (no overlay), but the
+      // committed index is already at HEAD so it still reports ready (reuse).
+      const r = await refreshIndex(repo);
+      expect(r.ready).toBe(true);
+      const s = openSymbolStore(repo);
+      expect(s.queryByName('bar')).toHaveLength(0); // skipped → overlay never ran
+      s.close();
+    } finally {
+      rmSync(lockPath, { force: true });
+    }
   });
 });

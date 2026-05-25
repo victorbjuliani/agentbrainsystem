@@ -45,6 +45,14 @@ const CONTENT_CAP = 200;
 /** Over-fetch from FTS before filtering to decision/lesson, so they aren't crowded out. */
 const RECALL_POOL = 20;
 
+/**
+ * Time budget for the on-the-interactive-path symbol-index refresh (#106). A cold/large
+ * repo's first guarded tool use can't block longer than this; if the build exceeds it,
+ * the guard skips the duplication lens this turn and SessionEnd's unbudgeted refresh
+ * finishes the index.
+ */
+const GUARD_REFRESH_BUDGET_MS = 200;
+
 /** Guard mode from the environment. Default `warn`; `block` is opt-in. */
 function guardMode(): 'warn' | 'block' {
   return process.env.ABS_GUARD_MODE === 'block' ? 'block' : 'warn';
@@ -165,13 +173,25 @@ export async function handlePreToolUse(
   const seeds = extractToolAnchors([{ type: 'tool_use', name: toolName, input: toolInput }]);
   if (seeds.length === 0) return undefined; // not an anchorable Edit/Write on code
 
-  // Make the native symbol index current before the duplication lens reads it. Skipped when a
-  // test injects its own memory/provider; fail-open (non-git cwd → refreshIndex is a no-op).
-  if (!deps.memory) await refreshIndex(payload.cwd ?? process.cwd());
+  // Make the native symbol index current before the duplication lens reads it, TIME-BOXED
+  // so a cold/large repo never blocks this interactive moment beyond the budget (#106).
+  // When the build is truncated (not lens-ready), SKIP the duplication lens — a half-built
+  // index would only under-block anyway, and skipping a half-built read is the documented
+  // fail-open choice. Tests inject their own memory/provider → refresh is skipped and the
+  // lens runs against the injected index as before. Non-git cwd → ready:false → no lens.
+  let indexReady = true;
+  if (!deps.memory) {
+    indexReady = (
+      await refreshIndex(payload.cwd ?? process.cwd(), { budgetMs: GUARD_REFRESH_BUDGET_MS })
+    ).ready;
+  }
 
-  // 1) Duplication (ground truth) — priority, block-eligible.
-  const dup = checkDuplication(payload, seeds);
-  if (dup) return buildPreToolUseOutput(guardMode(), dup) ?? undefined;
+  // 1) Duplication (ground truth) — priority, block-eligible. Only when the index is
+  // lens-ready, so a budget-truncated cold build never drives the block decision.
+  if (indexReady) {
+    const dup = checkDuplication(payload, seeds);
+    if (dup) return buildPreToolUseOutput(guardMode(), dup) ?? undefined;
+  }
 
   // 2) Decision surfacing (memory) — warn-only, fail-open on ANY error including
   // store/config init (e.g. a hosted embedding provider selected without its API

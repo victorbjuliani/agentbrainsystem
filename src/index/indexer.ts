@@ -3,56 +3,222 @@
  * lazily + incrementally from git. Async (tree-sitter parse); call at async hook boundaries
  * BEFORE the sync provider reads. Never throws (best-effort ground truth).
  */
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  unlinkSync,
+  utimesSync,
+  writeSync,
+} from 'node:fs';
 import { extname, isAbsolute, join } from 'node:path';
 import { diffNames, dirtyFiles, headCommit, lsFiles, repoRoot } from './git.js';
 import { initParser, parseDefinitions } from './parser.js';
-import { openSymbolStore, type SymbolStore } from './symbol-store.js';
+import { type FileOp, openSymbolStore, type SymbolStore } from './symbol-store.js';
 
 const SUPPORTED = new Set(['.ts', '.mts', '.cts', '.tsx', '.js', '.mjs', '.cjs', '.jsx', '.py']);
 const isSupported = (p: string) => SUPPORTED.has(extname(p));
 
-/** Parse one repo-relative file (if it exists + supported) and upsert; else drop it. */
-async function indexOne(store: SymbolStore, root: string, rel: string): Promise<void> {
-  if (!isSupported(rel)) return;
-  const abs = join(root, rel);
-  if (!existsSync(abs)) {
-    store.deleteFile(rel);
-    return;
-  }
+/**
+ * A lock not heartbeated within the TTL is from a crashed holder and may be stolen. A LIVE
+ * holder beats every {@link LOCK_HEARTBEAT_MS} (well under the TTL) so a legitimately long
+ * refresh on a big repo is NEVER mistaken for dead and stolen (Codex review on #106).
+ */
+const LOCK_TTL_MS = 30_000;
+const LOCK_HEARTBEAT_MS = 5_000;
+
+/**
+ * Files larger than this are SKIPPED on the budgeted (interactive) path — a single huge
+ * file's tree-sitter parse cannot be interrupted mid-await, so it could blow the budget
+ * (Codex review on #106). They are deferred to the next unbudgeted refresh, which marks
+ * the build incomplete so the commit is not stamped until they are indexed.
+ */
+const INTERACTIVE_MAX_FILE_BYTES = 256 * 1024;
+
+/** A held refresh lock: `heartbeat()` keeps it fresh during a long build; `release()` frees it. */
+interface IndexLock {
+  heartbeat(): void;
+  release(): void;
+}
+
+/** Outcome of {@link refreshIndex}. */
+export interface RefreshResult {
+  /**
+   * The committed index reflects the current HEAD, so the duplication lens may read it
+   * safely. `false` when a cold build was budget-truncated, or skipped because another
+   * session holds the per-repo refresh lock and the local index is not yet at HEAD —
+   * interactive callers should then SKIP the lens rather than read a half-built index
+   * (#106; a partial read only ever under-blocks, but skipping is the documented choice).
+   */
+  ready: boolean;
+}
+
+/**
+ * Single-flight per repo (RC-004): take an exclusive lock keyed on the `<slug>.db` path
+ * so two sessions in the same repo never rebuild concurrently. Returns the lock, or `null`
+ * when another LIVE refresh holds it (the caller reuses the existing index). A lock whose
+ * mtime is older than the TTL belongs to a crashed holder — a live holder heartbeats, so
+ * it never goes stale — and is stolen once.
+ */
+function acquireIndexLock(dbPath: string): IndexLock | null {
+  const lockPath = `${dbPath}.refresh.lock`;
+  const take = (): IndexLock => {
+    const fd = openSync(lockPath, 'wx'); // exclusive create — throws if held
+    writeSync(fd, `${process.pid} ${Date.now()}`);
+    closeSync(fd);
+    let lastBeat = Date.now();
+    return {
+      heartbeat(): void {
+        const now = Date.now();
+        if (now - lastBeat < LOCK_HEARTBEAT_MS) return; // throttle — avoid per-file fs writes
+        try {
+          utimesSync(lockPath, new Date(), new Date()); // bump mtime → "still alive"
+          lastBeat = now;
+        } catch {
+          /* lock vanished (stolen/cleared) — release() will no-op */
+        }
+      },
+      release(): void {
+        try {
+          unlinkSync(lockPath);
+        } catch {
+          /* already gone — nothing to release */
+        }
+      },
+    };
+  };
   try {
-    const defs = await parseDefinitions(rel, readFileSync(abs, 'utf8'));
-    if (defs) store.upsertFile(rel, defs);
+    return take();
   } catch {
-    // unreadable / parse failure → leave prior entry (conservative)
+    try {
+      if (Date.now() - statSync(lockPath).mtimeMs > LOCK_TTL_MS) {
+        unlinkSync(lockPath); // not heartbeated within the TTL → crashed holder → steal once
+        return take();
+      }
+    } catch {
+      /* lost the steal race, or stat/take failed — treat as held */
+    }
+    return null;
   }
+}
+
+/** True when the committed index already matches HEAD (an empty repo is trivially current). */
+function isAtHead(store: SymbolStore, root: string): boolean {
+  const head = headCommit(root);
+  return !head || store.getMeta('indexed_commit') === head;
+}
+
+interface ParseControl {
+  /** Trips when the interactive time budget is spent — stop before the next file. */
+  overBudget: () => boolean;
+  /** Bump the refresh lock so a long build is not mistaken for a dead holder. */
+  heartbeat: () => void;
+  /** When set (budgeted/interactive path), skip files larger than this many bytes. */
+  maxFileBytes?: number;
+}
+
+/**
+ * Parse repo-relative files into apply-ready ops, stopping early when `overBudget` trips
+ * (the interactive time-box). `complete:false` means it stopped short OR skipped a too-big
+ * file on the budgeted path — either way the caller must not stamp the commit. The async
+ * parse (tree-sitter) is separated from the write so the caller applies the batch in one txn.
+ */
+async function parseFiles(
+  root: string,
+  rels: Iterable<string>,
+  ctrl: ParseControl,
+): Promise<{ ops: FileOp[]; complete: boolean }> {
+  const ops: FileOp[] = [];
+  let complete = true;
+  for (const rel of rels) {
+    if (ctrl.overBudget()) return { ops, complete: false };
+    ctrl.heartbeat();
+    if (!isSupported(rel)) continue;
+    const abs = join(root, rel);
+    if (!existsSync(abs)) {
+      ops.push({ filePath: rel, defs: null }); // deleted → drop its symbols
+      continue;
+    }
+    // A single huge file's parse can't be interrupted mid-await, so on the budgeted path
+    // skip it (defer to the unbudgeted refresh) rather than risk blowing the budget.
+    if (ctrl.maxFileBytes !== undefined) {
+      try {
+        if (statSync(abs).size > ctrl.maxFileBytes) {
+          complete = false; // deferred → build is not complete, don't stamp the commit
+          continue;
+        }
+      } catch {
+        /* stat failed — fall through and let the read/parse handle it */
+      }
+    }
+    try {
+      const defs = await parseDefinitions(rel, readFileSync(abs, 'utf8'));
+      if (defs) ops.push({ filePath: rel, defs });
+    } catch {
+      // unreadable / parse failure → leave the prior entry (conservative)
+    }
+  }
+  return { ops, complete };
 }
 
 /**
  * Make the symbol index for the repo containing `cwd` reflect current code. Resolves
  * silently when `cwd` is not in a git repo. Idempotent and cheap in steady state.
+ *
+ * `budgetMs` time-boxes the build on the interactive (guard) path: when it trips, the
+ * partial work is applied WITHOUT stamping `indexed_commit`, so the next unbudgeted
+ * refresh (SessionEnd / post-capture) finishes it. Single-flight per repo, and the
+ * commit stamp is atomic with the upserts (#106).
  */
-export async function refreshIndex(cwd: string): Promise<void> {
+export async function refreshIndex(
+  cwd: string,
+  opts: { budgetMs?: number } = {},
+): Promise<RefreshResult> {
   const root = repoRoot(cwd);
-  if (!root) return; // not a git repo → no native ground truth
+  if (!root) return { ready: false }; // not a git repo → no native ground truth
   await initParser();
   const store = openSymbolStore(root);
+  const lock = acquireIndexLock(store.dbPath);
+  if (!lock) {
+    // Another session is refreshing this repo — don't double-parse. Reuse the existing
+    // index; it is lens-ready only if already at HEAD.
+    const ready = isAtHead(store, root);
+    store.close();
+    return { ready };
+  }
   try {
+    const deadline = opts.budgetMs !== undefined ? Date.now() + opts.budgetMs : undefined;
+    const ctrl: ParseControl = {
+      overBudget: (): boolean => deadline !== undefined && Date.now() >= deadline,
+      heartbeat: lock.heartbeat,
+      // Skip oversized files only on the budgeted (interactive) path.
+      ...(opts.budgetMs !== undefined ? { maxFileBytes: INTERACTIVE_MAX_FILE_BYTES } : {}),
+    };
+
     const head = headCommit(root); // undefined for an empty repo
     const indexed = store.getMeta('indexed_commit');
-
+    let commitComplete = true;
     if (head && head !== indexed) {
-      if (!indexed) {
-        for (const rel of lsFiles(root)) await indexOne(store, root, rel);
-      } else {
-        for (const rel of diffNames(root, indexed, head)) await indexOne(store, root, rel);
-      }
-      store.setMeta('indexed_commit', head);
+      const files = indexed ? diffNames(root, indexed, head) : lsFiles(root);
+      const parsed = await parseFiles(root, files, ctrl);
+      commitComplete = parsed.complete;
+      // Stamp the commit ONLY when the full diff was applied — atomic with the upserts,
+      // so `indexed_commit` can never run ahead of the indexed state.
+      store.applyBatch(parsed.ops, parsed.complete ? head : undefined);
     }
 
-    // Working-tree overlay (always): reflect uncommitted edits/additions/deletions.
-    for (const rel of dirtyFiles(root)) await indexOne(store, root, rel);
+    // Working-tree overlay (always): reflect uncommitted edits/additions/deletions. It
+    // never stamps a commit, so a truncated overlay just re-applies on the next refresh.
+    const dirty = await parseFiles(root, dirtyFiles(root), ctrl);
+    store.applyBatch(dirty.ops);
+
+    const ready = !head || (commitComplete && store.getMeta('indexed_commit') === head);
+    return { ready };
   } finally {
+    lock.release();
     store.close();
   }
 }
