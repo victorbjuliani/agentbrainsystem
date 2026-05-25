@@ -146,9 +146,12 @@ function out(msg: string): void {
   process.stdout.write(`${msg}\n`);
 }
 
-async function cmdStart(): Promise<void> {
+async function cmdStart(args: string[] = []): Promise<void> {
   // No stdout writes here — startStdio owns stdout for JSON-RPC.
-  await startStdio();
+  // `--harness <id>` is baked into the registered launch command (#109) so the
+  // server resolves env-based sessions through the harness that launched it,
+  // never a hard-coded claude-code. Absent (legacy registration) → claude-code.
+  await startStdio(optionValue(args, '--harness'));
 }
 
 /**
@@ -1406,7 +1409,7 @@ async function main(): Promise<void> {
   switch (command) {
     case 'start':
     case 'mcp':
-      return cmdStart();
+      return cmdStart(rest);
     case 'ingest':
       return cmdIngest(rest);
     case 'status':

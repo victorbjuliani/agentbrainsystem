@@ -272,9 +272,15 @@ export function opencodePluginInstaller(
   const pluginRelSpec = `./plugin/${pluginFileName}`;
   const pluginAbsPath = join(configDir, 'plugin', pluginFileName);
 
-  /** The exact mcp entry we write (also the idempotency / collision check). */
+  /** The exact mcp entry we write (also the idempotency / collision check). The
+   * `--harness opencode` suffix (#109) tells the launched server to resolve
+   * env-based sessions through the opencode adapter, never a hard-coded claude-code. */
   function mcpEntryFor(cliPath: string): Record<string, unknown> {
-    return { type: 'local', command: ['node', cliPath, 'start'], enabled: true };
+    return {
+      type: 'local',
+      command: ['node', cliPath, 'start', '--harness', 'opencode'],
+      enabled: true,
+    };
   }
 
   /** Snippet printed on a JSONC abort so the user can paste it manually. */

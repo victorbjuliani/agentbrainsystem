@@ -36,6 +36,26 @@ import { VERSION } from '../version.js';
 /** Default external session id used when a `remember` call omits one. */
 const DEFAULT_SESSION = 'mcp';
 
+/**
+ * Resolve the bound session id from the environment via the HARNESS that launched
+ * this MCP server (#109). The server is registered with `start --harness <id>` so
+ * shared code no longer hard-codes claude-code: a Codex/Gemini/Copilot/OpenCode
+ * server resolves through its own (payload-only) adapter and so never binds a stale
+ * `CLAUDE_CODE_SESSION_ID` that leaked into the process env. Precedence at the call
+ * site is always: explicit `session` arg > this env resolution. When the harness is
+ * unknown (a legacy registration without the flag) we fall back to claude-code so
+ * existing Claude installs behave exactly as before.
+ */
+function envSession(
+  harnessId: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  const adapter =
+    (harnessId ? defaultRegistry().byId(harnessId) : undefined) ??
+    defaultRegistry().byId('claude-code');
+  return adapter?.resolveSession({ env })?.sessionId;
+}
+
 function jsonContent(value: unknown): { content: Array<{ type: 'text'; text: string }> } {
   return { content: [{ type: 'text', text: JSON.stringify(value, null, 2) }] };
 }
@@ -68,7 +88,7 @@ function resolveSession(memory: Memory, externalId: string): number {
   }
 }
 
-export function createMcpServer(memory: Memory): McpServer {
+export function createMcpServer(memory: Memory, harnessId?: string): McpServer {
   const server = new McpServer({ name: 'agentbrainsystem', version: VERSION });
 
   server.registerTool(
@@ -101,8 +121,7 @@ export function createMcpServer(memory: Memory): McpServer {
           explicit ??
           resolveRecallProject(memory.store, {
             scope: loadConfig().recallScope,
-            sessionId: defaultRegistry().byId('claude-code')?.resolveSession({ env: process.env })
-              ?.sessionId,
+            sessionId: envSession(harnessId),
             cwd: process.cwd(),
           });
         // includeGlobal: the curated cross-project global brain is recalled alongside
@@ -366,7 +385,7 @@ export function createMcpServer(memory: Memory): McpServer {
     {
       title: 'Skip or include this session in memory',
       description:
-        "Decide whether the CURRENT session is saved to memory. The project is ALWAYS the session's folder (its cwd) — there is no name to choose. action='skip' excludes the session from memory; action='include' reverts a prior skip so it is saved under its folder again. Pass `session` (the id from the SessionStart notice); if omitted it falls back to CLAUDE_CODE_SESSION_ID, which MAY bind the wrong session if the server is shared. SKIP IS IRREVERSIBLE: it hard-deletes any already-stored observations for the session — that delete only runs with confirmDelete=true (export first via `abs export`); otherwise it returns a preview with the count.",
+        "Decide whether the CURRENT session is saved to memory. The project is ALWAYS the session's folder (its cwd) — there is no name to choose. action='skip' excludes the session from memory; action='include' reverts a prior skip so it is saved under its folder again. Pass `session` (the id from the SessionStart notice); if omitted it falls back to the launching harness's session env (claude-code only). SKIP IS IRREVERSIBLE: it hard-deletes any already-stored observations for the session — that delete only runs with confirmDelete=true (export first via `abs export`); otherwise it returns a preview with the count.",
       inputSchema: {
         action: z
           .enum(['skip', 'include'])
@@ -375,7 +394,7 @@ export function createMcpServer(memory: Memory): McpServer {
           .string()
           .optional()
           .describe(
-            'The current session id (from the notice). Falls back to CLAUDE_CODE_SESSION_ID.',
+            "The current session id (from the notice). Falls back to the launching harness's session env (claude-code only).",
           ),
         confirmDelete: z
           .boolean()
@@ -389,7 +408,7 @@ export function createMcpServer(memory: Memory): McpServer {
     // binding (and, on a confirmed skip, deletes that session's own rows) — it never
     // reads or rebuilds the recall index, so it has no dependency on the background
     // rebuild being finished. Gating it would needlessly delay a project decision.
-    async (args) => jsonContent(setSessionProjectAction(memory, args)),
+    async (args) => jsonContent(setSessionProjectAction(memory, args, harnessId)),
   );
 
   // Promote an existing memory into the cross-project global brain (#). Without `as`
@@ -464,16 +483,17 @@ export interface SetSessionProjectArgs {
  * binding (back to the default: stored under the folder); `skip` excludes the
  * session, gating the IRREVERSIBLE delete of already-stored observations behind
  * `confirmDelete` (the MCP analog of the CLI's `--yes`; ADR-0008). Session id comes
- * from `session` (preferred — the notice passes it) or `CLAUDE_CODE_SESSION_ID`
- * (last resort). Read-only store lookups never mint a session row.
+ * from `session` (preferred — the notice passes it) or, as a last resort, the
+ * launching harness's env via {@link envSession} (#109 — claude-code reads
+ * `CLAUDE_CODE_SESSION_ID`; payload-only harnesses resolve to nothing rather than
+ * binding a stale Claude session). Read-only store lookups never mint a session row.
  */
 export function setSessionProjectAction(
   memory: Memory,
   { action, session, confirmDelete }: SetSessionProjectArgs,
+  harnessId?: string,
 ): Record<string, unknown> {
-  const sid =
-    session ??
-    defaultRegistry().byId('claude-code')?.resolveSession({ env: process.env })?.sessionId;
+  const sid = session ?? envSession(harnessId);
   if (!sid) {
     return {
       error:
@@ -551,7 +571,7 @@ export async function backgroundEnsure(
 }
 
 /** Boot the full stack and serve it over stdio. Used by the CLI / MCP packaging. */
-export async function startStdio(): Promise<void> {
+export async function startStdio(harnessId?: string): Promise<void> {
   // Open the stack WITHOUT the startup rebuild gate so the stdio `initialize`
   // handshake answers instantly. A slow rebuild here (a count-drift / signature
   // change re-embeds every observation, which can take seconds) would keep the
@@ -571,7 +591,7 @@ export async function startStdio(): Promise<void> {
     willRebuild: memory.indexer.status().stale,
   });
 
-  const server = createMcpServer(memory);
+  const server = createMcpServer(memory, harnessId);
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }

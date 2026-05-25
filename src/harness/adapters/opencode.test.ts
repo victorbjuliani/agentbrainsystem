@@ -67,7 +67,7 @@ describe('opencode registerMcp (file-only, #72)', () => {
     const parsed = JSON.parse(read());
     expect(parsed.mcp.agentbrainsystem).toEqual({
       type: 'local',
-      command: ['node', CLI, 'start'],
+      command: ['node', CLI, 'start', '--harness', 'opencode'],
       enabled: true,
     });
     const second = await installer.registerMcp(CLI);
@@ -120,11 +120,11 @@ describe('opencode registerMcp (file-only, #72)', () => {
     expect(bakContents).toContain(original);
   });
 
-  it('(i) C2 — registerMcp bakes the threaded cliPath (command = ["node", cliPath, "start"])', async () => {
+  it('(i) C2 — registerMcp bakes the threaded cliPath (command = ["node", cliPath, "start", "--harness", "opencode"])', async () => {
     const installer = opencodePluginInstaller({ configDir: dir });
     await installer.registerMcp(CLI);
     const cmd = JSON.parse(read()).mcp.agentbrainsystem.command;
-    expect(cmd).toEqual(['node', CLI, 'start']);
+    expect(cmd).toEqual(['node', CLI, 'start', '--harness', 'opencode']);
     expect(cmd).not.toContain('abs'); // NOT bare abs
   });
 });

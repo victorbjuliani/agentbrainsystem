@@ -152,7 +152,7 @@ describe('opencodePluginInstaller (#72)', () => {
     expect(parsed.mcp.other).toEqual({ type: 'local' });
     expect(parsed.mcp.agentbrainsystem).toEqual({
       type: 'local',
-      command: ['node', CLI, 'start'],
+      command: ['node', CLI, 'start', '--harness', 'opencode'],
       enabled: true,
     });
     expect(parsed.plugin).toEqual(['./plugin/agentbrainsystem.js']);

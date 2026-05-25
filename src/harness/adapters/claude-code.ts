@@ -18,7 +18,7 @@ const CLAUDE_EVENTS: readonly HookEvent[] = [
 export function claudeCodeAdapter(): HarnessAdapter {
   const resolve = payloadFirstResolver({ envVar: 'CLAUDE_CODE_SESSION_ID' });
   const installer = settingsFileInstaller({ events: CLAUDE_EVENTS });
-  const registrar = cliMcpRegistrar();
+  const registrar = cliMcpRegistrar({ harnessId: 'claude-code' });
   return {
     id: 'claude-code',
     displayName: 'Claude Code',
