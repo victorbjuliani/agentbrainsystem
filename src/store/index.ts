@@ -4,7 +4,7 @@
  * Re-exports `MemoryStore`, its types, and the schema version constant so
  * downstream layers (embedding #4, indexer #5, recall #6) import from one path.
  */
-export { CorruptStoreError, MemoryStore } from './memory-store.js';
+export { CorruptStoreError, MemoryStore, SchemaDowngradeError } from './memory-store.js';
 export type { Migration } from './schema.js';
 export { CURRENT_SCHEMA_VERSION } from './schema.js';
 export type {
