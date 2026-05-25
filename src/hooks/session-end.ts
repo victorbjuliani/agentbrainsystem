@@ -18,18 +18,28 @@
  */
 
 import { loadConfig } from '../config.js';
+import { EmbeddingLoadTimeoutError } from '../embedding/index.js';
 import type { GroundTruthProvider } from '../ground-truth/index.js';
 import { ingestSingleSession } from '../ingest/index.js';
 import { runPostCaptureMaintenance } from '../maintenance/index.js';
 import { openMemory } from '../memory.js';
-import { INGEST_DEFERRED_KEY, isRebuildLocked } from '../store/index.js';
+import { EMBED_DEGRADED_KEY, INGEST_DEFERRED_KEY, isRebuildLocked } from '../store/index.js';
 import type { HookPayload } from './payload.js';
+
+/** Bound the first-run model load on the hook path, well under the 8s runner budget (#111). */
+const HOOK_EMBED_BUDGET_MS = 6_000;
 
 export interface SessionEndDeps {
   /** Injection seam for tests — defaults to the real openMemory + ingest. */
   ingest?: (transcriptPath: string) => Promise<void>;
   /** Injection seam for tests — defaults to the cwd-rooted ground-truth provider. */
   groundTruth?: GroundTruthProvider;
+  /**
+   * Injection seam for tests — override the embed-readiness gate. Defaults to
+   * `memory.provider.ensureReady`; the real local provider caches the model after
+   * the first run, so the first-run timeout (#111) can only be exercised via a mock.
+   */
+  embedReady?: (opts: { budgetMs?: number }) => Promise<void>;
 }
 
 /**
@@ -79,6 +89,32 @@ export async function handleSessionEnd(
 
   const memory = await openMemory();
   try {
+    // #111: ingest embeds, so a first-EVER run would trigger the ~35s model download.
+    // Bound it well under the 8s hook budget; on timeout, record a degraded note and
+    // defer (the cursor is NOT advanced, so the next run re-ingests once an unbudgeted
+    // `abs ingest` has cached the model). The load keeps running in the background.
+    const ensureReady = deps.embedReady ?? memory.provider.ensureReady?.bind(memory.provider);
+    if (ensureReady) {
+      try {
+        await ensureReady({ budgetMs: HOOK_EMBED_BUDGET_MS });
+      } catch (err) {
+        if (err instanceof EmbeddingLoadTimeoutError) {
+          process.stderr.write(
+            '[abs] session-end ingest deferred: the embedding model is still downloading ' +
+              '(first run, ~35s). Run `abs ingest --apply` once to cache it; this session ' +
+              'will be re-ingested afterward (no data lost).\n',
+          );
+          try {
+            memory.store.setMeta(EMBED_DEGRADED_KEY, new Date().toISOString());
+          } catch {
+            // best-effort note — the stderr log above is the reliable signal
+          }
+          return undefined;
+        }
+        throw err;
+      }
+    }
+
     await ingestSingleSession(memory, transcriptPath);
 
     // #26/#107 integration: promote the just-seeded `claimed` anchors against ground

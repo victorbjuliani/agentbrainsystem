@@ -3,9 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { loadConfig } from '../config.js';
+import { EmbeddingLoadTimeoutError } from '../embedding/index.js';
 import type { GroundTruthProvider, ResolvedSymbol } from '../ground-truth/index.js';
 import { type Memory, openMemory } from '../memory.js';
-import { acquireRebuildLock, INGEST_DEFERRED_KEY } from '../store/index.js';
+import { acquireRebuildLock, EMBED_DEGRADED_KEY, INGEST_DEFERRED_KEY } from '../store/index.js';
 import { handleSessionEnd } from './session-end.js';
 
 describe('handleSessionEnd — auto-ingest, $0, no injection', () => {
@@ -129,5 +130,53 @@ describe('SessionEnd defers ingest while a rebuild holds the write lock (#103)',
       mem.close();
     }
     lock.release();
+  });
+});
+
+describe('SessionEnd defers ingest when the first-run model load times out (#111)', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'abs-se-embed-'));
+    process.env.ABS_HOME = dir;
+  });
+  afterEach(() => {
+    delete process.env.ABS_HOME;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('records EMBED_DEGRADED_KEY and skips ingest (fail-open) when ensureReady times out', async () => {
+    const t = join(dir, 't.jsonl');
+    writeFileSync(t, '{"role":"user","text":"hi"}\n');
+
+    // Real path (no injected ingest) so the embed-readiness gate runs; the seam makes
+    // the first-run download exceed its budget deterministically (the model is cached
+    // by other tests, so a real ensureReady would just resolve).
+    const embedReady = vi.fn(async () => {
+      throw new EmbeddingLoadTimeoutError('Xenova/all-MiniLM-L6-v2', 6_000);
+    });
+    const result = await handleSessionEnd({ transcriptPath: t, cwd: dir }, { embedReady });
+    expect(result).toBeUndefined();
+    expect(embedReady).toHaveBeenCalledOnce();
+
+    const mem = await openMemory(undefined, { ensure: false });
+    try {
+      expect(mem.store.getMeta(EMBED_DEGRADED_KEY)).not.toBeNull();
+      // The session was NOT ingested — its cursor never advanced, so a later
+      // unbudgeted `abs ingest` re-pulls it once the model caches.
+      expect(mem.store.counts().observations).toBe(0);
+    } finally {
+      mem.close();
+    }
+  });
+
+  it('propagates a non-timeout ensureReady failure to the caller (runner swallows it)', async () => {
+    const t = join(dir, 't.jsonl');
+    writeFileSync(t, '{"role":"user","text":"hi"}\n');
+    const embedReady = vi.fn(async () => {
+      throw new Error('model registry unreachable');
+    });
+    await expect(handleSessionEnd({ transcriptPath: t, cwd: dir }, { embedReady })).rejects.toThrow(
+      'model registry unreachable',
+    );
   });
 });
