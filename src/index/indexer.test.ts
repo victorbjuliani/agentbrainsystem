@@ -114,6 +114,26 @@ describe('refreshIndex', () => {
     s2.close();
   });
 
+  it('budgeted path skips an oversized file (deferred, not stamped); unbudgeted indexes it', async () => {
+    // A >256KB file whose tree-sitter parse could blow the interactive budget mid-await.
+    const filler = `// pad\n${'x'.repeat(300 * 1024)}\n`;
+    writeFileSync(join(repo, 'big.ts'), `export function huge(){}\n${filler}`);
+    commit('init');
+    // Budgeted (but generous time): the size guard, not the clock, defers the big file.
+    const budgeted = await refreshIndex(repo, { budgetMs: 60_000 });
+    expect(budgeted.ready).toBe(false); // deferred file → build incomplete → not ready
+    const s1 = openSymbolStore(repo);
+    expect(s1.queryByName('huge')).toHaveLength(0); // skipped on the interactive path
+    expect(s1.getMeta('indexed_commit')).toBeUndefined(); // not stamped ahead of state
+    s1.close();
+    // Unbudgeted refresh has no size guard → indexes the big file and stamps.
+    const full = await refreshIndex(repo);
+    expect(full.ready).toBe(true);
+    const s2 = openSymbolStore(repo);
+    expect(s2.queryByName('huge')).toHaveLength(1);
+    s2.close();
+  });
+
   it('single-flight: a refresh skips (reuses the index) while another holds the repo lock', async () => {
     writeFileSync(join(repo, 'a.ts'), 'export function foo(){}');
     commit('init');
