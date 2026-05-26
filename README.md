@@ -21,7 +21,7 @@ coding session — across <b>five harnesses</b> — and recalls what matters nex
 <p>
 <img src="https://img.shields.io/badge/local--first-%240%20%C2%B7%20offline-8B5CF6?style=for-the-badge&labelColor=0A0810" alt="local-first · $0 · offline" />
 <img src="https://img.shields.io/badge/MCP-9%20tools-22D3EE?style=for-the-badge&labelColor=0A0810" alt="9 MCP tools" />
-<img src="https://img.shields.io/badge/deps-just%206-A78BFA?style=for-the-badge&labelColor=0A0810" alt="just 6 dependencies" />
+<img src="https://img.shields.io/badge/deps-just%208-A78BFA?style=for-the-badge&labelColor=0A0810" alt="just 8 dependencies" />
 <img src="https://img.shields.io/badge/storage-embedded%20SQLite-5EEAD4?style=for-the-badge&labelColor=0A0810" alt="embedded SQLite" />
 </p>
 
@@ -100,8 +100,8 @@ Not another write-only memory bucket. The parts most tools skip:
   embeddings by default; a hosted embedder or any OpenAI-compatible LLM is **opt-in, never required**.
 - 🗂️ **Project-scoped by default.** Recall is isolated per project — project B's memory never bleeds into
   project A. Promote a lesson to the global brain when it's worth sharing everywhere.
-- 🪶 **Deliberately small.** 6 runtime dependencies (incl. an embedded WASM tree-sitter parser), embedded
-  SQLite, no server to run. ~11k lines you can actually read.
+- 🪶 **Deliberately small.** 8 runtime dependencies (two are the embedded WASM tree-sitter parser), embedded
+  SQLite, no server to run. ~18k lines of production code you can actually read (plus ~15k of tests).
 - 🪼 **Your memory, as a living creature.** A localhost UI renders the whole store as one bioluminescent
   jellyfish whose anatomy *is* the memory — dome = consolidated core, tentacles = sessions, beads = observations (`abs ui`).
 - 🎒 **Portable, no lock-in.** Export/import the whole store as a single file.
@@ -113,11 +113,11 @@ Measured on Apple Silicon (M-series), Node 26, over a synthetic 5,000-observatio
 
 | Metric | Result |
 |---|---|
-| Per-prompt FTS recall (hot path) | **p50 ~4.1 ms · p95 ~4.4 ms** |
-| Semantic embed — warm (steady-state) | **~2–5 ms** (first call ~280 ms, model load) |
-| Ingest throughput | **~6,000 observations/sec** |
-| On-disk footprint | **~466 bytes/observation** (5k obs ≈ 2.3 MB) |
-| Runtime dependencies | **5** · embedded SQLite · 0 servers |
+| Per-prompt FTS recall (hot path) | **p50 ~4.4 ms** (median per-prompt latency) |
+| Semantic embed — warm (steady-state) | **~2–5 ms** (first call ~400 ms, model load) |
+| Ingest throughput | **~4,500 observations/sec** |
+| On-disk footprint | **~616 bytes/observation** (5k obs ≈ 2.9 MB) |
+| Runtime dependencies | **8** · embedded SQLite · 0 servers |
 
 > We benchmark on our own axis — latency, footprint, and minimalism — and publish only what's
 > measured and reproducible. We don't chase a retrieval-accuracy headline number on someone else's
