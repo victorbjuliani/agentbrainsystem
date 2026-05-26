@@ -69,3 +69,7 @@ test-results/
 # Per-dev agent wrappers (personal memory; kept local, never shared in git).
 CLAUDE.md
 AGENTS.md
+HANDOFF.md
+
+# Local-only reports / scratch (never shared in git).
+production-readiness-report.md

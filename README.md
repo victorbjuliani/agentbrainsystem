@@ -57,11 +57,20 @@ alternative that does a few things well — and runs entirely on your machine.
 Requires **Node ≥ 22**.
 
 ```bash
+npm install -g agentbrainsystem   # provides the `abs` CLI
+abs setup                         # installs hooks + registers the MCP server with Claude Code
+```
+
+<details>
+<summary>Or build from source</summary>
+
+```bash
 git clone https://github.com/victorbjuliani/agentbrainsystem.git
 cd agentbrainsystem
-npm install && npm run build   # provides the `abs` CLI
-abs setup                      # installs hooks + registers the MCP server with Claude Code
+npm install && npm run build      # provides the `abs` CLI
+abs setup
 ```
+</details>
 
 `abs setup` is the one-shot onboarding: it installs the memory hooks **and** registers the
 MCP server with your harness (idempotent; if the harness CLI isn't found it just prints the
