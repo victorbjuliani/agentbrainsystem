@@ -428,11 +428,18 @@ pub fn run() {
                 .items(&[&open_item, &quit_item])
                 .build()?;
 
+            // Tray icon: on macOS a monochrome jellyfish *template* (macOS uses only the
+            // alpha channel and recolors it to match the menu bar — feeding it the colored
+            // app icon renders as a filled square, the original bug). Windows/Linux keep
+            // the colored app icon, since a black silhouette would vanish on their trays.
+            #[cfg(target_os = "macos")]
+            let tray_icon = tauri::include_image!("icons/tray-template.png");
+            #[cfg(not(target_os = "macos"))]
+            let tray_icon = app.default_window_icon().unwrap().clone();
+
             let tray = TrayIconBuilder::with_id("abs-tray")
-                .icon(app.default_window_icon().unwrap().clone())
-                // Render as a monochrome template so the icon adapts to the menu bar
-                // (light/dark, like the native status items) instead of a colored square.
-                .icon_as_template(true)
+                .icon(tray_icon)
+                .icon_as_template(cfg!(target_os = "macos"))
                 .tooltip("agentbrainsystem")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
@@ -446,10 +453,11 @@ pub fn run() {
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
-                    // Left click toggles the popover near the cursor.
+                    // Left click toggles the popover, anchored under the tray icon.
                     if let TrayIconEvent::Click {
                         button: MouseButton::Left,
                         button_state: MouseButtonState::Up,
+                        position,
                         ..
                     } = event
                     {
@@ -458,6 +466,17 @@ pub fn run() {
                             if win.is_visible().unwrap_or(false) {
                                 let _ = win.hide();
                             } else {
+                                // A frameless popover has no native anchor, so without this
+                                // it pops at an arbitrary spot. Center it under the click
+                                // (the icon), just below the menu bar.
+                                if let Ok(size) = win.outer_size() {
+                                    let x = position.x as i32 - (size.width as i32) / 2;
+                                    let y = position.y as i32 + 8;
+                                    let _ = win.set_position(tauri::PhysicalPosition::new(
+                                        x.max(8),
+                                        y.max(8),
+                                    ));
+                                }
                                 let _ = win.show();
                                 let _ = win.set_focus();
                             }

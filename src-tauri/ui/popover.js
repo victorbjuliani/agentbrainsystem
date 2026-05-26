@@ -1,6 +1,6 @@
 // Popover logic (external file — the CSP forbids inline script). Renders compact
 // stats from the Rust `get_stats` command, refreshes on the `stats` event, pulses
-// the glyph on `pulse` (an ingest delta), and opens the ocean on click.
+// the creature on `pulse` (an ingest delta), and opens the ocean on click.
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
@@ -12,15 +12,17 @@ const STRINGS = {
     observations: "observations",
     sessions: "sessions",
     openOcean: "open ocean",
+    opening: "opening…",
     lastActivity: "last activity",
-    emptyMemory: "memory empty",
+    emptyMemory: "memory empty — the creature is dormant",
   },
   pt: {
     observations: "observações",
     sessions: "sessões",
     openOcean: "abrir oceano",
+    opening: "abrindo…",
     lastActivity: "última atividade",
-    emptyMemory: "memória vazia",
+    emptyMemory: "memória vazia — a criatura está dormente",
   },
 };
 let lang = (navigator.language || "en").toLowerCase().startsWith("pt") ? "pt" : "en";
@@ -37,30 +39,53 @@ const els = {
   obs: document.getElementById("obs"),
   sessions: document.getElementById("sessions"),
   ts: document.getElementById("ts"),
-  glyph: document.getElementById("glyph"),
+  creature: document.getElementById("creature"),
   open: document.getElementById("open"),
 };
 
+// Format a raw ISO timestamp into the user's locale (Intl, never hardcoded).
+function formatActivity(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso; // surface the raw value if unparseable
+  const locale = lang === "pt" ? "pt-BR" : "en";
+  const when = new Intl.DateTimeFormat(locale, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(d);
+  return `${t("lastActivity")}: ${when}`;
+}
+
 function render(stats) {
   if (!stats) return;
-  els.obs.textContent = String(stats.observations ?? 0);
+  const obs = stats.observations ?? 0;
+  els.obs.textContent = String(obs);
   els.sessions.textContent = String(stats.sessions ?? 0);
-  els.ts.textContent = stats.last_activity
-    ? `${t("lastActivity")}: ${stats.last_activity}`
-    : t("emptyMemory");
+  // Empty memory → the creature is dormant (translucidez = confiança, DESIGN §11).
+  document.body.dataset.empty = obs === 0 ? "true" : "false";
+  els.ts.textContent = stats.last_activity ? formatActivity(stats.last_activity) : t("emptyMemory");
 }
 
 function pulse() {
-  els.glyph.classList.remove("pulse");
+  els.creature.classList.remove("pulse");
   // Reflow so the animation restarts even on back-to-back pulses.
-  void els.glyph.offsetWidth;
-  els.glyph.classList.add("pulse");
+  void els.creature.offsetWidth;
+  els.creature.classList.add("pulse");
 }
 
 els.open.addEventListener("click", () => {
-  invoke("open_ocean").catch((err) => {
-    els.ts.textContent = String(err);
-  });
+  if (els.open.getAttribute("aria-disabled") === "true") return;
+  els.open.setAttribute("aria-disabled", "true");
+  els.open.textContent = t("opening");
+  invoke("open_ocean")
+    .catch((err) => {
+      els.ts.textContent = String(err);
+    })
+    .finally(() => {
+      els.open.removeAttribute("aria-disabled");
+      els.open.textContent = t("openOcean");
+    });
 });
 
 // Resolve the language from the tray (matches the menu), then paint strings + stats.
