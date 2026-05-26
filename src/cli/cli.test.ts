@@ -1124,7 +1124,7 @@ describe('cmdDoctor — health check (#101, hermetic, tmp ABS_HOME)', () => {
     mem.store.createSession({ externalId: 's1' });
     mem.close();
 
-    await cmdDoctor();
+    await cmdDoctor({ fetchLatest: async () => null });
 
     const report = JSON.parse(outLines.join(''));
     expect(report.healthy).toBe(true);
@@ -1142,12 +1142,38 @@ describe('cmdDoctor — health check (#101, hermetic, tmp ABS_HOME)', () => {
     mem.store.createObservation({ sessionId: sid, kind: 'note', content: 'orphan' });
     mem.close();
 
-    await cmdDoctor();
+    await cmdDoctor({ fetchLatest: async () => null });
 
     const report = JSON.parse(outLines.join(''));
     expect(report.healthy).toBe(false);
     expect(report.drift).toBe(true);
     expect(process.exitCode).toBe(1);
     expect(errLines.join('')).toMatch(/STALE|drift/i);
+  });
+
+  it('flags an available update + prints the upgrade hint when a newer version is published', async () => {
+    const mem = await openMemory(loadConfig(), { ensure: false });
+    mem.store.createSession({ externalId: 's1' });
+    mem.close();
+
+    await cmdDoctor({ fetchLatest: async () => '999.0.0' });
+
+    const report = JSON.parse(outLines.join(''));
+    expect(report.version.updateAvailable).toBe(true);
+    expect(report.version.latest).toBe('999.0.0');
+    expect(errLines.join('')).toMatch(/update available.*npm i -g agentbrainsystem@latest/is);
+  });
+
+  it('stays quiet about updates when offline (probe returns null) or already current', async () => {
+    const mem = await openMemory(loadConfig(), { ensure: false });
+    mem.store.createSession({ externalId: 's1' });
+    mem.close();
+
+    await cmdDoctor({ fetchLatest: async () => null });
+
+    const report = JSON.parse(outLines.join(''));
+    expect(report.version.latest).toBeNull();
+    expect(report.version.updateAvailable).toBe(false);
+    expect(errLines.join('')).not.toMatch(/update available/i);
   });
 });

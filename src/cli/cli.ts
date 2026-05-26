@@ -53,6 +53,7 @@ import { type RecallHit, resolveRecallProject } from '../recall/index.js';
 import { startUiServer } from '../ui/index.js';
 import { VERSION } from '../version.js';
 import { MCP_SERVER_NAME, type RunFn, type RunResult, unregisterMcpServer } from './setup.js';
+import { fetchLatestVersion, isOutdated } from './update-check.js';
 
 const USAGE = `agentbrainsystem (abs) v${VERSION} — local-first memory for AI coding agents
 
@@ -302,7 +303,13 @@ async function cmdStatus(): Promise<void> {
   }
 }
 
-export async function cmdDoctor(): Promise<void> {
+export interface DoctorDeps {
+  /** Override the version probe (tests inject this to stay hermetic/offline). */
+  fetchLatest?: () => Promise<string | null>;
+}
+
+export async function cmdDoctor(deps: DoctorDeps = {}): Promise<void> {
+  const fetchLatest = deps.fetchLatest ?? (() => fetchLatestVersion());
   const config = loadConfig();
   // ensure:false → report the on-disk staleness verdict instead of silently
   // healing it with a rebuild. A corrupt db throws CorruptStoreError at open
@@ -314,6 +321,9 @@ export async function cmdDoctor(): Promise<void> {
     const status = memory.indexer.status();
     const drift = counts.vectors !== counts.observations || counts.fts !== counts.observations;
     const healthy = integrity.ok && !status.stale && !drift;
+    // Best-effort, offline-safe (null on any failure). Explicit command only.
+    const latest = await fetchLatest();
+    const updateAvailable = latest !== null && isOutdated(VERSION, latest);
     out(
       JSON.stringify(
         {
@@ -329,6 +339,7 @@ export async function cmdDoctor(): Promise<void> {
           },
           walSizeBytes: memory.store.walSizeBytes(),
           backupPath: memory.store.backupPath(),
+          version: { current: VERSION, latest, updateAvailable },
         },
         null,
         2,
@@ -343,6 +354,12 @@ export async function cmdDoctor(): Promise<void> {
               'the db, or your last `abs export`.',
       );
       process.exitCode = 1;
+    }
+    if (updateAvailable) {
+      err(
+        `abs doctor: update available — you have ${VERSION}, latest is ${latest}. ` +
+          'Run `npm i -g agentbrainsystem@latest && abs setup`.',
+      );
     }
   } finally {
     memory.close();

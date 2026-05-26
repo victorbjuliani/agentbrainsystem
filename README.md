@@ -193,6 +193,7 @@ abs uninstall [--purge]   # reverse of setup: remove hooks + unregister MCP (--p
 abs start                 # run the MCP server (what Claude Code spawns)
 abs ingest [...]          # opt-in historical ingest — preview default; --apply + --all|--project <slug>
 abs status                # db path, schema, counts, index staleness
+abs doctor                # health check (integrity, drift) + best-effort update check
 abs project [...]         # set/confirm/skip the current session's project
 abs remember "…" --global # add a memory to the cross-project global brain
 abs promote <id>          # move an existing memory into the global brain
@@ -205,6 +206,23 @@ abs optimize [...]        # turn distilled memory into gated CLAUDE.md / auto-me
 abs forget [...]          # selectively hard-delete memories — IRREVERSIBLE, export first
 abs install-hooks [--harness <id>]  # register the memory hooks for a harness (idempotent, backup-first)
 ```
+
+## Updating
+
+```bash
+npm install -g agentbrainsystem@latest   # pull the new CLI
+abs setup                                 # idempotent — reconciles hooks + MCP registration
+```
+
+`abs setup` is safe to re-run: it only adds/updates the hooks and MCP entry, never
+duplicates them. Re-running after an upgrade also picks up any change to the hook
+or MCP wiring a new version introduces.
+
+`abs doctor` does a single, best-effort GET to the public npm registry to tell you
+when a newer version is published. It sends **no** data about you or your machine,
+runs **only** from that explicit command (never the hooks or recall path), and
+silently skips the check when you're offline — so the local-first, no-telemetry
+guarantee is unaffected.
 
 ## Configuration
 
