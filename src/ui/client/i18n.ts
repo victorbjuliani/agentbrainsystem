@@ -131,7 +131,7 @@ const pt: Dict = {
   scopeGroupLabel: 'Escopo do grafo',
   similarityBtn: 'similaridade',
   similarityLabel: 'Alternar arestas de similaridade',
-  brandSub: 'memory graph',
+  brandSub: 'grafo de memória',
   allProjects: 'todos os projetos',
 
   searchPlaceholder: 'buscar memória…',
