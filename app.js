@@ -10,7 +10,7 @@
     "nav.features": "Recursos",
     "nav.how": "Como funciona",
     "nav.faq": "FAQ",
-    "cta.star": "Star no GitHub",
+    "cta.star": "Ver no GitHub",
     "cta.how": "Veja como funciona",
     "cta.get": "Comece agora",
 
@@ -66,7 +66,7 @@
     "faq.3.q": "Funciona com quais agentes?",
     "faq.3.a": "Cinco harnesses — Claude Code, Codex CLI, Gemini CLI, GitHub Copilot CLI e OpenCode — cada um via MCP, com captura de sessão e injeção de contexto sem esforço, através do ciclo de vida nativo de cada harness. A mesma memória local é compartilhada entre todos.",
     "faq.4.q": "É open source?",
-    "faq.4.a": "Totalmente — no GitHub. Star, fork, leia cada linha.",
+    "faq.4.a": "Totalmente — no GitHub. Faça fork e leia cada linha.",
 
     "final.h": "Cure a amnésia do seu agente.",
     "final.tags": "LOCAL-FIRST · $0 · OFFLINE · OPEN SOURCE",
