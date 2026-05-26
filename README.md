@@ -113,8 +113,8 @@ Measured on Apple Silicon (M-series), Node 26, over a synthetic 5,000-observatio
 
 | Metric | Result |
 |---|---|
-| Per-prompt FTS recall (hot path) | **p50 ~4.1 ms · p95 ~4.4 ms** |
-| Semantic embed — warm (steady-state) | **~2–5 ms** (first call ~280 ms, model load) |
+| Per-prompt FTS recall (hot path) | **p50 ~4.4 ms** (median per-prompt latency) |
+| Semantic embed — warm (steady-state) | **~2–5 ms** (first call ~400 ms, model load) |
 | Ingest throughput | **~6,000 observations/sec** |
 | On-disk footprint | **~466 bytes/observation** (5k obs ≈ 2.3 MB) |
 | Runtime dependencies | **8** · embedded SQLite · 0 servers |
