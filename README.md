@@ -179,8 +179,11 @@ on-brand message where WebGL2 is unavailable.
 A native **tray companion** (`src-tauri/`, Tauri 2 — macOS / Windows / Linux) keeps the creature
 glanceable from the menu bar: it reads counts read-only straight from the store (no Node process to
 sit idle), pulses when the agent learns, and a popover opens the full "ocean" window on demand.
-Cross-OS installers are built by the tag-triggered `release.yml` (it is intentionally **not** part of
-the per-PR CI). Build it yourself with `cargo tauri build` (or `dev`) inside `src-tauri/`.
+**Download** the latest installers (`.dmg` / `.exe` / `.msi` / `.deb` / `.rpm` / `.AppImage`) from the
+**[Releases page](https://github.com/victorbjuliani/agentbrainsystem/releases/latest)** — macOS apps are
+unsigned, so the first launch is **right-click → Open**. Installers are built by the tag-triggered
+`release.yml` (intentionally **not** part of the per-PR CI); build it yourself with `cargo tauri build`
+(or `dev`) inside `src-tauri/`.
 
 ## CLI
 
