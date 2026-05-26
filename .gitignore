@@ -6,6 +6,7 @@
 
 # === Discovery / planning artifacts (GitHub Issues are the source of truth) ===
 docs/discovery/
+docs/superpowers/
 
 # === Node / TypeScript (stack lean — adjust when finalized) ===
 node_modules/

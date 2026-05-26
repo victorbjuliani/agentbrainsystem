@@ -60,8 +60,7 @@ describe('resolveRecallProject (#47)', () => {
       resolveRecallProject(store, {
         scope: 'project',
         sessionId: 'new-session',
-        transcriptPath:
-          '/Users/me/.claude/projects/-Users-me-Meu-Mac-demo-corp/new-session.jsonl',
+        transcriptPath: '/Users/me/.claude/projects/-Users-me-Meu-Mac-demo-corp/new-session.jsonl',
         cwd: '/Users/me/Meu Mac/demo-corp',
       }),
     ).toBe('-Users-me-Meu Mac-demo-corp');

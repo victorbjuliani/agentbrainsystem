@@ -423,7 +423,9 @@ describe('ingestClaudeProjects — decision-aware (#50)', () => {
       userLine('sess-1', '/Users/me/Devs/foo', 'hello world', 'u1'),
     ]);
     const memory = newMemory();
-    expect(writeBinding(memory.store, 'sess-1', { action: 'set', project: 'Travelpoints' })).toBe(true);
+    expect(writeBinding(memory.store, 'sess-1', { action: 'set', project: 'Travelpoints' })).toBe(
+      true,
+    );
 
     const result = await ingestClaudeProjects(memory, { projectsDir });
     expect(result.observationsAdded).toBe(1);
