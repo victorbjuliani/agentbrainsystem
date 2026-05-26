@@ -15,6 +15,7 @@ const STRINGS = {
     opening: "opening…",
     lastActivity: "last activity",
     emptyMemory: "memory empty — the creature is dormant",
+    close: "Close",
   },
   pt: {
     observations: "observações",
@@ -23,6 +24,7 @@ const STRINGS = {
     opening: "abrindo…",
     lastActivity: "última atividade",
     emptyMemory: "memória vazia — a criatura está dormente",
+    close: "Fechar",
   },
 };
 let lang = (navigator.language || "en").toLowerCase().startsWith("pt") ? "pt" : "en";
@@ -33,6 +35,9 @@ function applyStaticStrings() {
   for (const el of document.querySelectorAll("[data-i18n]")) {
     el.textContent = t(el.dataset.i18n);
   }
+  for (const el of document.querySelectorAll("[data-i18n-aria]")) {
+    el.setAttribute("aria-label", t(el.dataset.i18nAria));
+  }
 }
 
 const els = {
@@ -41,7 +46,13 @@ const els = {
   ts: document.getElementById("ts"),
   creature: document.getElementById("creature"),
   open: document.getElementById("open"),
+  close: document.getElementById("close"),
 };
+
+// Close button hides the popover (Rust-side, so it needs no window capability).
+els.close.addEventListener("click", () => {
+  invoke("hide_popover").catch(() => {});
+});
 
 // Format a raw ISO timestamp into the user's locale (Intl, never hardcoded).
 function formatActivity(iso) {

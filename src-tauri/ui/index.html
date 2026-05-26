@@ -85,6 +85,7 @@
       /* The card IS the popover surface — rounded so the transparent window shows no
          square corners. Radius = popover Large (§8). */
       .card {
+        position: relative;
         height: 100%;
         display: flex;
         flex-direction: column;
@@ -95,6 +96,49 @@
         border-radius: 16px;
         box-shadow: var(--glow-md), inset 0 1px 0 0 rgba(255, 255, 255, 0.04);
         overflow: hidden;
+      }
+
+      /* The header (creature + brand) is the window's drag handle: the popover is
+         frameless, so this is how the user repositions it. */
+      [data-tauri-drag-region] {
+        cursor: grab;
+      }
+      [data-tauri-drag-region]:active {
+        cursor: grabbing;
+      }
+
+      /* In-card close button (the popover has no title bar) */
+      .close {
+        position: absolute;
+        top: 8px;
+        right: 8px;
+        z-index: 2;
+        width: 26px;
+        height: 26px;
+        display: grid;
+        place-items: center;
+        padding: 0;
+        font-family: var(--font-mono);
+        font-size: 16px;
+        line-height: 1;
+        color: var(--fg-faint);
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: 8px;
+        cursor: pointer;
+        transition:
+          color 150ms var(--ease-out),
+          background-color 150ms var(--ease-out);
+      }
+      @media (hover: hover) and (pointer: fine) {
+        .close:hover {
+          color: var(--fg);
+          background: rgba(255, 255, 255, 0.06);
+        }
+      }
+      .close:focus-visible {
+        outline: 2px solid var(--violet-500);
+        outline-offset: 2px;
       }
 
       /* ---- The creature: a tiny living jellyfish (the differentiation anchor) ---- */
@@ -277,7 +321,8 @@
   </head>
   <body data-empty="true">
     <main class="card">
-      <div class="creature" id="creature">
+      <button class="close" id="close" type="button" data-i18n-aria="close" aria-label="Close">×</button>
+      <div class="creature" id="creature" data-tauri-drag-region>
         <!-- Compact emblem of the immersive creature (§12 A): translucent dome that
              breathes + tentacles that drift. Decorative beads echo user/assistant hues. -->
         <svg class="jelly" viewBox="0 0 92 92" role="img" aria-label="agentbrainsystem">
@@ -321,7 +366,7 @@
         </svg>
       </div>
 
-      <p class="brand" translate="no">agentbrainsystem</p>
+      <p class="brand" data-tauri-drag-region translate="no">agentbrainsystem</p>
 
       <section class="stats" aria-label="memory">
         <div class="metric">

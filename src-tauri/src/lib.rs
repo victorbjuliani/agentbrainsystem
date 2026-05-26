@@ -156,6 +156,15 @@ fn ui_lang() -> Lang {
     Lang::En
 }
 
+/// Hide the popover — backs the in-card close button. Done in Rust (not JS) so it
+/// needs no extra window capability and can't fail on an API-shape mismatch.
+#[tauri::command]
+fn hide_popover(app: tauri::AppHandle) {
+    if let Some(win) = app.get_webview_window("popover") {
+        let _ = win.hide();
+    }
+}
+
 /// Expose the resolved UI language to the popover webview so its strings match the
 /// tray menu (same source of truth).
 #[tauri::command]
@@ -387,10 +396,18 @@ fn tooltip_text(s: &Stats) -> String {
 pub fn run() {
     tauri::Builder::default()
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![get_stats, open_ocean, get_lang])
+        .invoke_handler(tauri::generate_handler![
+            get_stats,
+            open_ocean,
+            get_lang,
+            hide_popover
+        ])
         .setup(|app| {
-            // The popover: a small, frameless, always-on-top window hidden until the
-            // tray is clicked. Loads the bundled popover (ui/index.html).
+            // The popover: a small, frameless, always-on-top floating panel hidden until
+            // the tray is clicked. It opens anchored under the tray icon but the user can
+            // drag it anywhere (header is a `data-tauri-drag-region`) and dismiss it with
+            // the in-card close button (`hide_popover`); it does NOT auto-hide on focus
+            // loss, so it can sit on screen as an ambient panel. Loads ui/index.html.
             let popover =
                 WebviewWindowBuilder::new(app, "popover", WebviewUrl::App("index.html".into()))
                     .title("agentbrainsystem")
@@ -406,15 +423,6 @@ pub fn run() {
                     .visible(false)
                     .build()?;
             let _ = popover.hide();
-
-            // Dismiss on focus loss (click outside) — the expected menu-bar popover
-            // feel, since it's frameless and intentionally can't be moved or minimized.
-            let popover_dismiss = popover.clone();
-            popover.on_window_event(move |event| {
-                if let tauri::WindowEvent::Focused(false) = event {
-                    let _ = popover_dismiss.hide();
-                }
-            });
 
             // Tray menu (right-click / platform menu): open the ocean or quit.
             // Labels follow the UI language (EN default, PT on a pt-* locale).
