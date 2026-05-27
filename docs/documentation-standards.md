@@ -10,6 +10,8 @@
 | Workflow | `docs/engineering-workflow.md` | when process/branching/PR rules change |
 | Testing | `docs/testing-strategy.md` | when suites, commands, or smoke policy change |
 | This system | `docs/documentation-standards.md` | when canonical surfaces are added/retired |
+| Visual identity | `docs/DESIGN.md` | when palette/type/motion/anatomy change |
+| Export/import format | `docs/export-format.md` | when the portability artifact shape changes |
 | Discovery | `docs/discovery/*.md` | when requirements/roadmap evolve |
 | Architecture decisions | `docs/adr/NNNN-*.md` | one ADR per significant decision (created with the decision) |
 | Public usage | `README.md` | when setup, commands, or the value proposition change |

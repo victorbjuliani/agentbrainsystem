@@ -14,7 +14,7 @@ Shared onboarding layer for AI coding agents in this repository. Keep project fa
 1. `README.md`
 2. `docs/engineering-workflow.md`
 3. [GitHub Issues](https://github.com/victorbjuliani/agentbrainsystem/issues) — requirements and roadmap (source of truth)
-4. `docs/adr/` (0001 storage · 0002 UI pipeline · 0003 LLM consolidation · 0004 hooks · 0005 per-prompt injection perf · 0006 gated-apply · 0007 UI write-path security · 0008 hard-delete) + `docs/DESIGN.md`
+4. `docs/adr/` (0001–0015; storage → multi-harness → creature UI — see the Repository Map for the full list) + `docs/DESIGN.md`
 5. the nearest agent wrapper for the current tool (`CLAUDE.md` / `AGENTS.md`)
 
 ## Repository Map
