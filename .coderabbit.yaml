@@ -1,0 +1,68 @@
+# CodeRabbit config-as-code — https://docs.coderabbit.ai/getting-started/configure-coderabbit
+# Tuned to COMPLEMENT the Codex reviewer that already runs on every PR:
+# lighter profile + cosmetics off so the two bots don't double up on noise.
+language: en-US
+
+reviews:
+  # Codex already does dense review — keep CodeRabbit chill to avoid duplicate nitpicks.
+  profile: chill
+
+  # Auto-approve once CodeRabbit's comments are resolved (convenient for a solo repo).
+  request_changes_workflow: true
+
+  # Useful walkthrough pieces — keep on.
+  high_level_summary: true
+  review_status: true
+  commit_status: true
+  fail_commit_status: false
+  collapse_walkthrough: true
+  changed_files_summary: true
+  sequence_diagrams: true
+  estimate_code_review_effort: true
+  assess_linked_issues: true
+  related_issues: true
+  related_prs: true
+  suggested_labels: true
+  auto_apply_labels: false
+
+  # Cosmetic noise on a public, pre-launch repo — off.
+  poem: false
+  in_progress_fortune: false
+
+  # Solo repo: no one to suggest/assign.
+  suggested_reviewers: false
+  auto_assign_reviewers: false
+
+  # Gold for this setup: emits a "Prompt for AI Agents" block in inline comments
+  # that Claude Code / Codex can read and act on directly.
+  enable_prompt_for_ai_agents: true
+
+  # Don't burn review on build output, the lockfile, or generated bindings.
+  path_filters:
+    - "!dist/**"
+    - "!package-lock.json"
+    - "!src-tauri/gen/**"
+    - "!src-tauri/target/**"
+
+  # Repo-specific guidance for the reviewer (mirrors CLAUDE.md sensitive areas).
+  path_instructions:
+    - path: "src/**"
+      instructions: >-
+        TypeScript ESM (Node >=22), Biome-formatted. The index lifecycle
+        (embed -> persist -> recall) and the MCP tool contract are the
+        sensitive areas — flag changes there that lack accompanying tests.
+        Don't repeat nitpicks the Codex reviewer already covers; focus on
+        correctness, edge cases, and contract drift.
+    - path: "e2e/**"
+      instructions: >-
+        End-to-end suite (Vitest e2e + Playwright). Flag ingest / MCP-contract /
+        graph-payload changes that aren't covered here.
+
+  # Triage low-quality / spam PRs (relevant for an OSS repo taking external PRs).
+  slop_detection:
+    enabled: true
+    label: slop
+
+  auto_review:
+    enabled: true
+    drafts: false
