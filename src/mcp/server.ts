@@ -23,6 +23,11 @@ import { DeleteRefusalError, type DeleteSelector, execute, preview } from '../de
 import { getOrCreateGlobalSession, promoteAction } from '../global.js';
 import { defaultRegistry } from '../harness/index.js';
 import { clearBinding, defaultClaudeProjectsDir, writeBinding } from '../ingest/index.js';
+import {
+  AUTO_DISTILL_LAST_RUN_AT,
+  AUTO_DISTILL_RUNS,
+  AUTO_DISTILL_TOKENS,
+} from '../maintain/index.js';
 import { type Memory, openMemory } from '../memory.js';
 import {
   applyApprovedCandidate,
@@ -58,6 +63,31 @@ function envSession(
 
 function jsonContent(value: unknown): { content: Array<{ type: 'text'; text: string }> } {
   return { content: [{ type: 'text', text: JSON.stringify(value, null, 2) }] };
+}
+
+/**
+ * Read the auto-distill observability rollup (#138/§1.5, P4) from kv_meta — run count +
+ * cumulative tokens + last-run timestamp — so `memory_status` surfaces the otherwise
+ * silent background spend as auditable. The key constants are shared with the cadence
+ * runner (the writer) via `../maintain`, so reader and writer never drift. Absent keys
+ * default to a zeroed/null rollup (a fresh install that has never auto-distilled).
+ */
+function readAutoDistillRollup(store: Memory['store']): {
+  runs: number;
+  tokens: number;
+  lastRunAt: string | null;
+} {
+  const readInt = (key: string): number => {
+    const raw = store.getMeta(key);
+    if (raw === null) return 0;
+    const n = Number.parseInt(raw, 10);
+    return Number.isInteger(n) && n >= 0 ? n : 0;
+  };
+  return {
+    runs: readInt(AUTO_DISTILL_RUNS),
+    tokens: readInt(AUTO_DISTILL_TOKENS),
+    lastRunAt: store.getMeta(AUTO_DISTILL_LAST_RUN_AT),
+  };
 }
 
 /**
@@ -173,7 +203,15 @@ export function createMcpServer(memory: Memory, harnessId?: string): McpServer {
       description: 'Real index counts and staleness for the memory store.',
       inputSchema: {},
     },
-    async () => withReady(memory, async () => jsonContent(memory.indexer.status())),
+    async () =>
+      withReady(memory, async () =>
+        jsonContent({
+          // Additive SPREAD (W3): every pre-existing top-level field is preserved; the
+          // `autoDistill` rollup (#138/P4) is layered on so the output stays a superset.
+          ...memory.indexer.status(),
+          autoDistill: readAutoDistillRollup(memory.store),
+        }),
+      ),
   );
 
   // Optimize loop (#21). `optimize` generates evidence-backed candidate diffs

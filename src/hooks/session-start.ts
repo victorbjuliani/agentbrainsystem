@@ -28,9 +28,28 @@ import { loadConfig } from '../config.js';
 import { readBinding } from '../ingest/index.js';
 import { openMemory } from '../memory.js';
 import { resolveRecallProject } from '../recall/index.js';
-import { EMBED_DEGRADED_KEY, REBUILD_FAILED_KEY } from '../store/index.js';
+import { EMBED_DEGRADED_KEY, type MemoryStore, REBUILD_FAILED_KEY } from '../store/index.js';
 import { buildContextOutput, type HookPayload } from './payload.js';
 import { evaluateTwoSignalStaleness, optimizeCursorKey, parseCursor } from './staleness.js';
+
+/**
+ * kv_meta key recording that the one-time auto-distill spend notice was already shown
+ * (#138/§3). Install-wide (not session-scoped) — the notice announces the auto-distill
+ * behavior once per install, not once per session. Phase 7 reads/sets it here.
+ */
+export const AUTO_DISTILL_NOTICE_SHOWN_KEY = 'autoDistill:noticeShown';
+
+/**
+ * Return true exactly the first time auto-distill is about to run on this install,
+ * marking it shown so the spend notice fires once and never again. Mirrors the #52
+ * `consumeFirstPromptFlag` one-time pattern. Only the eligible caller (LLM configured +
+ * auto-distill on) invokes this, so the flag is consumed only when the notice will fire.
+ */
+function consumeAutoDistillNoticeFlag(store: MemoryStore): boolean {
+  if (store.getMeta(AUTO_DISTILL_NOTICE_SHOWN_KEY) !== null) return false;
+  store.setMeta(AUTO_DISTILL_NOTICE_SHOWN_KEY, new Date().toISOString());
+  return true;
+}
 
 export interface SessionStartFacts {
   sessions: number;
@@ -49,6 +68,12 @@ export interface SessionStartFacts {
   consolidatedFlagged: boolean;
   /** Whether an LLM is configured — drives auto-vs-manual copy (#138). */
   hasLlm: boolean;
+  /**
+   * Fire the one-time auto-distill spend notice this session (#138/§3). True only when
+   * an LLM is configured, auto-distill is on, and the notice has not been shown before;
+   * the flag is set when this is computed, so it fires exactly once per install.
+   */
+  showAutoDistillNotice: boolean;
   /** Whether a session→project binding already exists for this session (#52). */
   hasBinding?: boolean;
   /** Index is stale / a prior rebuild left it degraded — recall is unreliable (#101). */
@@ -95,13 +120,25 @@ async function gatherFactsFromStore(payload: HookPayload): Promise<SessionStartF
       'decision',
       parseCursor(memory.store.getMeta(optimizeCursorKey('decision', slug))),
     );
+    const cfg = loadConfig();
     const verdict = evaluateTwoSignalStaleness({
       rawPending,
       rawSessions,
       lessonsPending,
       decisionsPending,
-      hasLlm: loadConfig().llm !== undefined,
+      hasLlm: cfg.llm !== undefined,
     });
+    // One-time auto-distill spend notice (#138/§3): fire (and consume the flag) ONLY
+    // when this is a real session (a session id to scope the cadence to), an LLM is
+    // configured, auto-distill is on, AND it has not been shown. Gating on the session
+    // id keeps a session-less SessionStart (a degenerate edge — nothing to auto-distill)
+    // from burning the one-shot. The flag write lives here (the one place the store is
+    // open read/write on this path).
+    const showAutoDistillNotice =
+      payload.sessionId !== undefined &&
+      cfg.llm !== undefined &&
+      cfg.autoDistill &&
+      consumeAutoDistillNoticeFlag(memory.store);
     const facts: SessionStartFacts = {
       sessions: counts.sessions,
       observations: counts.observations,
@@ -112,6 +149,7 @@ async function gatherFactsFromStore(payload: HookPayload): Promise<SessionStartF
       decisionsPending: verdict.decisionsPending,
       consolidatedFlagged: verdict.consolidatedFlagged,
       hasLlm: verdict.hasLlm,
+      showAutoDistillNotice,
       // status() is read-only (no rebuild — ensure:false above); it reports the
       // staleness verdict that is otherwise computed but never surfaced (#101).
       // A background rebuild that FAILED (#103) records a durable flag — treat that
@@ -193,9 +231,30 @@ export function renderNotice(sessionId: string, cwd: string | undefined): string
 }
 
 /**
+ * Render the one-time auto-distill spend notice (#138/§3). Pure and content-fixed —
+ * the caller decides WHEN it fires (once, via the kv_meta flag). The copy MUST state,
+ * verbatim-checkable: (a) it spends LLM tokens — one consolidate call per qualifying
+ * session that ends; (b) it runs in the background and writes only the local
+ * auto-memory file, never CLAUDE.md; (c) the exact opt-out `ABS_AUTO_DISTILL=0`.
+ * Automatic LLM spend must never be a silent surprise.
+ */
+export function renderAutoDistillNotice(): string {
+  return [
+    'agentbrainsystem — auto-distill is now on (one-time notice).',
+    'When a substantial session ends, agentbrainsystem runs one consolidate call per ' +
+      'qualifying session that ends to distil its raw turns into durable lessons. This ' +
+      'spends LLM tokens on the model you configured.',
+    'It runs in the background after the session closes and writes ONLY the local ' +
+      'auto-memory file (never CLAUDE.md, which stays under your manual control).',
+    'To turn it off, set ABS_AUTO_DISTILL=0 in your environment.',
+  ].join('\n');
+}
+
+/**
  * Build the SessionStart context line (or undefined when there's nothing to inject).
- * Concatenates the baseline (#16) and the project picker (#52) into one injection
- * (the runner emits a single stdout line). Throws on failure — the runner swallows it.
+ * Concatenates the baseline (#16), the project picker (#52), and the one-time
+ * auto-distill notice (#138) into one injection (the runner emits a single stdout
+ * line). Throws on failure — the runner swallows it.
  */
 export async function handleSessionStart(
   payload: HookPayload,
@@ -213,6 +272,10 @@ export async function handleSessionStart(
     const notice = renderNotice(payload.sessionId, payload.cwd);
     if (notice) blocks.push(notice);
   }
+
+  // One-time auto-distill spend notice (#138/§3): the flag was already consumed in
+  // gatherFactsFromStore, so this just renders when that one-shot fired this session.
+  if (facts.showAutoDistillNotice) blocks.push(renderAutoDistillNotice());
 
   return buildContextOutput('SessionStart', blocks.join('\n\n')) ?? undefined;
 }

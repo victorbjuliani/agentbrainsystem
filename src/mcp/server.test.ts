@@ -334,6 +334,40 @@ describe('MCP server', () => {
     };
     expect(status).toMatchObject({ observations: 2, vectors: 2, fts: 2, stale: false });
   });
+
+  it('memory_status spreads an autoDistill rollup WITHOUT dropping the pre-existing fields (W3/P4)', async () => {
+    // Seed the observability rollup keys the cadence runner writes (#138 Phase 4).
+    mem.store.setMeta('autoDistill:runs', '3');
+    mem.store.setMeta('autoDistill:tokens', '12000');
+    mem.store.setMeta('autoDistill:lastRunAt', '2026-06-15T10:00:00.000Z');
+    const client = await connectedClient();
+    await client.callTool({ name: 'remember', arguments: { content: 'one' } });
+
+    const status = parse(await client.callTool({ name: 'memory_status', arguments: {} })) as {
+      observations: number;
+      vectors: number;
+      fts: number;
+      stale: boolean;
+      autoDistill: { runs: number; tokens: number; lastRunAt: string | null };
+    };
+    // The new additive block.
+    expect(status.autoDistill).toEqual({
+      runs: 3,
+      tokens: 12000,
+      lastRunAt: '2026-06-15T10:00:00.000Z',
+    });
+    // The pre-existing top-level fields are STILL present (additive spread).
+    expect(status).toMatchObject({ observations: 1, vectors: 1, fts: 1, stale: false });
+  });
+
+  it('memory_status autoDistill defaults to zeros/null when the rollup keys are absent', async () => {
+    const client = await connectedClient();
+    await client.callTool({ name: 'remember', arguments: { content: 'one' } });
+    const status = parse(await client.callTool({ name: 'memory_status', arguments: {} })) as {
+      autoDistill: { runs: number; tokens: number; lastRunAt: string | null };
+    };
+    expect(status.autoDistill).toEqual({ runs: 0, tokens: 0, lastRunAt: null });
+  });
 });
 
 describe('background startup rebuild (MCP boot latency)', () => {

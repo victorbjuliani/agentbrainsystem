@@ -33,4 +33,12 @@ export interface IngestResult {
   observationsSkipped: number;
   /** Claimed fact anchors seeded from Edit/Write tool calls this run (#25). */
   anchorsSeeded: number;
+  /**
+   * The store id of the last session this run resolved (#138/W2). `ingestSingleSession`
+   * is scoped to one transcript = one session, so the SessionEnd cadence-due gate reads
+   * this to scope a per-session obs count. `null`/undefined for a missing-file no-op or a
+   * `skip`-bound session (nothing written). Defensively the LAST non-null resolved id, so
+   * a rare multi-session transcript undercounts only the cadence size — never strands data.
+   */
+  sessionId?: number | null;
 }

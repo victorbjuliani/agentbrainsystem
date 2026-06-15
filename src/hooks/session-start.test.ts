@@ -1,6 +1,16 @@
-import { describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { openMemory } from '../memory.js';
 import type { SessionStartFacts } from './session-start.js';
-import { handleSessionStart, renderBaseline, renderNotice } from './session-start.js';
+import {
+  AUTO_DISTILL_NOTICE_SHOWN_KEY,
+  handleSessionStart,
+  renderAutoDistillNotice,
+  renderBaseline,
+  renderNotice,
+} from './session-start.js';
 
 /** Extract the injected additionalContext from a SessionStart hook output line. */
 function injected(line: string | undefined): string {
@@ -20,6 +30,7 @@ function facts(overrides: Partial<SessionStartFacts> = {}): SessionStartFacts {
     decisionsPending: 0,
     consolidatedFlagged: false,
     hasLlm: true,
+    showAutoDistillNotice: false,
     ...overrides,
   };
 }
@@ -176,5 +187,100 @@ describe('handleSessionStart — memory notice', () => {
     const ctx = injected(line);
     expect(ctx).toContain('session="codex:019e2658"');
     expect(ctx).not.toContain('codex:codex:'); // handler does not double-prefix
+  });
+});
+
+describe('renderAutoDistillNotice (one-time auto-distill spend notice, #138/§3)', () => {
+  it('states all three required clauses: per-session token spend, background+auto-memory-only, exact opt-out', () => {
+    const block = renderAutoDistillNotice();
+    // (a) it spends LLM tokens — one consolidate call per qualifying session that ends.
+    expect(block).toContain('token');
+    expect(block).toContain('one consolidate call per qualifying session');
+    // (b) background, writes only the local auto-memory file, never CLAUDE.md.
+    expect(block).toContain('background');
+    expect(block).toContain('auto-memory');
+    expect(block).toContain('CLAUDE.md');
+    // (c) the exact opt-out env var.
+    expect(block).toContain('ABS_AUTO_DISTILL=0');
+  });
+});
+
+describe('handleSessionStart — auto-distill notice wiring', () => {
+  it('injects the auto-distill notice as a third block when facts flag it', async () => {
+    const line = await handleSessionStart(
+      { sessionId: 'sess-1', cwd: '/Users/me/Devs/foo', source: 'startup' },
+      {
+        gatherFacts: async () =>
+          facts({ observations: 10, hasBinding: false, showAutoDistillNotice: true }),
+      },
+    );
+    const ctx = injected(line);
+    expect(ctx).toContain('persistent memory active'); // baseline
+    expect(ctx).toContain('"foo"'); // project notice
+    expect(ctx).toContain('ABS_AUTO_DISTILL=0'); // the auto-distill notice
+    expect(ctx).toContain('one consolidate call per qualifying session');
+  });
+
+  it('does NOT inject the auto-distill notice when facts do not flag it', async () => {
+    const line = await handleSessionStart(
+      { sessionId: 'sess-1', cwd: '/Users/me/Devs/foo', source: 'startup' },
+      {
+        gatherFacts: async () =>
+          facts({ observations: 10, hasBinding: false, showAutoDistillNotice: false }),
+      },
+    );
+    expect(injected(line)).not.toContain('ABS_AUTO_DISTILL=0');
+  });
+});
+
+describe('gatherFactsFromStore — one-time auto-distill notice (#138, real store)', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'abs-ss-notice-'));
+    process.env.ABS_HOME = dir;
+    process.env.ABS_LLM_BASE_URL = 'http://localhost:9/v1';
+    process.env.ABS_LLM_MODEL = 'fake-model';
+    delete process.env.ABS_AUTO_DISTILL; // default ON
+  });
+  afterEach(() => {
+    delete process.env.ABS_HOME;
+    delete process.env.ABS_LLM_BASE_URL;
+    delete process.env.ABS_LLM_MODEL;
+    delete process.env.ABS_AUTO_DISTILL;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('fires the notice ONCE (LLM + auto-distill on), then suppresses it and sets the kv_meta flag', async () => {
+    // Materialize the store dir first (so the flag write below targets the same db).
+    (await openMemory(undefined, { ensure: false })).close();
+    const payload = { sessionId: 'sess-1', cwd: dir, source: 'startup' as const };
+
+    const first = injected(await handleSessionStart(payload));
+    expect(first).toContain('ABS_AUTO_DISTILL=0'); // fired the first time
+
+    const mem = await openMemory(undefined, { ensure: false });
+    try {
+      expect(mem.store.getMeta(AUTO_DISTILL_NOTICE_SHOWN_KEY)).not.toBeNull(); // flag set on fire
+    } finally {
+      mem.close();
+    }
+
+    const second = injected(await handleSessionStart(payload));
+    expect(second).not.toContain('ABS_AUTO_DISTILL=0'); // never re-injected
+  });
+
+  it('never fires when auto-distill is opted out (ABS_AUTO_DISTILL=0)', async () => {
+    process.env.ABS_AUTO_DISTILL = '0';
+    (await openMemory(undefined, { ensure: false })).close();
+    const line = await handleSessionStart({ sessionId: 'sess-1', cwd: dir, source: 'startup' });
+    expect(injected(line)).not.toContain('ABS_AUTO_DISTILL=0');
+  });
+
+  it('never fires when no LLM is configured', async () => {
+    delete process.env.ABS_LLM_BASE_URL;
+    delete process.env.ABS_LLM_MODEL;
+    (await openMemory(undefined, { ensure: false })).close();
+    const line = await handleSessionStart({ sessionId: 'sess-1', cwd: dir, source: 'startup' });
+    expect(injected(line)).not.toContain('ABS_AUTO_DISTILL=0');
   });
 });
