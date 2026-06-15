@@ -18,15 +18,26 @@
  *   5. ROLLBACK — on ANY failure mid-operation, restore from the backup so the
  *      original file is left intact (or removed again if it did not exist before).
  *
- * Diffs from #18 are append-only, so applying = current content + the candidate's
- * `proposedText`. We re-read the current content at apply time and confirm it still
- * matches what the diff was generated against (a hash/length check), refusing with
- * `target-modified` if the file changed underneath us — never blindly clobbering.
+ * Applying = `current + proposedText` for `contentOp:'append'` (CLAUDE.md and re-runs on an
+ * entry that already has frontmatter), OR `proposedText` written verbatim for
+ * `contentOp:'replace'` (an auto-memory entry that needs frontmatter at the FRONT — #140);
+ * `replace` is refused on any non-auto-memory target. We re-read the current content at apply
+ * time and confirm it still matches what the diff was generated against, refusing with
+ * `target-modified` if the file changed underneath us — never blindly clobbering. An
+ * auto-memory apply also makes the entry index-visible by ensuring an ADDITIVE pointer in the
+ * project's `MEMORY.md` (#140): entry first, then pointer (recomputed against a fresh read);
+ * an index failure after the entry commits is a warning, not corruption (no orphan pointer).
  */
 import { constants as FS } from 'node:fs';
 import * as nodeFsp from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
-import { isProtectedMemoryType, parseFrontmatterType, resolveTarget } from './targets.js';
+import {
+  ensureIndexPointer,
+  isProtectedMemoryType,
+  memoryIndexPath,
+  parseFrontmatterType,
+  resolveTarget,
+} from './targets.js';
 import type { ApplyResult, OptimizeCandidate } from './types.js';
 
 /**
@@ -160,6 +171,13 @@ export class GatedApplier implements Applier {
       return { applied: false, absPath, refused: 'symlink-target' };
     }
 
+    // `replace` (whole-file write) is ONLY ever legitimate for an auto-memory entry that
+    // needs frontmatter at the front (#140). Refuse it on any other kind so a future
+    // direct API caller can't turn `replace` into a full-file clobber of CLAUDE.md.
+    if (candidate.contentOp === 'replace' && resolved.kind !== 'auto-memory') {
+      return { applied: false, absPath, refused: 'forbidden-target' };
+    }
+
     const fileExists = await this.exists(absPath);
     const current = fileExists ? await this.readOrEmpty(absPath) : '';
 
@@ -176,10 +194,62 @@ export class GatedApplier implements Applier {
       return { applied: false, absPath, refused: 'target-modified' };
     }
 
-    // Append-only: new content = current + the candidate's proposed block.
-    const nextContent = current + candidate.proposedText;
+    // Index-pointer pre-validation (#140) — done BEFORE any write so a bad index target is a
+    // true `refused ⇒ nothing written`, never a refusal after the entry already committed.
+    const indexWrite = candidate.indexWrite;
+    if (indexWrite) {
+      const canonicalIndex = memoryIndexPath(options.projectRoot, options.projectsDir);
+      if (indexWrite.absPath !== canonicalIndex) {
+        return { applied: false, absPath, refused: 'forbidden-index-target' };
+      }
+      if (await this.isSymlink(indexWrite.absPath)) {
+        return { applied: false, absPath, refused: 'symlink-target' };
+      }
+    }
 
-    return this.writeSafely(absPath, current, nextContent, fileExists);
+    // `replace` writes proposedText as the WHOLE file (auto-memory entry that needs
+    // frontmatter at the front); `append` (default) keeps the original `current + block`.
+    const nextContent =
+      candidate.contentOp === 'replace' ? candidate.proposedText : current + candidate.proposedText;
+
+    const entryResult = await this.writeSafely(absPath, current, nextContent, fileExists);
+
+    // Entry committed. Make it index-visible by ensuring the MEMORY.md pointer (#140).
+    // Ordering matters: the entry is ALREADY written, so an index failure here is NOT
+    // corruption — an entry without a pointer is exactly the pre-#140 state — so we warn
+    // instead of rolling the entry back. The reverse (pointer before entry) never happens.
+    if (entryResult.applied && indexWrite) {
+      try {
+        await this.applyIndexPointer(indexWrite.absPath);
+      } catch (err) {
+        return {
+          ...entryResult,
+          indexWarning: `entry written, but MEMORY.md pointer failed (${(err as Error).message}); re-run apply to index it`,
+        };
+      }
+    }
+    return entryResult;
+  }
+
+  /**
+   * Ensure the consolidated-lessons pointer in `MEMORY.md`, ADDITIVELY (#140). Re-reads the
+   * index FRESH (not the generation-time content) and recomputes the additive change, so an
+   * intervening user edit is never clobbered; a no-op when the pointer is already present.
+   * The path is the canonical `MEMORY.md`, pre-validated by the caller (allowlist + symlink).
+   */
+  private async applyIndexPointer(indexAbsPath: string): Promise<void> {
+    // Re-check the symlink immediately before writing (not just at pre-validation): closes the
+    // TOCTOU window where MEMORY.md is swapped for a symlink between the guard and this write.
+    // Throwing here is caught by `apply` and surfaced as an `indexWarning` (entry already
+    // committed), never a write-through.
+    if (await this.isSymlink(indexAbsPath)) {
+      throw new Error('MEMORY.md is a symlink — refusing to write the index pointer through it');
+    }
+    const fileExists = await this.exists(indexAbsPath);
+    const current = fileExists ? await this.readOrEmpty(indexAbsPath) : '';
+    const { content, changed } = ensureIndexPointer(current);
+    if (!changed) return;
+    await this.writeSafely(indexAbsPath, current, content, fileExists);
   }
 
   /**

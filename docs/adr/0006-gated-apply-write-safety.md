@@ -135,3 +135,29 @@ with a tracked follow-up; neither is a blocking issue given the existing backsto
 - **A YAML dependency to read frontmatter.** The frontmatter we read is a trivial
   key/value + one-level `metadata:` block; a 30-line reader keeps the module
   $0/offline and dependency-light, consistent with the rest of the project.
+
+## Addendum — 2026-06-15 (#140, index-visible auto-memory)
+
+The auto-memory write was a **dead drop**: the entry landed under `<slug>/memory/` with no YAML
+frontmatter and no pointer in that dir's `MEMORY.md`, so Claude Code's index-driven native
+memory never surfaced it. #140 makes the entry index-visible while keeping every safety
+property above:
+
+- **Frontmatter via a `contentOp`.** A candidate now carries `contentOp: 'append' | 'replace'`.
+  CLAUDE.md and a re-run on an entry that already has frontmatter stay `append` (`current +
+  proposedText`, byte-identical to before). A new entry / legacy frontmatter-less dead-drop uses
+  `replace` — `proposedText` is the WHOLE file (frontmatter at the front), written verbatim, so
+  the previewed full-file diff equals the written bytes. `replace` is **refused on any
+  non-auto-memory target** so it can never become a full-file clobber of CLAUDE.md.
+- **`MEMORY.md` pointer = a second write, same envelope.** An auto-memory apply also ensures an
+  **additive** pointer line in `MEMORY.md` (the index loaded each session). The index write
+  reuses the same backup → atomic temp+rename → rollback envelope, the canonical-path allowlist
+  (`memoryIndexPath`), and a symlink refusal **re-checked immediately before the write** (TOCTOU).
+  It NEVER removes/rewrites/reorders existing lines — the index holds user-authored pointers —
+  and is idempotent (anchored to the markdown link target `](consolidated-lessons.md)`, not a
+  loose substring), recomputed against a FRESH read at apply time so an intervening user edit is
+  never clobbered.
+- **Ordering, not 2-phase commit.** The entry is committed FIRST, then the pointer. An index
+  failure after the entry commits is a **warning** (`ApplyResult.indexWarning`, `applied: true`),
+  not a rollback — an entry-without-pointer is exactly the harmless pre-#140 state. The reverse
+  (pointer without entry) is structurally impossible, so no orphan pointer can occur.

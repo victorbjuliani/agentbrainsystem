@@ -30,6 +30,10 @@ import type { AutoMemoryType, OptimizeTarget } from './types.js';
 const CLAUDE_MD = 'CLAUDE.md';
 /** Auto-memory entries live under `<slug>/memory/`. */
 const MEMORY_SUBDIR = 'memory';
+/** The native-memory index file Claude Code loads each session (one pointer per entry). */
+export const MEMORY_INDEX = 'MEMORY.md';
+/** The fixed basename of the entry `abs optimize` writes its consolidated lessons to. */
+export const CONSOLIDATED_LESSONS_FILE = 'consolidated-lessons.md';
 /** Auto-memory frontmatter types the engine MUST refuse to modify (fail-closed). */
 export const PROTECTED_MEMORY_TYPES: ReadonlySet<AutoMemoryType> = new Set(['user', 'feedback']);
 
@@ -60,6 +64,67 @@ export function autoMemoryEntryPath(
   name: string,
 ): string {
   return join(autoMemoryDir(projectRoot, projectsDir), name);
+}
+
+/** Canonical absolute path to the project's native-memory index (`MEMORY.md`). */
+export function memoryIndexPath(projectRoot: string, projectsDir: string): string {
+  return join(autoMemoryDir(projectRoot, projectsDir), MEMORY_INDEX);
+}
+
+/**
+ * Whether a markdown file already opens with a YAML frontmatter block (a leading `---`
+ * fence with a matching closing `---`). Used by optimize (#140) to decide whether an
+ * auto-memory entry needs frontmatter prepended (new file / legacy dead-drop) or already
+ * carries it (a plain bullet append). A leading BOM is tolerated.
+ */
+export function hasFrontmatter(content: string): boolean {
+  // Strip a leading BOM and normalize CRLF so a Windows-written entry is detected too.
+  const text = (content.charCodeAt(0) === 0xfeff ? content.slice(1) : content).replace(
+    /\r\n/g,
+    '\n',
+  );
+  // The opening fence must be a `---` LINE (followed by a newline) — `"---"` at EOF with no
+  // body is NOT frontmatter. A closing `---` fence must then follow.
+  if (!text.startsWith('---\n')) return false;
+  return /\n---\s*(\n|$)/.test(text.slice(3));
+}
+
+/** Title + hook for the consolidated-lessons pointer line in `MEMORY.md` (#140). */
+const INDEX_POINTER_TITLE = 'Consolidated lessons';
+const INDEX_POINTER_HOOK = "abs-distilled lessons from this project's sessions";
+
+/** The exact `MEMORY.md` pointer line for the consolidated-lessons entry. */
+export function consolidatedLessonsPointer(): string {
+  return `- [${INDEX_POINTER_TITLE}](${CONSOLIDATED_LESSONS_FILE}) — ${INDEX_POINTER_HOOK}.`;
+}
+
+/**
+ * True when `indexContent` already links the consolidated-lessons entry. Anchored to the
+ * markdown LINK TARGET `](consolidated-lessons.md)` — NOT a loose substring — so a user
+ * line that merely mentions the filename in prose does not suppress the real pointer.
+ */
+export function indexHasConsolidatedPointer(indexContent: string): boolean {
+  return indexContent.includes(`](${CONSOLIDATED_LESSONS_FILE})`);
+}
+
+/**
+ * Make the consolidated-lessons pointer present in `MEMORY.md`, ADDITIVELY (#140).
+ * Returns the next content and whether it changed. NEVER removes/rewrites/reorders
+ * existing lines — the index holds user-authored pointers. Idempotent: a no-op when the
+ * pointer is already present. Creates a `# Memory Index` file when absent. Tolerates
+ * CRLF and a missing trailing newline.
+ */
+export function ensureIndexPointer(indexContent: string): { content: string; changed: boolean } {
+  if (indexHasConsolidatedPointer(indexContent)) {
+    return { content: indexContent, changed: false };
+  }
+  const pointer = consolidatedLessonsPointer();
+  if (indexContent.trim().length === 0) {
+    return { content: `# Memory Index\n\n${pointer}\n`, changed: true };
+  }
+  // Append after existing content, normalizing to exactly one separating newline.
+  const trimmedEnd = indexContent.replace(/\s+$/, '');
+  return { content: `${trimmedEnd}\n${pointer}\n`, changed: true };
 }
 
 /**
