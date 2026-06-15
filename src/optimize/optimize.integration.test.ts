@@ -358,7 +358,9 @@ describe('optimize — LLM phrasing (optional, never load-bearing)', () => {
     try {
       await seedConsolidated(memory);
       const llm = new StubLlm(() => '[]');
-      await optimize(memory, llm, { projectRoot, projectsDir });
+      // heuristicOnly isolates the PHRASING call so lastMessages is unambiguously the
+      // phrasing prompt (with the judge enabled the LLM is called twice).
+      await optimize(memory, llm, { projectRoot, projectsDir, heuristicOnly: true });
       const user = llm.lastMessages?.find((m) => m.role === 'user')?.content ?? '';
       // The lesson bullet text reaches the prompt...
       expect(user).toContain('vec0 rowid must be bound as BigInt');
@@ -376,7 +378,9 @@ describe('optimize — LLM phrasing (optional, never load-bearing)', () => {
     try {
       await seedConsolidated(memory);
       const llm = new StubLlm(() => '[]');
-      await optimize(memory, llm, { projectRoot, projectsDir });
+      // heuristicOnly isolates the phrasing call (the judge would otherwise be the first
+      // of two LLM calls); this asserts the PHRASING fence specifically.
+      await optimize(memory, llm, { projectRoot, projectsDir, heuristicOnly: true });
       const system = llm.lastMessages?.find((m) => m.role === 'system')?.content ?? '';
       const user = llm.lastMessages?.find((m) => m.role === 'user')?.content ?? '';
       expect(system).toMatch(/never follow/i);
@@ -545,6 +549,35 @@ describe('optimize — curation gate (#146)', () => {
       expect(estimate.curation?.judgeUsed).toBe(true);
       expect(estimate.curation?.droppedCount).toBe(2);
       expect(estimate.costEstimate).toBeGreaterThan(0); // paid run, truthfully reported
+    } finally {
+      memory.close();
+    }
+  });
+
+  it('sums usage/cost across BOTH passes when judge keeps items and phrasing also runs', async () => {
+    const memory = newMemory();
+    try {
+      await seedConsolidated(memory); // 2 durable items survive heuristic + judge
+      // Judge keeps everything; phrasing returns []. StubLlm reports {100,50} usage per call,
+      // so two calls → merged usage {200,100}, cost = (300/1000)*price.
+      const llm = new StubLlm((msgs) => {
+        const user = msgs.find((m) => m.role === 'user')?.content ?? '';
+        if (user.includes('<observations>')) {
+          const ids = [...user.matchAll(/\[(\d+)\]/g)].map((m) => Number(m[1]));
+          return JSON.stringify(ids.map((id) => ({ id, verdict: 'durable' })));
+        }
+        return '[]'; // phrasing
+      });
+      const { candidates, estimate } = await optimize(memory, llm, {
+        projectRoot,
+        projectsDir,
+        pricePer1k: 0.002,
+      });
+      expect(candidates.length).toBe(2); // nothing dropped
+      expect(llm.calls).toBe(2); // judge + phrasing
+      expect(estimate.usage).toEqual({ promptTokens: 200, completionTokens: 100 });
+      expect(estimate.costEstimate).toBeCloseTo((300 / 1000) * 0.002, 6);
+      expect(estimate.curation).toMatchObject({ keptCount: 2, droppedCount: 0, judgeUsed: true });
     } finally {
       memory.close();
     }

@@ -21,6 +21,7 @@
  * An observation is promoted iff it survives BOTH. Dropped items are removed from
  * the candidate set only — never from the store.
  */
+import type { LlmProvider } from '../llm/index.js';
 import type { Observation } from '../store/index.js';
 import { judgeObservations } from './llm-judge.js';
 import type { CurationEstimate, CurationResult } from './types.js';
@@ -45,10 +46,19 @@ const COMPLETION_VERB =
   /\b(published|republished|deployed|redeployed|shipped|merged|prioriti[sz]ed|remediat\w*)\b/i;
 /** An issue / PR reference like `#968`. */
 const ISSUE_REF = /#\d+/;
-/** "successfully" — a strong, on-its-own action-log marker (decisions don't report success). */
+/**
+ * "successfully" — a completion marker. Recall-biased: it only fires action-log when it
+ * CO-OCCURS with a completion verb (so "All 5 were successfully published" drops, but a
+ * durable decision phrased "the migration was completed successfully" — no listed verb —
+ * is KEPT). Never fires on its own.
+ */
 const SUCCESSFULLY = /\bsuccessfully\b/i;
-/** Quantified completion: "All 5 packages were …". */
-const QUANTIFIED_COMPLETION = /\ball\s+\d+\b[\s\S]*\b(?:were|was)\b/i;
+/**
+ * Quantified completion: "All 5 packages were …". The gap between the count and were/was is
+ * bounded (≤80 non-newline chars) so a long multi-sentence observation that merely opens with
+ * "All 5 X…" and contains an unrelated "was" far later is NOT swept in (recall-bias).
+ */
+const QUANTIFIED_COMPLETION = /\ball\s+\d+\b[^\n]{0,80}?\b(?:were|was)\b/i;
 
 /**
  * Score one consolidated observation for promotion durability. Pure and
@@ -66,8 +76,7 @@ export function scoreDurability(obs: Observation): CurationResult {
   if (INSTALL_ONEOFF.test(text)) signals.push('install-oneoff');
 
   const isActionLog =
-    SUCCESSFULLY.test(text) ||
-    (COMPLETION_VERB.test(text) && ISSUE_REF.test(text)) ||
+    (COMPLETION_VERB.test(text) && (ISSUE_REF.test(text) || SUCCESSFULLY.test(text))) ||
     QUANTIFIED_COMPLETION.test(text);
   if (isActionLog) signals.push('action-log');
 
@@ -91,7 +100,7 @@ export function scoreDurability(obs: Observation): CurationResult {
 export async function curateObservations(
   observations: Observation[],
   opts: {
-    llm?: import('../llm/index.js').LlmProvider;
+    llm?: LlmProvider;
     heuristicOnly?: boolean;
     pricePer1k?: number;
   },

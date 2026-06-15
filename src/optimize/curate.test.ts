@@ -159,4 +159,46 @@ describe('curateObservations — heuristic-only (no LLM)', () => {
     expect(keep.size).toBe(0);
     expect(estimate).toMatchObject({ keptCount: 0, droppedCount: 0, judgeUsed: false });
   });
+
+  it('skips the judge when EVERY item is heuristic-trivia, even with an LLM configured', async () => {
+    nextId = 1;
+    const all = [
+      obs('Use the `aarch64.dmg` installer on Apple Silicon.'),
+      obs('Uninstalled the CodeRabbit plugin during cleanup.'),
+    ];
+    let calls = 0;
+    const llm = {
+      id: 'stub',
+      model: 'stub-v1',
+      async complete() {
+        calls++;
+        return { text: '[]' };
+      },
+    };
+    const { keep, estimate } = await curateObservations(all, { llm });
+    expect(keep.size).toBe(0);
+    expect(calls).toBe(0); // heuristicKept.length === 0 → judge never called
+    expect(estimate.judgeUsed).toBe(false);
+    expect(estimate.droppedCount).toBe(2);
+  });
+});
+
+describe('scoreDurability — recall-bias refinements (review follow-ups)', () => {
+  it("keeps a durable decision that ends in 'successfully' (no completion verb to pair with)", () => {
+    // SUCCESSFULLY fires action-log only WITH a completion verb; "completed" is not listed.
+    const r = scoreDurability(obs('The migration to OAuth 2.0 was completed successfully.'));
+    expect(r.verdict).toBe('durable');
+  });
+
+  it('does NOT sweep a long observation that merely opens with "All N …" and contains "was" far later', () => {
+    const long = `All 5 engineers agreed on the approach. ${'Context. '.repeat(40)} It was a deliberate architecture choice.`;
+    const r = scoreDurability(obs(long));
+    expect(r.verdict).toBe('durable'); // bounded gap prevents the cross-sentence false positive
+  });
+
+  it('still drops a genuine quantified completion ("All 5 … were … published")', () => {
+    const r = scoreDurability(obs('All 5 packages were successfully published to Bitbucket.'));
+    expect(r.verdict).toBe('trivia');
+    expect(r.signals).toContain('action-log');
+  });
 });
