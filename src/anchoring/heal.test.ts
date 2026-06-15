@@ -156,6 +156,41 @@ describe('self-healing (#28)', () => {
     expect(store.findAnchorsBySymbol('gone')[0]?.state).toBe('stale');
   });
 
+  it('verifyOnRecall RECOVERS a stale anchor when its symbol resolves again (#137/F7-01)', () => {
+    // `stale` was terminal: a fact false-staled by a transient miss (empty/foreign index)
+    // stayed demoted forever. verifyOnRecall now re-resolves stale anchors too, so once the
+    // home index is back the fact returns to verified.
+    store.createAnchor({
+      observationId: obsId,
+      anchorKind: 'symbol',
+      qualifiedName: 'foo',
+      filePath: '/r/a.ts',
+      state: 'stale',
+    });
+    const provider = new FakeProvider(
+      { foo: { qualifiedName: 'foo', filePath: '/r/a.ts', line: 7, commitSha: 'c3' } },
+      new Set(),
+    );
+    const res = verifyOnRecall(store, provider, [obsId]);
+    expect(res).toMatchObject({ processed: 1, ok: 1 });
+    const a = store.findAnchorsBySymbol('foo')[0];
+    expect(a?.state).toBe('verified');
+    expect(a?.line).toBe(7);
+  });
+
+  it('verifyOnRecall leaves a genuinely-removed stale anchor stale (no false recovery)', () => {
+    store.createAnchor({
+      observationId: obsId,
+      anchorKind: 'symbol',
+      qualifiedName: 'gone',
+      filePath: '/r/a.ts',
+      state: 'stale',
+    });
+    const res = verifyOnRecall(store, new FakeProvider({}, new Set()), [obsId]);
+    expect(res).toMatchObject({ processed: 1, staled: 1 });
+    expect(store.findAnchorsBySymbol('gone')[0]?.state).toBe('stale');
+  });
+
   it('is a no-op when the provider is unavailable (fail-open)', () => {
     store.createAnchor({
       observationId: obsId,

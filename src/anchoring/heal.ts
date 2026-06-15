@@ -123,7 +123,12 @@ export function verifyOnRecall(
   const anchors: FactAnchor[] = [];
   for (const obsId of observationIds) {
     for (const a of store.getAnchorsForObservation(obsId)) {
-      if (a.state === 'verified') anchors.push(a);
+      // Re-resolve `verified` anchors (catch rot at the moment of use) AND `stale`
+      // ones (recovery): `stale` is otherwise terminal, so a fact false-staled by a
+      // transient miss — an empty/foreign index that since became resolvable — would
+      // stay demoted forever. Re-resolving lets a recovered symbol return to verified;
+      // a genuinely-removed symbol simply stays stale (no-op).
+      if (a.state === 'verified' || a.state === 'stale') anchors.push(a);
     }
   }
   return tally(store, provider, anchors);

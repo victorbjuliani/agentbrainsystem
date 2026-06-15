@@ -38,7 +38,12 @@ export class AbsIndexProvider implements GroundTruthProvider {
   }
 
   isAvailable(): boolean {
-    return this.conn() !== null;
+    // A store that opened but was NEVER built (no `indexed_commit`) cannot verify
+    // anything: every lookup would miss and self-heal would mass-stale correct
+    // anchors against an empty index (e.g. after a db wipe / repo move / a fresh
+    // checkout whose symbol index has not been refreshed yet). Treat an unbuilt
+    // index as unavailable so heal/sweep fail-open instead of producing FALSE stale.
+    return this.conn() !== null && this.commit() !== undefined;
   }
 
   resolveSymbol(
@@ -65,7 +70,12 @@ export class AbsIndexProvider implements GroundTruthProvider {
       if (!SUPPORTED.has(extname(rel)) && existsSync(opts.filePath)) {
         return { qualifiedName: name, filePath: opts.filePath, commitSha };
       }
-      // else: parsed file, symbol genuinely absent here → try a cross-file move.
+      // Parsed file, symbol genuinely absent HERE. A same-file lookup must NOT silently
+      // bind to a same-named symbol in ANOTHER file: that would seal a `verified` anchor
+      // carrying a foreign file's line and make heal's two-step contract (same-file verify,
+      // THEN an explicit `unique` cross-file move) dead code. Return null and let the caller
+      // decide whether to attempt a move — the anywhere search runs only without a filePath.
+      return null;
     }
 
     const anywhere = store.queryByName(name);

@@ -74,3 +74,4 @@ HANDOFF.md
 
 # Local-only reports / scratch (never shared in git).
 production-readiness-report.md
+docs/audits/

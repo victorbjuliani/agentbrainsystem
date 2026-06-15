@@ -9,6 +9,7 @@ import {
   CHAR_BUDGET,
   consumeFirstPromptFlag,
   handleUserPromptSubmit,
+  healableObservationIds,
   renderRecallBlock,
 } from './user-prompt-submit.js';
 
@@ -92,6 +93,27 @@ describe('renderRecallBlock — bounding', () => {
     // Bullet list is budget-bounded; the fixed data-fence envelope (header + open/
     // close markers) is constant overhead on top, so allow a small fixed margin.
     expect(block.length).toBeLessThanOrEqual(CHAR_BUDGET + 360);
+  });
+});
+
+describe('healableObservationIds — heal-scope (#137/F7-03)', () => {
+  it('excludes global hits so cross-project anchors are not healed against the wrong repo', () => {
+    const projectHit = hit(1, 'lesson', 'Local detail about the foo service module.');
+    const globalHit = { ...hit(2, 'decision', 'A cross-project global decision.'), global: true };
+    expect(healableObservationIds([projectHit, globalHit], 'projA')).toEqual([1]);
+  });
+
+  it('keeps all hits when none are global (project-scoped recall)', () => {
+    expect(healableObservationIds([hit(3, 'note', 'a'), hit(4, 'note', 'b')], 'projA')).toEqual([
+      3, 4,
+    ]);
+  });
+
+  it('heals NOTHING in store-wide recall — hits span projects, none safe to verify here', () => {
+    // ABS_RECALL_SCOPE=global → activeProject undefined → recall returns other projects'
+    // hits with global=false; resolving them against cwd would corrupt foreign facts.
+    const projB = hit(5, 'note', 'project B detail');
+    expect(healableObservationIds([projB], undefined)).toEqual([]);
   });
 });
 

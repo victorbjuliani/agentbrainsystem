@@ -10,7 +10,7 @@ import type { Memory } from '../memory.js';
 import { Recall } from '../recall/index.js';
 import { MemoryStore } from '../store/index.js';
 import { optimize } from './index.js';
-import { autoMemoryDir, claudeMdPath } from './targets.js';
+import { autoMemoryDir, claudeMdPath, projectSlug } from './targets.js';
 
 /** Deterministic offline embedding provider (mirrors the consolidate test fake). */
 class FakeEmbedding implements EmbeddingProvider {
@@ -57,7 +57,12 @@ function newMemory(): Memory {
 
 /** Seed a session with consolidated lessons/decisions + raw turns. */
 async function seedConsolidated(memory: Memory): Promise<{ decisionId: number; lessonId: number }> {
-  const sessionId = memory.store.createSession({ externalId: 's1' });
+  // Optimize is project-scoped (#135): the consolidated memory must live under a session
+  // whose project matches the optimized projectRoot, exactly as ingest stores it.
+  const sessionId = memory.store.createSession({
+    externalId: 's1',
+    project: projectSlug(projectRoot),
+  });
   // Raw turns — must be ignored by the optimizer.
   await memory.indexer.write({
     sessionId,
@@ -123,6 +128,73 @@ describe('optimize — candidate generation (diffs-only)', () => {
     }
   });
 
+  it('scopes candidates to the current project — never leaks another project (#135)', async () => {
+    const memory = newMemory();
+    try {
+      const { decisionId } = await seedConsolidated(memory);
+      // A consolidated decision belonging to a DIFFERENT project (e.g. a client repo).
+      const foreignSession = memory.store.createSession({
+        externalId: 's-foreign',
+        project: projectSlug(join(dir, 'OTHER-CLIENT-PROJECT')),
+      });
+      const foreignId = await memory.indexer.write({
+        sessionId: foreignSession,
+        kind: 'decision',
+        content: 'Coupa API keys are deprecated — migrate to OAuth (client secret)',
+        source: 'consolidate',
+        metadata: { sourceSession: foreignSession },
+      });
+
+      const result = await optimize(memory, undefined, { projectRoot, projectsDir });
+      const decision = result.candidates.find((c) => c.target.kind === 'claude-md');
+
+      expect(decision?.evidenceIds).toContain(decisionId);
+      // The foreign project's decision must NOT appear in THIS project's CLAUDE.md candidate.
+      expect(decision?.evidenceIds).not.toContain(foreignId);
+      expect(decision?.diff).not.toContain('Coupa');
+    } finally {
+      memory.close();
+    }
+  });
+
+  it('uses content-addressed candidate ids (stable per evidence, not positional) (#135/F3-06)', async () => {
+    const memory = newMemory();
+    try {
+      await seedConsolidated(memory);
+      const a = await optimize(memory, undefined, { projectRoot, projectsDir });
+      const b = await optimize(memory, undefined, { projectRoot, projectsDir });
+      const idA = a.candidates.find((c) => c.target.kind === 'claude-md')?.id;
+      const idB = b.candidates.find((c) => c.target.kind === 'claude-md')?.id;
+      expect(idA).toBeDefined();
+      expect(idA).toBe(idB); // same evidence → same id across runs (no positional recycling)
+      expect(idA).not.toMatch(/^cand-\d+$/); // not a positional counter
+    } finally {
+      memory.close();
+    }
+  });
+
+  it('candidate id CHANGES when the target file mutates under identical evidence (#135/F3-06)', async () => {
+    const memory = newMemory();
+    try {
+      await seedConsolidated(memory);
+      const before = await optimize(memory, undefined, { projectRoot, projectsDir });
+      const idBefore = before.candidates.find((c) => c.target.kind === 'claude-md')?.id;
+
+      // Same evidence, but CLAUDE.md now has different content → the proposed diff differs,
+      // so a stale id must NOT keep mapping to a now-different candidate.
+      await mkdir(projectRoot, { recursive: true });
+      await writeFile(claudeMdPath(projectRoot), '# CLAUDE.md\n\nhand-edited since the preview.\n');
+      const after = await optimize(memory, undefined, { projectRoot, projectsDir });
+      const idAfter = after.candidates.find((c) => c.target.kind === 'claude-md')?.id;
+
+      expect(idBefore).toBeDefined();
+      expect(idAfter).toBeDefined();
+      expect(idAfter).not.toBe(idBefore);
+    } finally {
+      memory.close();
+    }
+  });
+
   it('writes NOTHING — no files are created during generation', async () => {
     const memory = newMemory();
     try {
@@ -181,7 +253,7 @@ describe('optimize — LLM phrasing (optional, never load-bearing)', () => {
       const llm = new StubLlm((msgs) => {
         // Echo back a valid phrasing for every candidate id present in the prompt.
         const user = msgs.find((m) => m.role === 'user')?.content ?? '';
-        const ids = [...user.matchAll(/"id":"(cand-\d+)"/g)].map((m) => m[1]);
+        const ids = [...user.matchAll(/"id":"(cand-[0-9a-f]+)"/g)].map((m) => m[1]);
         return JSON.stringify(
           ids.map((id) => ({ id, title: `Phrased ${id}`, rationale: `Because ${id}.` })),
         );

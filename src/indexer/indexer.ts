@@ -19,6 +19,7 @@
 import type { EmbeddingProvider } from '../embedding/index.js';
 import { assertDimensions } from '../embedding/index.js';
 import type { CreateObservationInput, MemoryStore } from '../store/index.js';
+import { EMBED_DEGRADED_KEY, REBUILD_FAILED_KEY } from '../store/index.js';
 
 /** kv_meta key under which the embedding signature of the persisted index lives. */
 const SIGNATURE_KEY = 'embed_signature';
@@ -56,6 +57,8 @@ export class Indexer {
   private readonly store: MemoryStore;
   private readonly provider: EmbeddingProvider;
   private readonly batchSize: number;
+  /** One-shot guard so a successful embed clears the degraded flag at most once per instance. */
+  private embedDegradedCleared = false;
 
   constructor(store: MemoryStore, provider: EmbeddingProvider, options: IndexerOptions = {}) {
     this.store = store;
@@ -202,10 +205,16 @@ export class Indexer {
       // Stamp the signature on a brand-new empty store so the first real write
       // does not later read as a signature change.
       if (signature === null) this.store.setMeta(SIGNATURE_KEY, expectedSignature);
+      // Index is healthy: clear any REBUILD_FAILED flag a prior transient failure left.
+      this.store.deleteMeta(REBUILD_FAILED_KEY);
       return { rebuilt: false, reason, status: this.status() };
     }
 
     await this.rebuild();
+    // A successful rebuild clears the durable failure flag on EVERY path (CLI `abs status`
+    // via openMemory, not only the MCP backgroundEnsure that used to be the sole clearer) —
+    // otherwise the SessionStart "DEGRADED" note sticks after a CLI-triggered repair.
+    this.store.deleteMeta(REBUILD_FAILED_KEY);
     return { rebuilt: true, reason, status: this.status() };
   }
 
@@ -227,6 +236,17 @@ export class Indexer {
 
   private async embedBatch(texts: string[]): Promise<number[][]> {
     const vectors = await this.provider.embed(texts);
+    // A successful embed PROVES the model loaded — clear any EMBED_DEGRADED flag a prior
+    // first-run download timeout left behind (session-end sets it; nothing else cleared it,
+    // so the SessionStart "DEGRADED" banner stuck forever). Once per instance; best-effort.
+    if (!this.embedDegradedCleared) {
+      this.embedDegradedCleared = true;
+      try {
+        this.store.deleteMeta(EMBED_DEGRADED_KEY);
+      } catch {
+        /* best-effort: a degraded-flag clear must never break the write path */
+      }
+    }
     return assertDimensions(vectors, this.provider.dimensions);
   }
 }

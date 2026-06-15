@@ -38,6 +38,13 @@ passive 0.3%.
    surface (`verifyOnRecall`), bounded and fail-open. A periodic reconciliation sweep
    (`healAnchors`) covers the rest. A symbol that moved is **re-anchored** (stays
    verified); one that vanished is marked **`stale`** — never deleted (auditable).
+   `stale` is **recoverable, not terminal**: `verifyOnRecall` re-resolves stale anchors
+   too, so a fact false-staled by a transient miss (an empty/unbuilt index, a wrong-repo
+   resolution) returns to `verified` once its home index can resolve it again. Resolution
+   is **strict same-file then explicit unique move**: the provider answers a `filePath`
+   lookup with the symbol in *that* file or `null` — it never silently binds to a homonym
+   in another file (which would seal a `verified` anchor onto foreign code), so the
+   distinct re-anchor step (unique cross-file match) stays the only way an anchor moves.
 
 4. **D4 — The guard is a read-only, fail-open PreToolUse hook.** Before an Edit/Write,
    it point-queries the graph for symbols the action would define and warns when one
@@ -70,5 +77,9 @@ passive 0.3%.
   model load on the hot path. A missing or stale graph degrades, never breaks.
 - Open follow-ups: the verification sweep / reconciliation are library functions; wiring
   them to a schedule (e.g. SessionEnd or the optimize loop) is a later enhancement.
-  Multi-repo anchor routing (a global store holds facts from several repos) currently
-  resolves only against the provider for the active repo — others stay `claimed`.
+  Multi-repo anchor routing (a global store holds facts from several repos) resolves only
+  against the provider for the active repo; **cross-project (global) facts are excluded
+  from recall-time healing** so they are never false-staled or re-anchored against the
+  wrong repo's index — their home repo heals them, and their state is left untouched here.
+  The provider also reports **unavailable over a never-built index** so heal/sweep
+  fail-open (no-op) instead of mass-staling correct anchors after a db wipe or repo move.

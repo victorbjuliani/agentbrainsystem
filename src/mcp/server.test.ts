@@ -9,6 +9,7 @@ import { __clearDeleteCacheForTests } from '../delete/delete.js';
 import type { EnsureResult } from '../indexer/index.js';
 import { readBinding } from '../ingest/index.js';
 import { type Memory, openMemory } from '../memory.js';
+import { projectSlug } from '../optimize/targets.js';
 import { isRebuildLocked, REBUILD_FAILED_KEY, rebuildLockPath } from '../store/index.js';
 import { backgroundEnsure, createMcpServer, setSessionProjectAction, withReady } from './server.js';
 
@@ -260,7 +261,12 @@ describe('MCP server', () => {
 
   it('optimize generates candidates and apply writes one to disk (CLAUDE.md path)', async () => {
     const projectRoot = join(dir, 'proj');
-    const sessionId = mem.store.createSession({ externalId: 's1' });
+    // optimize is project-scoped (#135): seed the consolidated decision under the same
+    // project label the optimize tool resolves projectRoot to, else 0 candidates.
+    const sessionId = mem.store.createSession({
+      externalId: 's1',
+      project: projectSlug(projectRoot),
+    });
     await mem.indexer.write({
       sessionId,
       kind: 'decision',

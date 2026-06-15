@@ -19,6 +19,7 @@ import type { GroundTruthProvider, ResolvedSymbol } from '../ground-truth/index.
 import { buildOpencodeDb } from '../harness/capabilities/__fixtures__/opencode-db.js';
 import type { HarnessAdapter } from '../harness/index.js';
 import { type Memory, openMemory } from '../memory.js';
+import { EMBED_DEGRADED_KEY } from '../store/index.js';
 import {
   cmdDoctor,
   cmdForget,
@@ -1149,6 +1150,24 @@ describe('cmdDoctor — health check (#101, hermetic, tmp ABS_HOME)', () => {
     expect(report.drift).toBe(true);
     expect(process.exitCode).toBe(1);
     expect(errLines.join('')).toMatch(/STALE|drift/i);
+  });
+
+  it('surfaces a degraded flag (embed timeout) — unhealthy + exit 1 even with a fresh index (#136)', async () => {
+    const mem = await openMemory(loadConfig(), { ensure: false });
+    mem.store.createSession({ externalId: 's1' });
+    // A stale degraded flag with NO drift/staleness: doctor used to report healthy:true
+    // while SessionStart showed "DEGRADED" — the two surfaces contradicting.
+    mem.store.setMeta(EMBED_DEGRADED_KEY, '2026-05-26T21:22:46.793Z');
+    mem.close();
+
+    await cmdDoctor({ fetchLatest: async () => null });
+
+    const report = JSON.parse(outLines.join(''));
+    expect(report.healthy).toBe(false);
+    expect(report.drift).toBe(false);
+    expect(report.degraded.embedModelTimeoutAt).toBe('2026-05-26T21:22:46.793Z');
+    expect(process.exitCode).toBe(1);
+    expect(errLines.join('')).toMatch(/degraded/i);
   });
 
   it('flags an available update + prints the upgrade hint when a newer version is published', async () => {
