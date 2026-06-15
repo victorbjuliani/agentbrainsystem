@@ -948,13 +948,23 @@ async function cmdOptimize(args: string[]): Promise<void> {
       ...(limit !== undefined ? { limit } : {}),
     });
 
+    // Curated-out count (#146): consolidated items dropped as low-durability (still in
+    // the store, just not promoted). Surfaced so curation is observable, not a silent gate.
+    const dropped = estimate.curation?.droppedCount ?? 0;
+    const heldBack =
+      dropped > 0
+        ? ` (${dropped} item(s) held back as low-durability${estimate.curation?.judgeUsed ? ', LLM-judged' : ''})`
+        : '';
+
     if (candidates.length === 0) {
-      out('no candidates — memory has nothing new to distill into CLAUDE.md / auto-memory.');
+      out(
+        `no candidates — memory has nothing new to distill into CLAUDE.md / auto-memory.${heldBack}`,
+      );
       return;
     }
 
     out(
-      `${candidates.length} candidate(s) ${estimate.llmUsed ? '(LLM-phrased)' : '(heuristic, $0)'}:`,
+      `${candidates.length} candidate(s) ${estimate.llmUsed ? '(LLM-phrased)' : '(heuristic, $0)'}${heldBack}:`,
     );
     out('');
     for (const c of candidates) printCandidate(c);

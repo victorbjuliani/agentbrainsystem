@@ -25,15 +25,18 @@ import { generateCandidates } from './candidate-gen.js';
 import { phraseCandidates } from './llm-phrasing.js';
 import type {
   ApplyResult,
+  CurationEstimate,
   GenerateCandidatesOptions,
   GenerateCandidatesResult,
   OptimizeCandidate,
+  OptimizeEstimate,
 } from './types.js';
 
 /**
  * Generate prioritized, evidence-backed candidate diffs from the consolidated
  * memory. The heuristic spine always runs ($0/offline); when `llm` is provided it
- * phrases the title/rationale only (never the diff/evidence/target). Writes
+ * both (a) runs the curation judge during generation (#146) to drop trivia and
+ * (b) phrases the title/rationale only (never the diff/evidence/target). Writes
  * NOTHING — the result is diffs the caller presents for approval.
  */
 export async function optimize(
@@ -41,9 +44,53 @@ export async function optimize(
   llm?: LlmProvider,
   options: GenerateCandidatesOptions = {},
 ): Promise<GenerateCandidatesResult> {
-  const base = await generateCandidates(memory, options);
-  const { candidates, estimate } = await phraseCandidates(base, llm, options.pricePer1k);
-  return { candidates, estimate };
+  // Thread the LLM into generation so the curation judge (#146) runs over the
+  // consolidated set BEFORE bullets are built. Heuristic curation runs regardless.
+  const { candidates: curated, curation } = await generateCandidates(memory, {
+    ...options,
+    ...(llm ? { llm } : {}),
+  });
+  const { candidates, estimate: phrasing } = await phraseCandidates(
+    curated,
+    llm,
+    options.pricePer1k,
+  );
+  return { candidates, estimate: mergeEstimates(phrasing, curation, options.pricePer1k) };
+}
+
+/**
+ * Fold the curation-judge estimate and the phrasing estimate into one run estimate
+ * (#146). CRITICAL: `phraseCandidates` reports `llmUsed:false`/$0 when its candidate
+ * set is empty (`llm-phrasing.ts`) — so when the judge ran (billable) and dropped
+ * EVERY candidate, phrasing sees `[]` and would mask a paid run as free. The OR-merge
+ * on `llmUsed` and the summed usage make the reported cost truthful. Cost is recomputed
+ * ONCE from the summed usage (never summed from pre-rounded per-pass costs).
+ */
+function mergeEstimates(
+  phrasing: OptimizeEstimate,
+  curation: CurationEstimate,
+  pricePer1k?: number,
+): OptimizeEstimate {
+  const promptTokens = (phrasing.usage?.promptTokens ?? 0) + (curation.usage?.promptTokens ?? 0);
+  const completionTokens =
+    (phrasing.usage?.completionTokens ?? 0) + (curation.usage?.completionTokens ?? 0);
+  const anyUsage = phrasing.usage !== undefined || curation.usage !== undefined;
+
+  const merged: OptimizeEstimate = {
+    promptCharEstimateTokens:
+      phrasing.promptCharEstimateTokens + (curation.promptCharEstimateTokens ?? 0),
+    llmUsed: phrasing.llmUsed || curation.judgeUsed,
+    curation: {
+      keptCount: curation.keptCount,
+      droppedCount: curation.droppedCount,
+      judgeUsed: curation.judgeUsed,
+    },
+  };
+  if (anyUsage) merged.usage = { promptTokens, completionTokens };
+  if (pricePer1k !== undefined && anyUsage) {
+    merged.costEstimate = ((promptTokens + completionTokens) / 1000) * pricePer1k;
+  }
+  return merged;
 }
 
 /** The shared applier instance (stateless — safe to reuse). */

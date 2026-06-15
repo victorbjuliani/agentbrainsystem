@@ -30,6 +30,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Memory } from '../memory.js';
 import type { Observation } from '../store/index.js';
+import { curateObservations } from './curate.js';
 import { renderAppendDiff, renderFullDiff } from './diff.js';
 import {
   autoMemoryEntryPath,
@@ -42,6 +43,7 @@ import {
   projectSlug,
 } from './targets.js';
 import type {
+  CurationEstimate,
   GenerateCandidatesOptions,
   IndexWrite,
   OptimizeCandidate,
@@ -224,11 +226,19 @@ function titleFor(cluster: Cluster): string {
  * current target files read-only, renders an append-only unified diff per cluster,
  * and returns candidates highest-priority first. Writes NOTHING. The optional
  * LLM-phrasing pass runs on top of this in `index.ts`.
+ *
+ * Curation gate (#146): before building bullets, the consolidated observations pass
+ * through {@link curateObservations} — a $0 heuristic floor plus an opt-in LLM-judge
+ * (when `options.llm` is set) — which drops operational trivia. Clusters are rebuilt
+ * from the surviving ids (fresh objects; the private `Cluster` shape never leaks),
+ * and a cluster with no survivors yields no candidate. The returned `curation`
+ * estimate carries the drop counts + the judge's usage/cost for the caller to fold
+ * into the run estimate.
  */
 export async function generateCandidates(
   memory: Memory,
   options: GenerateCandidatesOptions = {},
-): Promise<OptimizeCandidate[]> {
+): Promise<{ candidates: OptimizeCandidate[]; curation: CurationEstimate }> {
   const projectRoot = options.projectRoot ?? process.cwd();
   const projectsDir = options.projectsDir ?? defaultProjectsDir();
   const limit = options.limit ?? DEFAULT_LIMIT;
@@ -237,7 +247,14 @@ export async function generateCandidates(
   // observations recall would surface, never a sibling project's.
   const project = projectSlug(projectRoot);
 
-  const clusters = clusterConsolidated(memory, project);
+  const rawClusters = clusterConsolidated(memory, project);
+  // Curate the FLAT consolidated set (Cluster-agnostic), then rebuild clusters from the
+  // survivor ids. Drop-from-promotion only — the store is never mutated here.
+  const allObs = rawClusters.flatMap((c) => c.observations);
+  const { keep, curation } = await curateForOptions(allObs, options);
+  const clusters = rawClusters
+    .map((c) => ({ kind: c.kind, observations: c.observations.filter((o) => keep.has(o.id)) }))
+    .filter((c) => c.observations.length > 0);
   const candidates: OptimizeCandidate[] = [];
 
   for (const cluster of clusters) {
@@ -282,7 +299,20 @@ export async function generateCandidates(
   // High priority first (decisions before lessons), then stable by id.
   const rank: Record<OptimizePriority, number> = { high: 0, medium: 1, low: 2 };
   candidates.sort((a, b) => rank[a.priority] - rank[b.priority]);
-  return candidates.slice(0, limit);
+  return { candidates: candidates.slice(0, limit), curation };
+}
+
+/** Thin adapter: run curation with the run's LLM/options and return keep-set + estimate. */
+async function curateForOptions(
+  allObs: Observation[],
+  options: GenerateCandidatesOptions,
+): Promise<{ keep: Set<number>; curation: CurationEstimate }> {
+  const { keep, estimate } = await curateObservations(allObs, {
+    ...(options.llm ? { llm: options.llm } : {}),
+    ...(options.heuristicOnly ? { heuristicOnly: options.heuristicOnly } : {}),
+    ...(options.pricePer1k !== undefined ? { pricePer1k: options.pricePer1k } : {}),
+  });
+  return { keep, curation: estimate };
 }
 
 /**
