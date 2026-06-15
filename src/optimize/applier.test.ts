@@ -1,12 +1,19 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import * as nodeFsp from 'node:fs/promises';
 import { lstat, mkdir, readdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type ApplierFs, GatedApplier, MAX_BACKUPS_PER_FILE } from './applier.js';
-import { autoMemoryDir, autoMemoryEntryPath, claudeMdPath } from './targets.js';
-import type { OptimizeCandidate, OptimizeTarget } from './types.js';
+import {
+  autoMemoryDir,
+  autoMemoryEntryPath,
+  CONSOLIDATED_LESSONS_FILE,
+  claudeMdPath,
+  consolidatedLessonsPointer,
+  memoryIndexPath,
+} from './targets.js';
+import type { IndexWrite, OptimizeCandidate, OptimizeTarget } from './types.js';
 
 let dir: string;
 let projectRoot: string;
@@ -273,5 +280,163 @@ describe('GatedApplier — rollback on mid-write failure', () => {
     // No leftover temp files.
     const entries = await readdir(projectRoot).catch(() => [] as string[]);
     expect(entries.filter((e) => e.includes('abs-tmp'))).toEqual([]);
+  });
+});
+
+describe('GatedApplier — auto-memory index visibility (#140)', () => {
+  const FRONTMATTER =
+    '---\nname: consolidated-lessons\ndescription: x\nmetadata:\n  node_type: memory\n  type: project\n---\n';
+  const ENTRY_BODY =
+    '\n## Consolidated Memory (managed by abs optimize)\n\n- lesson one _(memory #1)_\n';
+
+  function entryPath(): string {
+    return autoMemoryEntryPath(projectRoot, projectsDir, CONSOLIDATED_LESSONS_FILE);
+  }
+  function indexPath(): string {
+    return memoryIndexPath(projectRoot, projectsDir);
+  }
+  /** An auto-memory candidate with a paired (canonical) index pointer write. */
+  function autoMemCandidate(
+    proposedText: string,
+    contentOp: 'append' | 'replace',
+    index = true,
+  ): OptimizeCandidate {
+    const indexWrite: IndexWrite | undefined = index
+      ? { absPath: indexPath(), proposedText: '', diff: '' }
+      : undefined;
+    return {
+      ...candidate(
+        { kind: 'auto-memory', absPath: entryPath(), memoryType: 'project' },
+        proposedText,
+      ),
+      contentOp,
+      ...(indexWrite ? { indexWrite } : {}),
+    };
+  }
+
+  it('new entry: writes frontmatter (replace) AND creates MEMORY.md with the pointer', async () => {
+    const full = `${FRONTMATTER}${ENTRY_BODY}`;
+    const result = await applier.apply(autoMemCandidate(full, 'replace'), {
+      projectRoot,
+      projectsDir,
+    });
+    expect(result.applied).toBe(true);
+    expect(result.indexWarning).toBeUndefined();
+    // diff == bytes: the entry is exactly proposedText.
+    expect(await readFile(entryPath(), 'utf8')).toBe(full);
+    const index = await readFile(indexPath(), 'utf8');
+    expect(index).toContain('# Memory Index');
+    expect(index).toContain(`](${CONSOLIDATED_LESSONS_FILE})`);
+  });
+
+  it('MEMORY.md write is ADDITIVE — pre-existing user pointers stay byte-for-byte intact', async () => {
+    await mkdir(autoMemoryDir(projectRoot, projectsDir), { recursive: true });
+    const userIndex = '# Memory Index\n\n- [User note](user-note.md) — hand-written by the user\n';
+    await writeFile(indexPath(), userIndex, 'utf8');
+
+    await applier.apply(autoMemCandidate(`${FRONTMATTER}${ENTRY_BODY}`, 'replace'), {
+      projectRoot,
+      projectsDir,
+    });
+    const index = await readFile(indexPath(), 'utf8');
+    expect(index.startsWith(userIndex.replace(/\s+$/, ''))).toBe(true); // user line preserved
+    expect(index).toContain(consolidatedLessonsPointer());
+  });
+
+  it('idempotent: re-applying an entry that already has frontmatter + pointer adds no duplicates', async () => {
+    await applier.apply(autoMemCandidate(`${FRONTMATTER}${ENTRY_BODY}`, 'replace'), {
+      projectRoot,
+      projectsDir,
+    });
+    const indexAfterFirst = await readFile(indexPath(), 'utf8');
+    // Second run: entry already has frontmatter → append; pointer already present → no-op.
+    const append = '\n- lesson two _(memory #2)_\n';
+    await applier.apply(autoMemCandidate(append, 'append'), { projectRoot, projectsDir });
+    const indexAfterSecond = await readFile(indexPath(), 'utf8');
+    expect(indexAfterSecond).toBe(indexAfterFirst); // pointer not duplicated
+    const occurrences = indexAfterSecond.split(`](${CONSOLIDATED_LESSONS_FILE})`).length - 1;
+    expect(occurrences).toBe(1);
+  });
+
+  it('fail-closed: a user|feedback entry is refused and MEMORY.md is NOT touched', async () => {
+    await mkdir(autoMemoryDir(projectRoot, projectsDir), { recursive: true });
+    await writeFile(entryPath(), '---\nname: x\nmetadata:\n  type: user\n---\nprivate\n', 'utf8');
+    const result = await applier.apply(autoMemCandidate('\n- x _(memory #1)_\n', 'append'), {
+      projectRoot,
+      projectsDir,
+    });
+    expect(result.applied).toBe(false);
+    expect(result.refused).toBe('protected-memory-type');
+    expect(existsSync(indexPath())).toBe(false); // no orphan pointer
+  });
+
+  it('forbidden-index-target: a non-canonical index path is refused BEFORE the entry is written', async () => {
+    const bad = autoMemCandidate(`${FRONTMATTER}${ENTRY_BODY}`, 'replace');
+    bad.indexWrite = { absPath: join(projectRoot, 'EVIL.md'), proposedText: '', diff: '' };
+    const result = await applier.apply(bad, { projectRoot, projectsDir });
+    expect(result.applied).toBe(false);
+    expect(result.refused).toBe('forbidden-index-target');
+    expect(existsSync(entryPath())).toBe(false); // refused ⇒ nothing written
+  });
+
+  it('ordering / no orphan: index write failure after the entry commits → applied:true + warning, entry intact', async () => {
+    // rename fails ONLY for the MEMORY.md temp→dest, so the entry commits but the pointer cannot.
+    const fs: ApplierFs = {
+      stat: nodeFsp.stat,
+      lstat: nodeFsp.lstat,
+      readFile: nodeFsp.readFile,
+      writeFile: nodeFsp.writeFile,
+      copyFile: nodeFsp.copyFile,
+      chmod: nodeFsp.chmod,
+      mkdir: nodeFsp.mkdir,
+      rm: nodeFsp.rm,
+      readdir: nodeFsp.readdir,
+      rename: (from, to) =>
+        String(to).endsWith('MEMORY.md')
+          ? Promise.reject(new Error('boom on index rename'))
+          : nodeFsp.rename(from, to),
+    };
+    const applierX = new GatedApplier(fs);
+    const full = `${FRONTMATTER}${ENTRY_BODY}`;
+    const result = await applierX.apply(autoMemCandidate(full, 'replace'), {
+      projectRoot,
+      projectsDir,
+    });
+    expect(result.applied).toBe(true);
+    expect(result.indexWarning).toContain('MEMORY.md');
+    expect(await readFile(entryPath(), 'utf8')).toBe(full); // entry committed, not rolled back
+    expect(existsSync(indexPath())).toBe(false); // no orphan/partial index
+  });
+
+  it('refuses a symlinked MEMORY.md BEFORE writing the entry (no write-through)', async () => {
+    await mkdir(autoMemoryDir(projectRoot, projectsDir), { recursive: true });
+    const secret = join(dir, 'secret-index');
+    await writeFile(secret, 'SECRET\n', 'utf8');
+    await symlink(secret, indexPath());
+
+    const result = await applier.apply(autoMemCandidate(`${FRONTMATTER}${ENTRY_BODY}`, 'replace'), {
+      projectRoot,
+      projectsDir,
+    });
+    expect(result.applied).toBe(false);
+    expect(result.refused).toBe('symlink-target');
+    expect(existsSync(entryPath())).toBe(false); // refused pre-write — nothing written
+    expect(await readFile(secret, 'utf8')).toBe('SECRET\n'); // symlink target untouched
+  });
+
+  it('refuses contentOp:replace on a non-auto-memory (claude-md) target — no full-file clobber', async () => {
+    await mkdir(projectRoot, { recursive: true });
+    await writeFile(claudeMdPath(projectRoot), '# Project\nhand-written\n', 'utf8');
+    const evil = {
+      ...candidate(
+        { kind: 'claude-md', absPath: claudeMdPath(projectRoot) },
+        'TOTALLY NEW CONTENT',
+      ),
+      contentOp: 'replace' as const,
+    };
+    const result = await applier.apply(evil, { projectRoot, projectsDir });
+    expect(result.applied).toBe(false);
+    expect(result.refused).toBe('forbidden-target');
+    expect(await readFile(claudeMdPath(projectRoot), 'utf8')).toBe('# Project\nhand-written\n');
   });
 });

@@ -10,7 +10,14 @@ import type { Memory } from '../memory.js';
 import { Recall } from '../recall/index.js';
 import { MemoryStore } from '../store/index.js';
 import { optimize } from './index.js';
-import { autoMemoryDir, claudeMdPath, projectSlug } from './targets.js';
+import {
+  autoMemoryDir,
+  autoMemoryEntryPath,
+  CONSOLIDATED_LESSONS_FILE,
+  claudeMdPath,
+  memoryIndexPath,
+  projectSlug,
+} from './targets.js';
 
 /** Deterministic offline embedding provider (mirrors the consolidate test fake). */
 class FakeEmbedding implements EmbeddingProvider {
@@ -243,6 +250,64 @@ describe('optimize — candidate generation (diffs-only)', () => {
   });
 });
 
+describe('optimize — auto-memory index visibility (#140)', () => {
+  it('lesson candidate carries frontmatter (replace) + an additive MEMORY.md pointer; decision does not', async () => {
+    const memory = newMemory();
+    try {
+      await seedConsolidated(memory);
+      const result = await optimize(memory, undefined, { projectRoot, projectsDir });
+      const lesson = result.candidates.find((c) => c.target.kind === 'auto-memory');
+      const decision = result.candidates.find((c) => c.target.kind === 'claude-md');
+
+      // New entry → full-content replace with native-shaped frontmatter at the front.
+      expect(lesson?.contentOp).toBe('replace');
+      expect(lesson?.proposedText.startsWith('---\n')).toBe(true);
+      expect(lesson?.proposedText).toContain('name: consolidated-lessons');
+      expect(lesson?.proposedText).toContain('node_type: memory');
+      expect(lesson?.proposedText).toContain('type: project');
+
+      // Paired index pointer, previewable.
+      expect(lesson?.indexWrite).toBeDefined();
+      expect(lesson?.indexWrite?.absPath).toBe(memoryIndexPath(projectRoot, projectsDir));
+      expect(lesson?.indexWrite?.diff).toContain(`](${CONSOLIDATED_LESSONS_FILE})`);
+
+      // The decision (CLAUDE.md) path is unchanged: a plain append, no index pointer.
+      expect(decision?.contentOp).toBe('append');
+      expect(decision?.indexWrite).toBeUndefined();
+    } finally {
+      memory.close();
+    }
+  });
+
+  it('legacy heal: an existing frontmatter-less dead-drop → replace that prepends frontmatter and preserves the body', async () => {
+    const memory = newMemory();
+    try {
+      await seedConsolidated(memory);
+      // Simulate a pre-#140 dead-drop: managed header + a bullet, NO frontmatter.
+      await mkdir(autoMemoryDir(projectRoot, projectsDir), { recursive: true });
+      const legacy =
+        '## Consolidated Memory (managed by abs optimize)\n\n- old lesson _(memory #9)_\n';
+      await writeFile(
+        autoMemoryEntryPath(projectRoot, projectsDir, CONSOLIDATED_LESSONS_FILE),
+        legacy,
+        'utf8',
+      );
+
+      const result = await optimize(memory, undefined, { projectRoot, projectsDir });
+      const lesson = result.candidates.find((c) => c.target.kind === 'auto-memory');
+      expect(lesson?.contentOp).toBe('replace');
+      expect(lesson?.indexWrite).toBeDefined(); // legacy file has no pointer → one is proposed
+      expect(lesson?.proposedText.startsWith('---\n')).toBe(true); // frontmatter healed in
+      expect(lesson?.proposedText).toContain('- old lesson _(memory #9)_'); // existing body preserved
+      expect(lesson?.proposedText).not.toContain(
+        '## Consolidated Memory (managed by abs optimize)\n\n## Consolidated',
+      ); // header not duplicated
+    } finally {
+      memory.close();
+    }
+  });
+});
+
 describe('optimize — LLM phrasing (optional, never load-bearing)', () => {
   it('rephrases title/rationale only, preserving diff/evidence/target', async () => {
     const memory = newMemory();
@@ -275,6 +340,24 @@ describe('optimize — LLM phrasing (optional, never load-bearing)', () => {
         expect(p?.evidenceIds).toEqual(b?.evidenceIds);
         expect(p?.target).toEqual(b?.target);
       }
+    } finally {
+      memory.close();
+    }
+  });
+
+  it('phrasing payload for an auto-memory candidate excludes frontmatter/header — only bullets (#140 W2)', async () => {
+    const memory = newMemory();
+    try {
+      await seedConsolidated(memory);
+      const llm = new StubLlm(() => '[]');
+      await optimize(memory, llm, { projectRoot, projectsDir });
+      const user = llm.lastMessages?.find((m) => m.role === 'user')?.content ?? '';
+      // The lesson bullet text reaches the prompt...
+      expect(user).toContain('vec0 rowid must be bound as BigInt');
+      // ...but the frontmatter the full-content `replace` now embeds does NOT.
+      expect(user).not.toContain('node_type: memory');
+      expect(user).not.toContain('name: consolidated-lessons');
+      expect(user).not.toContain('## Consolidated Memory (managed by abs optimize)');
     } finally {
       memory.close();
     }

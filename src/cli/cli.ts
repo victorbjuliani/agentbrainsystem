@@ -10,7 +10,6 @@
 import { spawn } from 'node:child_process';
 import { existsSync, rmSync } from 'node:fs';
 import { platform } from 'node:os';
-import { basename } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from '../config.js';
@@ -902,6 +901,16 @@ function printCandidate(c: OptimizeCandidate): void {
       .map((l) => `  ${l}`)
       .join('\n'),
   );
+  // The paired MEMORY.md index-pointer edit (#140), shown so it is reviewed before --apply.
+  if (c.indexWrite) {
+    out('  + MEMORY.md index pointer (makes the entry surface in native memory):');
+    out(
+      c.indexWrite.diff
+        .split('\n')
+        .map((l) => `  ${l}`)
+        .join('\n'),
+    );
+  }
   out('');
 }
 
@@ -975,6 +984,7 @@ async function cmdOptimize(args: string[]): Promise<void> {
         const result = await applyApprovedCandidate(memory, c, applyOptions);
         if (result.applied) {
           out(`  ${c.id}: applied → ${result.absPath} (backup ${result.backupPath})`);
+          if (result.indexWarning) out(`  ${c.id}: ⚠ ${result.indexWarning}`);
         } else {
           out(`  ${c.id}: refused (${result.refused}) — nothing written`);
         }

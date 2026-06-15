@@ -4,7 +4,12 @@ import {
   autoMemoryDir,
   autoMemoryEntryPath,
   claudeMdPath,
+  consolidatedLessonsPointer,
+  ensureIndexPointer,
+  hasFrontmatter,
+  indexHasConsolidatedPointer,
   isProtectedMemoryType,
+  memoryIndexPath,
   parseFrontmatterType,
   projectSlug,
   resolveTarget,
@@ -132,5 +137,72 @@ describe('isProtectedMemoryType', () => {
     expect(isProtectedMemoryType('project')).toBe(false);
     expect(isProtectedMemoryType('reference')).toBe(false);
     expect(isProtectedMemoryType(undefined)).toBe(false);
+  });
+});
+
+describe('memoryIndexPath (#140)', () => {
+  it('is MEMORY.md inside the project auto-memory dir', () => {
+    expect(memoryIndexPath(ROOT, PROJECTS)).toBe(join(autoMemoryDir(ROOT, PROJECTS), 'MEMORY.md'));
+  });
+});
+
+describe('hasFrontmatter (#140)', () => {
+  it('detects a leading frontmatter block (with closing fence)', () => {
+    expect(hasFrontmatter('---\nname: x\nmetadata:\n  type: project\n---\n## H\n')).toBe(true);
+  });
+  it('tolerates a leading BOM', () => {
+    expect(hasFrontmatter('﻿---\nname: x\n---\nbody')).toBe(true);
+  });
+  it('is false for a frontmatter-less file (legacy dead-drop)', () => {
+    expect(hasFrontmatter('## Consolidated Memory (managed by abs optimize)\n- a\n')).toBe(false);
+  });
+  it('is false for an unterminated frontmatter', () => {
+    expect(hasFrontmatter('---\nname: x\nno closing fence\n')).toBe(false);
+  });
+  it('is false for an empty string', () => {
+    expect(hasFrontmatter('')).toBe(false);
+  });
+  it('is false for a bare "---" with no newline/body (not a frontmatter block)', () => {
+    expect(hasFrontmatter('---')).toBe(false);
+  });
+  it('detects CRLF frontmatter (Windows-written entry)', () => {
+    expect(hasFrontmatter('---\r\nname: x\r\nmetadata:\r\n  type: project\r\n---\r\nbody')).toBe(
+      true,
+    );
+  });
+});
+
+describe('ensureIndexPointer (#140)', () => {
+  it('creates a Memory Index with the pointer when content is empty', () => {
+    const { content, changed } = ensureIndexPointer('');
+    expect(changed).toBe(true);
+    expect(content).toContain('# Memory Index');
+    expect(content).toContain('](consolidated-lessons.md)');
+  });
+
+  it('appends the pointer additively, leaving existing user lines intact', () => {
+    const existing = '# Memory Index\n\n- [User note](user-note.md) — something the user wrote\n';
+    const { content, changed } = ensureIndexPointer(existing);
+    expect(changed).toBe(true);
+    expect(content.startsWith(existing.replace(/\s+$/, ''))).toBe(true); // user line preserved verbatim
+    expect(content).toContain('](consolidated-lessons.md)');
+  });
+
+  it('is idempotent when the pointer already exists (link-target match)', () => {
+    const existing = `# Memory Index\n\n${consolidatedLessonsPointer()}\n`;
+    const { content, changed } = ensureIndexPointer(existing);
+    expect(changed).toBe(false);
+    expect(content).toBe(existing);
+  });
+
+  it('does NOT treat a prose mention of the filename as the pointer', () => {
+    const prose = '# Memory Index\n\n- [Note](n.md) — see consolidated-lessons.md for details\n';
+    expect(indexHasConsolidatedPointer(prose)).toBe(false);
+    expect(ensureIndexPointer(prose).changed).toBe(true);
+  });
+
+  it('handles a missing trailing newline cleanly (single separating newline + final newline)', () => {
+    const { content } = ensureIndexPointer('# Memory Index\n\n- [A](a.md) — x');
+    expect(content).toBe(`# Memory Index\n\n- [A](a.md) — x\n${consolidatedLessonsPointer()}\n`);
   });
 });

@@ -224,6 +224,9 @@ export function createMcpServer(memory: Memory, harnessId?: string): McpServer {
             target: { kind: c.target.kind, path: c.target.absPath },
             evidenceIds: c.evidenceIds,
             diff: c.diff,
+            // Only the index DIFF is exposed (#140) — proposedText/absPath stay server-side,
+            // matching how baseContent is never serialized.
+            ...(c.indexWrite ? { indexDiff: c.indexWrite.diff } : {}),
           })),
           estimate,
         });

@@ -59,6 +59,26 @@ export interface OptimizeCandidate {
   /** The exact text block the change would append/insert (the diff's payload). */
   proposedText: string;
   /**
+   * How the applier turns `proposedText` into the file's next content (#140):
+   *   - `append`  → `current + proposedText` (the original behavior; CLAUDE.md and a
+   *     re-run on an auto-memory entry that ALREADY has frontmatter).
+   *   - `replace` → write `proposedText` verbatim as the WHOLE file. Used for an
+   *     auto-memory entry that needs frontmatter at the FRONT (a new file, or the
+   *     one-time heal of a legacy frontmatter-less dead-drop). The previewed diff is
+   *     `current → proposedText`, so the written bytes equal exactly what was reviewed.
+   * Optional for back-compat; treated as `append` when absent.
+   */
+  contentOp?: 'append' | 'replace';
+  /**
+   * For an `auto-memory` candidate, the paired edit that makes the entry index-visible
+   * (#140): a one-line pointer in the project's `MEMORY.md`. The native Claude Code memory
+   * loads `MEMORY.md` as its index, so an entry with no pointer is a dead drop. Applied
+   * AFTER the entry commits and ADDITIVE-ONLY (never rewrites user-authored index lines);
+   * the applier recomputes it against a fresh `MEMORY.md` read at apply time. Absent when
+   * the pointer already exists (idempotent) or for `claude-md`.
+   */
+  indexWrite?: IndexWrite;
+  /**
    * The exact target content the diff was generated against (read read-only at
    * generation time). The applier is handed this as `expectedBaseContent` so a
    * stale candidate cannot clobber a file edited since generation (#20 TOCTOU
@@ -70,6 +90,22 @@ export interface OptimizeCandidate {
   evidenceIds: number[];
   /** Ordering hint; `high` first. */
   priority: OptimizePriority;
+}
+
+/**
+ * The `MEMORY.md` index-pointer edit paired with an auto-memory entry (#140). The
+ * applier recomputes the additive pointer against a FRESH read of `MEMORY.md` at apply
+ * time, so `proposedText` here is the generation-time preview content (drives `diff`);
+ * an intervening user edit cannot be clobbered. Only `diff` is ever serialized over
+ * MCP/CLI — `proposedText`/`absPath` stay server-side like {@link OptimizeCandidate.baseContent}.
+ */
+export interface IndexWrite {
+  /** Absolute path to the project's `MEMORY.md` (validated against the canonical path). */
+  absPath: string;
+  /** Generation-time full index content (preview only; recomputed at apply). */
+  proposedText: string;
+  /** Unified diff of the pointer addition, for review on both preview surfaces. */
+  diff: string;
 }
 
 /** Caller-facing options for a candidate-generation run. */
@@ -116,6 +152,7 @@ export interface GenerateCandidatesResult {
 /** Why an apply attempt was refused or skipped without being a write failure. */
 export type ApplyRefusal =
   | 'forbidden-target' // descriptor resolved outside the two-kind allowlist
+  | 'forbidden-index-target' // indexWrite.absPath is not the canonical MEMORY.md (#140)
   | 'protected-memory-type' // auto-memory entry whose metadata.type is user|feedback
   | 'target-modified' // target content changed since the diff was generated
   | 'symlink-target'; // the resolved target is a symlink (lexical resolution would follow it)
@@ -130,4 +167,11 @@ export interface ApplyResult {
   backupPath?: string;
   /** Set when the apply was refused for a benign/guard reason (no write happened). */
   refused?: ApplyRefusal;
+  /**
+   * Set when the entry was written but the paired `MEMORY.md` pointer could not be
+   * (#140). The entry is committed and recallable; it is simply not yet index-visible —
+   * exactly the pre-#140 state — so this is a warning, NOT a failure (`applied` stays
+   * true). Re-running apply re-attempts the additive pointer.
+   */
+  indexWarning?: string;
 }

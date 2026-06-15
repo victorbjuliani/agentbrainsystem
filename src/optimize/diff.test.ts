@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { renderAppendDiff, splitLines } from './diff.js';
+import { renderAppendDiff, renderFullDiff, splitLines } from './diff.js';
 
 describe('splitLines', () => {
   it('returns no lines for empty string', () => {
@@ -47,5 +47,28 @@ describe('renderAppendDiff', () => {
     expect(diff).toContain(' l8');
     expect(diff).toContain(' l7');
     expect(diff).not.toContain(' l6');
+  });
+});
+
+describe('renderFullDiff (#140)', () => {
+  it('returns empty string when content is unchanged', () => {
+    expect(renderFullDiff('m.md', 'same\n', 'same\n')).toBe('');
+  });
+
+  it('degrades to the append form for an empty original', () => {
+    const diff = renderFullDiff('m.md', '', 'frontmatter\nbody\n');
+    expect(diff).toContain('@@ -0,0 +');
+    expect(diff).toContain('+frontmatter');
+    expect(diff).toContain('+body');
+  });
+
+  it('renders the old side as removals and the new side as additions (front edit)', () => {
+    // Prepending frontmatter — an append-only diff cannot express this.
+    const diff = renderFullDiff('m.md', '## Header\n- a\n', '---\nname: x\n---\n## Header\n- a\n');
+    expect(diff).toContain('--- a/m.md');
+    expect(diff).toContain('+++ b/m.md');
+    expect(diff).toContain('-## Header');
+    expect(diff).toContain('+name: x');
+    expect(diff).toContain('+## Header');
   });
 });

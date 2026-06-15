@@ -13,7 +13,10 @@
  *     the always-loaded project instructions), lessons → an auto-memory candidate
  *     (lessons are recall-on-demand). Each candidate carries the EVIDENCE = the ids
  *     of the observations it derives from.
- *   - Render an append-only unified diff against the current target content.
+ *   - Render a unified diff against the current target content: append-only for CLAUDE.md
+ *     (and re-runs on an entry that already has frontmatter); a full-file replace when an
+ *     auto-memory entry needs frontmatter prepended (new file / legacy heal — #140). A
+ *     lesson candidate also carries an additive `MEMORY.md` index-pointer write.
  *
  * The LLM (when configured) only PHRASES the rationale/body — see `llm-phrasing.ts`.
  * This spine is always present and $0/offline; the LLM is a polish pass, never the
@@ -27,10 +30,20 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Memory } from '../memory.js';
 import type { Observation } from '../store/index.js';
-import { renderAppendDiff } from './diff.js';
-import { autoMemoryEntryPath, claudeMdPath, projectSlug } from './targets.js';
+import { renderAppendDiff, renderFullDiff } from './diff.js';
+import {
+  autoMemoryEntryPath,
+  CONSOLIDATED_LESSONS_FILE,
+  claudeMdPath,
+  ensureIndexPointer,
+  hasFrontmatter,
+  MEMORY_INDEX,
+  memoryIndexPath,
+  projectSlug,
+} from './targets.js';
 import type {
   GenerateCandidatesOptions,
+  IndexWrite,
   OptimizeCandidate,
   OptimizePriority,
   OptimizeTarget,
@@ -126,6 +139,70 @@ export function buildAppendBlock(cluster: Cluster, currentContent: string): stri
   return `\n${lines.join('\n')}\n`;
 }
 
+/** The auto-memory entry's `name` (frontmatter + filename sans extension). */
+const CONSOLIDATED_LESSONS_NAME = CONSOLIDATED_LESSONS_FILE.replace(/\.md$/, '');
+
+/**
+ * The managed YAML frontmatter prepended to the consolidated-lessons entry when it has
+ * none (#140) — a new file or the heal of a legacy frontmatter-less dead-drop. Matches the
+ * native Claude Code memory shape (`metadata.node_type: memory` + `type: project`) so the
+ * index loader treats it like a hand-written entry; `originSessionId` is omitted (optimize
+ * has no session). `parseFrontmatterType` reads `metadata.type` from this, keeping the
+ * fail-closed guard working. Ends with a trailing newline.
+ */
+function buildAutoMemoryFrontmatter(): string {
+  return [
+    '---',
+    `name: ${CONSOLIDATED_LESSONS_NAME}`,
+    "description: Lessons abs distilled from this project's sessions (managed by abs optimize).",
+    'metadata:',
+    '  node_type: memory',
+    '  type: project',
+    '---',
+    '',
+  ].join('\n');
+}
+
+/**
+ * Build the entry write for an auto-memory cluster (#140). When the file already has
+ * frontmatter (a re-run), this is a clean bullet APPEND — byte-identical to the pre-#140
+ * behavior. When it does not (new file or legacy dead-drop), it is a full-file REPLACE
+ * that puts frontmatter at the FRONT (an append-only diff cannot express that). Either
+ * way the previewed diff is `current → written bytes`.
+ */
+function buildEntryWrite(
+  cluster: Cluster,
+  label: string,
+  current: string,
+): { proposedText: string; diff: string; contentOp: 'append' | 'replace' } {
+  const appendBlock = buildAppendBlock(cluster, current);
+  if (hasFrontmatter(current)) {
+    return {
+      proposedText: appendBlock,
+      diff: renderAppendDiff(label, current, appendBlock),
+      contentOp: 'append',
+    };
+  }
+  const full = `${buildAutoMemoryFrontmatter()}${current}${appendBlock}`;
+  return { proposedText: full, diff: renderFullDiff(label, current, full), contentOp: 'replace' };
+}
+
+/**
+ * Build the paired `MEMORY.md` index pointer write (#140), or `undefined` when the pointer
+ * already exists (idempotent). Read-only here — the applier recomputes additively against a
+ * fresh read at apply time; this is the preview.
+ */
+async function buildIndexWrite(
+  projectRoot: string,
+  projectsDir: string,
+): Promise<IndexWrite | undefined> {
+  const absPath = memoryIndexPath(projectRoot, projectsDir);
+  const current = await readTargetContent(absPath);
+  const { content, changed } = ensureIndexPointer(current);
+  if (!changed) return undefined;
+  return { absPath, proposedText: content, diff: renderFullDiff(MEMORY_INDEX, current, content) };
+}
+
 /** Default rationale (the heuristic spine; an LLM may later replace it). */
 function heuristicRationale(cluster: Cluster): string {
   const n = cluster.observations.length;
@@ -166,15 +243,34 @@ export async function generateCandidates(
   for (const cluster of clusters) {
     const target = targetFor(cluster, projectRoot, projectsDir);
     const current = await readTargetContent(target.absPath);
-    const proposedText = buildAppendBlock(cluster, current);
-    const diff = renderAppendDiff(labelFor(target), current, proposedText);
+    const label = labelFor(target);
+
+    // CLAUDE.md (decisions): clean append, no index pointer. auto-memory (lessons): the
+    // entry may need frontmatter (replace) and gains a MEMORY.md pointer so it is
+    // index-visible (#140).
+    let entry: { proposedText: string; diff: string; contentOp: 'append' | 'replace' };
+    if (target.kind === 'auto-memory') {
+      entry = buildEntryWrite(cluster, label, current);
+    } else {
+      const block = buildAppendBlock(cluster, current);
+      entry = {
+        proposedText: block,
+        diff: renderAppendDiff(label, current, block),
+        contentOp: 'append',
+      };
+    }
+    const indexWrite =
+      target.kind === 'auto-memory' ? await buildIndexWrite(projectRoot, projectsDir) : undefined;
+
     candidates.push({
-      id: candidateId(target, cluster, current, proposedText),
+      id: candidateId(target, cluster, current, entry.proposedText),
       target,
       title: titleFor(cluster),
       rationale: heuristicRationale(cluster),
-      diff,
-      proposedText,
+      diff: entry.diff,
+      proposedText: entry.proposedText,
+      contentOp: entry.contentOp,
+      ...(indexWrite ? { indexWrite } : {}),
       // Capture the exact content the diff was generated against so the applier can
       // refuse (`target-modified`) if the file changed since — the #20 TOCTOU guard.
       baseContent: current,
