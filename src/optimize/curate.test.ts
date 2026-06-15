@@ -201,4 +201,23 @@ describe('scoreDurability — recall-bias refinements (review follow-ups)', () =
     expect(r.verdict).toBe('trivia');
     expect(r.signals).toContain('action-log');
   });
+
+  it('keeps a durable decision that mentions CPU architectures (no bare aarch64/x86_64 signal)', () => {
+    // Codex P2: bare arch tokens must NOT fire install-oneoff — a real build/release
+    // decision discussing both architectures would otherwise be dropped before the judge.
+    const r = scoreDurability(
+      obs('Build and publish release binaries for both aarch64 and x86_64 architectures.'),
+    );
+    // Note: contains "publish" + ... but no #ref/successfully/quantifier, so action-log
+    // does not fire either; this is a durable build decision.
+    expect(r.verdict).toBe('durable');
+  });
+
+  it('still drops the real .dmg install one-off (caught by .dmg/installer, not the arch token)', () => {
+    const r = scoreDurability(
+      obs('For Tray app installation on Apple Silicon, use the `aarch64.dmg` installer.'),
+    );
+    expect(r.verdict).toBe('trivia');
+    expect(r.signals).toContain('install-oneoff');
+  });
 });

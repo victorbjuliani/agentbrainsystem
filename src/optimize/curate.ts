@@ -31,8 +31,12 @@ import type { CurationEstimate, CurationResult } from './types.js';
  * action or a platform artifact (a `.dmg`, a quarantine xattr, an uninstall) that
  * belongs in setup docs, never in always-loaded durable project memory.
  */
+// NB: bare CPU-arch tokens (aarch64/x86_64) are intentionally NOT here — a durable
+// decision can legitimately discuss building for both architectures, and a heuristic
+// drop cannot be rescued by the judge. The real install one-off ("…the aarch64.dmg
+// installer") is already caught by `.dmg`/`installer`.
 const INSTALL_ONEOFF =
-  /\.dmg\b|\baarch64\b|\bx86_64\b|\bcom\.apple\.quarantine\b|\bquarantine\b|\bxattr\b|\brestart(?:ing)?\s+claude\s+code\b|\buninstall(?:ed|ing|ation)?\b|\breinstall(?:ed|ing|ation)?\b|\binstaller\b/i;
+  /\.dmg\b|\bcom\.apple\.quarantine\b|\bquarantine\b|\bxattr\b|\brestart(?:ing)?\s+claude\s+code\b|\buninstall(?:ed|ing|ation)?\b|\breinstall(?:ed|ing|ation)?\b|\binstaller\b/i;
 
 /**
  * Work-completion verbs that, COMBINED with an issue/PR reference, mark an
