@@ -24,6 +24,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   utimesSync,
@@ -92,13 +93,21 @@ export function acquireCadenceLock(dbPath: string): CadenceLock {
       acquired = true;
     } catch {
       // A lock already exists. Steal it ONLY if it is stale (dead holder); never
-      // clobber a peer's fresh lock — that is the double-owner bug. We derive `acquired`
-      // from the steal write itself, NOT from a separate `isLocked` read (the TOCTOU).
+      // clobber a peer's fresh lock — that is the double-owner bug. The steal must be
+      // ATOMIC (#138 RC-002): a plain `writeFileSync(w)` after `isStale` is a TOCTOU —
+      // two processes could both pass `isStale` and both overwrite, double-owning. Instead
+      // rename the stale lock to a unique name, then recreate with `wx`: `rename(2)` over
+      // the SAME source path serializes in the kernel, so only ONE racer moves that inode;
+      // the loser's rename throws (source already gone) and it stays unacquired.
       if (isStale(path, CADENCE_LOCK_TTL_MS)) {
+        const dead = `${path}.dead-${token}`;
         try {
-          writeFileSync(path, payload);
+          renameSync(path, dead); // only one concurrent steal wins this move
+          writeFileSync(path, payload, { flag: 'wx' }); // recreate exclusively
+          rmSync(dead, { force: true });
           acquired = true;
         } catch {
+          rmSync(dead, { force: true }); // best-effort cleanup if we lost mid-steal
           acquired = false;
         }
       }

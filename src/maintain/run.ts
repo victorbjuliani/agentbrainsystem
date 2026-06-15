@@ -85,14 +85,6 @@ export interface MaintainDeps {
   now?: () => Date;
 }
 
-/** Parse a kv_meta integer rollup, defaulting to 0 on absent/garbage. */
-function readInt(memory: Memory, key: string): number {
-  const raw = memory.store.getMeta(key);
-  if (raw === null) return 0;
-  const n = Number.parseInt(raw, 10);
-  return Number.isInteger(n) && n >= 0 ? n : 0;
-}
-
 /** Sum prompt + completion tokens from a core's optional usage block. */
 function sumTokens(usage?: { promptTokens?: number; completionTokens?: number }): number {
   return (usage?.promptTokens ?? 0) + (usage?.completionTokens ?? 0);
@@ -183,12 +175,11 @@ export async function runMaintainAuto(
       memory.store.getMeta(optimizeCursorKey('decision', slug)) !== before.decision;
 
     // (7) Observability rollup (P4) — auditable spend, never a silent surprise.
+    // Atomic UPSERT increments (#138 RC-004): a JS read-modify-write would lose an
+    // update if a stale-steal ever ran two cadences at once; `incrMeta` is immune.
     const now = (deps.now ?? (() => new Date()))();
-    memory.store.setMeta(AUTO_DISTILL_RUNS, String(readInt(memory, AUTO_DISTILL_RUNS) + 1));
-    memory.store.setMeta(
-      AUTO_DISTILL_TOKENS,
-      String(readInt(memory, AUTO_DISTILL_TOKENS) + tokens),
-    );
+    memory.store.incrMeta(AUTO_DISTILL_RUNS, 1);
+    memory.store.incrMeta(AUTO_DISTILL_TOKENS, tokens);
     memory.store.setMeta(AUTO_DISTILL_LAST_RUN_AT, now.toISOString());
 
     return {

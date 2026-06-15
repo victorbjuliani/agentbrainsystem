@@ -992,6 +992,28 @@ export class MemoryStore {
       .run(key, value);
   }
 
+  /**
+   * Atomically add `delta` to an integer bookkeeping counter and return the new value.
+   * A single UPSERT (autocommit under SQLite's writer lock) — immune to the lost-update
+   * a JS read-modify-write (`getMeta` → `+delta` → `setMeta`) suffers when two writers
+   * race (e.g. the auto-distill spend rollup, #138 RC-004). A non-integer stored value
+   * is treated as 0 before adding (defensive: `CAST` of garbage → 0 in SQLite).
+   */
+  incrMeta(key: string, delta: number): number {
+    // Wrap the bound delta in CAST(? AS INTEGER): the driver binds a JS number as REAL,
+    // so a bare CAST(? AS TEXT) would store '1.0' instead of '1'. Forcing INTEGER keeps
+    // both the stored text and the arithmetic integer-typed.
+    const row = this.conn()
+      .prepare(
+        `INSERT INTO kv_meta (key, value) VALUES (?, CAST(CAST(? AS INTEGER) AS TEXT))
+         ON CONFLICT(key) DO UPDATE SET
+           value = CAST(CAST(value AS INTEGER) + CAST(? AS INTEGER) AS TEXT)
+         RETURNING CAST(value AS INTEGER) AS n`,
+      )
+      .get(key, delta, delta) as { n: number };
+    return row.n;
+  }
+
   /** Delete a bookkeeping value. No-op when the key is absent. */
   deleteMeta(key: string): void {
     this.conn().prepare('DELETE FROM kv_meta WHERE key = ?').run(key);

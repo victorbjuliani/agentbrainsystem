@@ -47,9 +47,16 @@ function resolveCliPath(): string {
  * its own process group (`detached`), and `unref()` so SessionEnd returns immediately
  * and the child outlives the hook. A spawn failure is swallowed (ADR-0004 fail-open) —
  * the cadence is a background nicety, never a blocker on session close.
+ *
+ * `cwd` is passed EXPLICITLY (the session's project dir) rather than relying on the
+ * child inheriting the hook's cwd: the runner scopes its optimize pass + cursor keys to
+ * `projectSlug(process.cwd())`, and the banner reads those keys under the session's
+ * `project` slug — pinning the child's cwd to the session dir keeps writer and reader
+ * on the same slug (closes the implicit-coupling footgun the integration check flagged).
  */
-function spawnCadence(cliPath: string): void {
+function spawnCadence(cliPath: string, cwd: string): void {
   const child = spawn(process.execPath, [cliPath, 'maintain', '--auto'], {
+    cwd,
     stdio: 'ignore',
     detached: true,
     shell: false,
@@ -74,7 +81,7 @@ export interface SessionEndDeps {
    * `spawnCadence` (detached `abs maintain --auto`); unit tests pass a spy so no real
    * subprocess is launched. Receives the resolved CLI entry path.
    */
-  spawnCadence?: (cliPath: string) => void;
+  spawnCadence?: (cliPath: string, cwd: string) => void;
 }
 
 /**
@@ -176,7 +183,7 @@ export async function handleSessionEnd(
     const due = cfg.llm !== undefined && cfg.autoDistill && obsCount >= cfg.distillMinObs;
     if (due) {
       try {
-        (deps.spawnCadence ?? spawnCadence)(resolveCliPath());
+        (deps.spawnCadence ?? spawnCadence)(resolveCliPath(), cwd);
       } catch {
         // best-effort — a spawn failure must never undo the session close (ADR-0004)
       }

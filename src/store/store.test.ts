@@ -907,6 +907,30 @@ describe('MemoryStore', () => {
     });
   });
 
+  describe('incrMeta — atomic counter UPSERT (#138 RC-004)', () => {
+    it('creates the key at delta when absent and returns the new value', () => {
+      expect(store.incrMeta('autoDistill:runs', 1)).toBe(1);
+      expect(store.getMeta('autoDistill:runs')).toBe('1');
+    });
+
+    it('accumulates across calls (the lost-update-proof path)', () => {
+      store.incrMeta('autoDistill:tokens', 100);
+      store.incrMeta('autoDistill:tokens', 250);
+      expect(store.incrMeta('autoDistill:tokens', 0)).toBe(350);
+    });
+
+    it('treats a non-integer stored value as 0 before adding (defensive CAST)', () => {
+      store.setMeta('counter', 'garbage');
+      expect(store.incrMeta('counter', 5)).toBe(5);
+    });
+
+    it('does not disturb an unrelated key', () => {
+      store.setMeta('other', 'keep');
+      store.incrMeta('counter', 1);
+      expect(store.getMeta('other')).toBe('keep');
+    });
+  });
+
   describe('project-scoped recall queries (#47)', () => {
     /** Seed two projects sharing identical content; return their observation ids. */
     function seedTwoProjects(): { a: number; b: number } {
