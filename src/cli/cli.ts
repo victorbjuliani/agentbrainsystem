@@ -38,11 +38,13 @@ import {
   writeBinding,
 } from '../ingest/index.js';
 import { createLlmProvider } from '../llm/index.js';
+import { runMaintainAuto } from '../maintain/index.js';
 import { type PostCaptureDeps, runPostCaptureMaintenance } from '../maintenance/index.js';
 import { startStdio } from '../mcp/index.js';
 import { openMemory } from '../memory.js';
 import {
   type ApplyOptions,
+  advanceOptimizeCursorsAfterApply,
   applyApprovedCandidate,
   generateOptimizations,
   type OptimizeCandidate,
@@ -106,6 +108,9 @@ Commands:
                         --apply (review + write per-candidate, backup/atomic/rollback),
                         --candidate ID (apply only that one), --yes (apply all, no prompt).
                         Default is preview-only — nothing is written without --apply.
+  maintain --auto       Internal: the auto-distill cadence (consolidate → auto-memory
+                        only; CLAUDE.md stays manual). Spawned detached at SessionEnd
+                        when a session is cadence-due; opt out with ABS_AUTO_DISTILL=0.
   forget [opts]         Selectively hard-delete memories. IRREVERSIBLE — export first
                         (abs export) before deleting. Exactly one selector:
                         --ids a,b,c (observation ids), --session N, --project NAME,
@@ -923,7 +928,7 @@ function printCandidate(c: OptimizeCandidate): void {
  * staleness cursor on a real write). Default is preview-only: nothing is written
  * without `--apply`. Approval is per-candidate (interactive y/N) unless `--yes`.
  */
-async function cmdOptimize(args: string[]): Promise<void> {
+export async function cmdOptimize(args: string[]): Promise<void> {
   const projectRoot = optionValue(args, '--project') ?? process.cwd();
   const rawLimit = optionValue(args, '--limit');
   let limit: number | undefined;
@@ -943,7 +948,7 @@ async function cmdOptimize(args: string[]): Promise<void> {
   // LLM; it never embeds, so there is no reason to load the embedding model.
   const memory = await openMemory(config, { ensure: false });
   try {
-    const { candidates, estimate } = await generateOptimizations(memory, config, {
+    const { candidates, estimate, survivingIds } = await generateOptimizations(memory, config, {
       projectRoot,
       ...(limit !== undefined ? { limit } : {}),
     });
@@ -960,6 +965,18 @@ async function cmdOptimize(args: string[]): Promise<void> {
       out(
         `no candidates — memory has nothing new to distill into CLAUDE.md / auto-memory.${heldBack}`,
       );
+      // A bare preview never advances; but an --apply run over an all-curated-out set
+      // MUST advance (survivors empty ⇒ pending-valid empty ⇒ #148 cursor advance), so
+      // the zero-candidate path falls through to the run-level advance ONLY with --apply.
+      if (doApply) {
+        advanceOptimizeCursorsAfterApply(
+          memory,
+          projectSlug(projectRoot),
+          new Set(survivingIds),
+          candidates,
+          new Set<string>(),
+        );
+      }
       return;
     }
 
@@ -971,6 +988,8 @@ async function cmdOptimize(args: string[]): Promise<void> {
 
     if (!doApply) {
       out('(preview — nothing written. Re-run with --apply to review and write per-candidate.)');
+      // Bare preview: nothing was reviewed for write, so every survivor is pending-valid
+      // ⇒ no advance. Return BEFORE the run-level advance (no false "all caught up", C2).
       return;
     }
 
@@ -978,6 +997,9 @@ async function cmdOptimize(args: string[]): Promise<void> {
     if (onlyId && selected.length === 0) throw new Error(`no candidate with id '${onlyId}'`);
 
     const applyOptions: ApplyOptions = { projectRoot, projectsDir: defaultClaudeProjectsDir() };
+    // Track which candidates were genuinely written so the run-level advance can derive
+    // the §4 partition (promoted = ∪ evidenceIds of applied candidates of a kind).
+    const appliedIds = new Set<string>();
     // readline prompts go to stderr so stdout stays clean for result lines.
     const rl = yes ? null : createInterface({ input: process.stdin, output: process.stderr });
     try {
@@ -993,6 +1015,7 @@ async function cmdOptimize(args: string[]): Promise<void> {
         }
         const result = await applyApprovedCandidate(memory, c, applyOptions);
         if (result.applied) {
+          appliedIds.add(c.id);
           out(`  ${c.id}: applied → ${result.absPath} (backup ${result.backupPath})`);
           if (result.indexWarning) out(`  ${c.id}: ⚠ ${result.indexWarning}`);
         } else {
@@ -1002,6 +1025,46 @@ async function cmdOptimize(args: string[]): Promise<void> {
     } finally {
       rl?.close();
     }
+
+    // Run-level advance (#138/#148 §4), AFTER the apply loop and only on --apply: the
+    // SAME keep-set-driven helper the cadence runner uses, fed the un-sliced keep-set
+    // (`survivingIds`). A --limit-sliced survivor stays pending-valid (no advance); a
+    // skipped/declined kind stays pending-valid; an all-promoted/all-curated-out kind
+    // advances. `candidates` (not `selected`) is the reviewed set when no --candidate
+    // filter was given; with --candidate, non-selected survivors remain pending-valid.
+    advanceOptimizeCursorsAfterApply(
+      memory,
+      projectSlug(projectRoot),
+      new Set(survivingIds),
+      candidates,
+      appliedIds,
+    );
+  } finally {
+    memory.close();
+  }
+}
+
+/**
+ * `abs maintain --auto` — the internal, non-interactive auto-distill cadence (#138).
+ * SessionEnd spawns this detached when a session is cadence-due; it can also be run by
+ * hand. Drives `consolidate → generateOptimizations → auto-apply auto-memory only`
+ * behind a dedicated cadence lock, advances the kind/project optimize cursors, and
+ * records token observability. `--auto` is the ONLY mode (a future interactive mode
+ * would add a flag); without it we print a one-line usage and exit 0. Fail-open
+ * (ADR-0004): any error is swallowed so a SessionEnd spawn never surfaces a failure.
+ */
+async function cmdMaintain(args: string[]): Promise<void> {
+  if (!args.includes('--auto')) {
+    out('usage: abs maintain --auto   (internal auto-distill cadence; spawned at SessionEnd)');
+    return;
+  }
+  const config = loadConfig();
+  // Default ensure — a drifted index self-heals here, same as the SessionEnd path.
+  const memory = await openMemory(config);
+  try {
+    await runMaintainAuto(memory, config);
+  } catch {
+    // Fail-open (ADR-0004): a background cadence must never surface an error.
   } finally {
     memory.close();
   }
@@ -1504,6 +1567,8 @@ async function main(): Promise<void> {
       return cmdUninstall(rest);
     case 'optimize':
       return cmdOptimize(rest);
+    case 'maintain':
+      return cmdMaintain(rest);
     case 'forget':
       return cmdForget(rest);
     case 'project':
