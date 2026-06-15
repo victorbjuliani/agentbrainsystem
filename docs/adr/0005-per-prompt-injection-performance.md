@@ -114,3 +114,21 @@ realistic upper bound for a prompt's worth of tokens):
 - **Pre-warm the pipeline at SessionStart (#16).** SessionStart also runs as a short-lived hook
   process; the warmed pipeline would not survive into the separate per-prompt processes. Only a
   persistent resident process helps, which is the deferred option above.
+
+## Addendum — 2026-06-15 (#141, kind-weighted re-rank)
+
+The FTS-only per-prompt path now optionally re-ranks within the bound from Decision #3 so
+curated/durable kinds (`decision`/`lesson`/`note`) outrank raw turns — the signal-first lever
+that makes recall useful before any consolidation/optimize runs. `recallFts({ rankByKind: true })`
+over-fetches a candidate pool (`max(limit*5, 40)`) from `store.searchFts` (which now also returns
+`kind`) and re-ranks each candidate by `1/(DEFAULT_RRF_K + pos) × kindWeight(kind)`; it is a
+multiplier, not a filter (when nothing durable matches, order collapses to pure FTS). This
+directly realizes the Consequences note above — that the durable insights worth injecting are
+exactly what should rise to the top.
+
+**No change to the latency contract.** The re-rank stays on the embedding-free path (still no
+`provider.embed`) and adds only an over-fetch + an in-memory sort of ≤100 rows. The Gate 5
+benchmark now measures both production pool sizes — the prompt hook (`limit 8`) and the
+PreToolUse decision lens (`limit 20` → 100 candidates), both with `rankByKind` — and all stay
+well under **p95 ≤ 25 ms** (measured p95 < 6 ms). The hybrid `recall()` re-rank and a recall
+noise floor are deferred to follow-ups.

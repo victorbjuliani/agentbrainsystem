@@ -186,6 +186,26 @@ describe('preview/execute — happy path per selector', () => {
     expect(memory.store.counts()).toMatchObject({ observations: 1 });
     memory.close();
   });
+
+  it('bySearch is NOT affected by kind weighting — no over-fetch, no durable promotion (#141 C1)', async () => {
+    const memory = newMemory();
+    const s = memory.store.createSession({ externalId: 's1' });
+    const filler = Array.from({ length: 40 }, (_, i) => `filler${i}`).join(' ');
+    // 3 strong raw matches + 1 weak durable (term once in a long doc → worst FTS rank).
+    const r1 = await seedObs(memory, s, 'widget widget widget', 'user');
+    const r2 = await seedObs(memory, s, 'widget widget', 'user');
+    const r3 = await seedObs(memory, s, 'widget widget widget widget', 'user');
+    const durable = await seedObs(memory, s, `widget ${filler}`, 'lesson');
+
+    // limit 3: the destructive path uses recallFts WITHOUT rankByKind, so it must select the
+    // 3 strong raw matches by pure FTS rank and leave the weak durable lesson OUT of the set.
+    // If delete had inherited the #141 over-fetch/re-rank, the durable would intrude here.
+    const p = preview(memory, { bySearch: { query: 'widget', limit: 3 } });
+    const ids = p.items.map((i) => i.id).sort((a, b) => a - b);
+    expect(ids).not.toContain(durable);
+    expect(ids).toEqual([r1, r2, r3].sort((a, b) => a - b));
+    memory.close();
+  });
 });
 
 describe('byIds dedupe + notFound', () => {

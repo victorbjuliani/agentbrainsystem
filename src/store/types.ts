@@ -100,6 +100,12 @@ export interface KnnHit {
   distance: number;
   /** Project of the hit's session. Populated by `searchFts`; `knn` leaves it undefined. */
   project?: string | null;
+  /**
+   * Observation `kind` of the hit. Populated by `searchFts` (it already joins
+   * `observations`); `knn` leaves it undefined. Lets the recall layer weight durable
+   * kinds over raw turns without a second row fetch per candidate (#141).
+   */
+  kind?: string;
 }
 
 /** Real row counts across the relational + index tables. */

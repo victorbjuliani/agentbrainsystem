@@ -97,8 +97,9 @@ Three steps, zero effort once installed:
 Not another write-only memory bucket. The parts most tools skip:
 
 - 🎯 **Recall that returns the right thing — every prompt.** Hybrid semantic + keyword search,
-  injected on **every turn**, not just dumped once at session start. The decision you locked in last
-  week surfaces exactly when you're about to break it.
+  injected on **every turn**, not just dumped once at session start. Durable **lessons and decisions
+  are ranked above raw chatter**, so signal beats noise — the decision you locked in last week
+  surfaces exactly when you're about to break it.
 - 🩹 **Verifiable, self-healing memory — no external tooling.** Every fact your agent edits is anchored to
   real code (`file:line@commit`) by abs's **own** embedded tree-sitter index — symbol-level for TS/JS/Python,
   file-level for everything else. Recall labels each fact **✓verified / ~claimed / ⚠stale** against your

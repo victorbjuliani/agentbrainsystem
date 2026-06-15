@@ -802,12 +802,17 @@ export class MemoryStore {
    */
   searchFts(queryText: string, k: number, project?: string, includeGlobal = false): KnnHit[] {
     const conn = this.conn();
-    const base = `SELECT f.rowid AS id, f.rank AS distance, s.project AS project
+    const base = `SELECT f.rowid AS id, f.rank AS distance, s.project AS project, o.kind AS kind
        FROM fts_observations f
        JOIN observations o ON o.id = f.rowid
        JOIN sessions s ON s.id = o.session_id
        WHERE fts_observations MATCH ?`;
-    let rows: Array<{ id: number | bigint; distance: number; project: string | null }>;
+    let rows: Array<{
+      id: number | bigint;
+      distance: number;
+      project: string | null;
+      kind: string;
+    }>;
     if (project === undefined) {
       rows = conn.prepare(`${base} ORDER BY f.rank LIMIT ?`).all(queryText, k) as never;
     } else if (includeGlobal) {
@@ -819,7 +824,12 @@ export class MemoryStore {
         .prepare(`${base} AND s.project = ? ORDER BY f.rank LIMIT ?`)
         .all(queryText, project, k) as never;
     }
-    return rows.map((r) => ({ id: Number(r.id), distance: r.distance, project: r.project }));
+    return rows.map((r) => ({
+      id: Number(r.id),
+      distance: r.distance,
+      project: r.project,
+      kind: r.kind,
+    }));
   }
 
   // -------------------------------------------------------- fact anchors (E)
