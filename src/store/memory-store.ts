@@ -1083,9 +1083,11 @@ export class MemoryStore {
   }
 
   /**
-   * Count observations with `id > minIdExclusive`. Drives the SessionStart
-   * "N optimizations pending" staleness flag (#16): how many observations have
-   * landed since the last optimization cursor. Pure count — never mutates.
+   * Count observations with `id > minIdExclusive`. A generic high-water count
+   * (the UI `newSince` stat). NOTE: the SessionStart staleness banner no longer
+   * uses this — #138 replaced the single "N since last optimization" cursor with the
+   * two-signal model (`countUnconsolidatedRawTurns` + per-kind `countConsolidatedSince`).
+   * Pure count — never mutates.
    */
   countObservationsSince(minIdExclusive: number): number {
     const row = this.conn()
