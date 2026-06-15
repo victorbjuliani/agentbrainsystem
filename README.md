@@ -203,7 +203,7 @@ abs export <path>         # write the whole store to a portable artifact
 abs import <path>         # load an artifact (merge | replace)
 abs ui [--port N]         # serve the interactive memory graph
 abs consolidate [...]     # distill a session into durable lessons (opt-in, needs an LLM)
-abs optimize [...]        # turn distilled memory into gated CLAUDE.md / auto-memory edits (index-visible in MEMORY.md)
+abs optimize [...]        # turn distilled memory into gated CLAUDE.md / auto-memory edits (curated; index-visible in MEMORY.md)
 abs forget [...]          # selectively hard-delete memories — IRREVERSIBLE, export first
 abs install-hooks [--harness <id>]  # register the memory hooks for a harness (idempotent, backup-first)
 ```

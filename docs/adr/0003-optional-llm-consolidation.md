@@ -68,6 +68,15 @@ runtime scenarios** (local OSS on a laptop/VPS *and* hosted), with one abstracti
   covered by mocked-fetch unit tests; the orchestrator by a stubbed provider. A manual
   `abs consolidate --dry-run` against a local Ollama is the recommended pre-release smoke.
 
+## Related: optional-LLM consumers
+
+This same opt-in, fenced-DATA, tolerant-parse, no-LLM-in-CI discipline is reused by the two
+other optional-LLM passes in the optimize engine: **LLM phrasing** (#18 — rewrites a
+candidate's title/rationale only; lets a provider error propagate, since phrasing is cosmetic)
+and the **curation judge** (#146 / ADR 0016 — a strictly-subtractive trivia filter that, unlike
+phrasing, **fails open**: a provider error or malformed response never blocks the $0 heuristic
+gate). All three default to off and fence ingested content as untrusted DATA.
+
 ## Alternatives rejected
 
 - **Per-provider factory family (Gemini/Anthropic/OpenAI clients).** Embeddings genuinely

@@ -22,6 +22,8 @@ export type {
 } from './applier.js';
 export { GatedApplier } from './applier.js';
 export { generateCandidates } from './candidate-gen.js';
+export { curateObservations, scoreDurability } from './curate.js';
+export { judgeObservations } from './llm-judge.js';
 export {
   applyApprovedCandidate,
   applyCandidate,
@@ -41,6 +43,9 @@ export type {
   ApplyRefusal,
   ApplyResult,
   AutoMemoryType,
+  CurationEstimate,
+  CurationResult,
+  CurationVerdict,
   GenerateCandidatesOptions,
   GenerateCandidatesResult,
   OptimizeCandidate,

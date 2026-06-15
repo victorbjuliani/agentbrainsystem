@@ -11,6 +11,7 @@
  * optional LLM-phrasing pass, the appliers, and the #21 converge step (which wires
  * the engine into the CLI/MCP). Diffs-only: generation NEVER mutates a file.
  */
+import type { LlmProvider, LlmUsage } from '../llm/index.js';
 
 /** The two — and ONLY two — kinds of file the optimize engine may ever target. */
 export type OptimizeTargetKind = 'claude-md' | 'auto-memory';
@@ -108,6 +109,47 @@ export interface IndexWrite {
   diff: string;
 }
 
+/**
+ * Curation gate (#146): the verdict for one consolidated observation. `durable`
+ * items are promoted; `trivia` items are dropped from the candidate set (but stay
+ * in the store, still recallable). The heuristic spine is a high-precision trivia
+ * detector — recall-biased toward `durable` (when uncertain, keep) — because for
+ * the always-loaded `CLAUDE.md` a stray trivia bullet rots the file while a
+ * false-drop is recoverable (the obs remains in the store).
+ */
+export type CurationVerdict = 'durable' | 'trivia';
+
+/** One observation's heuristic curation outcome (debug/log only; not persisted). */
+export interface CurationResult {
+  verdict: CurationVerdict;
+  /** Human-readable explanation (for logging/debugging). */
+  reason: string;
+  /** Heuristic rule ids that fired, e.g. `['install-oneoff']`. Empty when durable. */
+  signals: string[];
+}
+
+/**
+ * Curation gate cost/usage carrier (#146). Internal to the engine: it holds the
+ * judge's `usage`/`costEstimate` so `optimize()` can fold them into the top-level
+ * {@link OptimizeEstimate} `usage`/`costEstimate`. The PUBLIC view exposed on
+ * `OptimizeEstimate.curation` is the TRIMMED `{ keptCount, droppedCount, judgeUsed }`
+ * — usage/cost live at the top level, never duplicated here.
+ */
+export interface CurationEstimate {
+  /** Observations surviving BOTH filters, over the flat consolidated set (store-wide). */
+  keptCount: number;
+  /** `total - keptCount` — heuristic drops + judge drops combined. */
+  droppedCount: number;
+  /** Did the LLM-judge actually run AND return (false: no LLM / heuristicOnly / fail-open). */
+  judgeUsed: boolean;
+  /** char/4 estimate of the judge prompt, when the judge ran. */
+  promptCharEstimateTokens?: number;
+  /** Judge token usage, when reported by the backend. */
+  usage?: LlmUsage;
+  /** Judge cost = (prompt+completion)/1000 * pricePer1k, when both present. */
+  costEstimate?: number;
+}
+
 /** Caller-facing options for a candidate-generation run. */
 export interface GenerateCandidatesOptions {
   /**
@@ -127,18 +169,35 @@ export interface GenerateCandidatesOptions {
    * Mirrors `config.llm.pricePer1k`.
    */
   pricePer1k?: number;
+  /**
+   * Optional LLM for the curation judge pass (#146). When present (and not
+   * `heuristicOnly`), the judge runs as a strictly-subtractive second filter over
+   * the heuristic survivors. When absent, curation is heuristic-only ($0/offline).
+   */
+  llm?: LlmProvider;
+  /**
+   * Force heuristic-only curation even when an LLM is available (#146). Default
+   * false. Used by deterministic tests and as an explicit opt-out.
+   */
+  heuristicOnly?: boolean;
 }
 
 /** The cost/usage block reported when an LLM phrased the candidates. */
 export interface OptimizeEstimate {
   /** char/4 heuristic over the phrasing prompt — an *estimate*, not the billed count. */
   promptCharEstimateTokens: number;
-  /** Whether an LLM phrased (false → pure heuristic spine, $0/offline). */
+  /** Whether an LLM was used (phrasing OR the #146 curation judge) — false → $0/offline. */
   llmUsed: boolean;
-  /** Actual token usage reported by the backend, when present. */
+  /** Actual token usage reported by the backend, when present (judge + phrasing summed). */
   usage?: { promptTokens?: number; completionTokens?: number };
-  /** `usage * pricePer1k`, when both a price and usage are available. */
+  /** `usage * pricePer1k`, when both a price and usage are available (judge + phrasing). */
   costEstimate?: number;
+  /**
+   * Curation gate summary (#146): trimmed public view — counts + whether the judge
+   * ran. The judge's own usage/cost fold into the top-level `usage`/`costEstimate`,
+   * never duplicated here. Present on any run that went through generation.
+   */
+  curation?: { keptCount: number; droppedCount: number; judgeUsed: boolean };
 }
 
 /** The full outcome of a candidate-generation run. */

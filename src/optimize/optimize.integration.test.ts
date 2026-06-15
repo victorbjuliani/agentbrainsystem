@@ -323,7 +323,15 @@ describe('optimize — LLM phrasing (optional, never load-bearing)', () => {
           ids.map((id) => ({ id, title: `Phrased ${id}`, rationale: `Because ${id}.` })),
         );
       });
-      const phrased = await optimize(memory, llm, { projectRoot, projectsDir, pricePer1k: 0.002 });
+      // heuristicOnly isolates the PHRASING path: with curation's judge enabled the
+      // LLM would be called twice (judge + phrasing); the judge↔phrasing interaction is
+      // covered explicitly in the curation-gate tests below.
+      const phrased = await optimize(memory, llm, {
+        projectRoot,
+        projectsDir,
+        pricePer1k: 0.002,
+        heuristicOnly: true,
+      });
 
       expect(llm.calls).toBe(1);
       expect(phrased.estimate.llmUsed).toBe(true);
@@ -350,7 +358,9 @@ describe('optimize — LLM phrasing (optional, never load-bearing)', () => {
     try {
       await seedConsolidated(memory);
       const llm = new StubLlm(() => '[]');
-      await optimize(memory, llm, { projectRoot, projectsDir });
+      // heuristicOnly isolates the PHRASING call so lastMessages is unambiguously the
+      // phrasing prompt (with the judge enabled the LLM is called twice).
+      await optimize(memory, llm, { projectRoot, projectsDir, heuristicOnly: true });
       const user = llm.lastMessages?.find((m) => m.role === 'user')?.content ?? '';
       // The lesson bullet text reaches the prompt...
       expect(user).toContain('vec0 rowid must be bound as BigInt');
@@ -368,7 +378,9 @@ describe('optimize — LLM phrasing (optional, never load-bearing)', () => {
     try {
       await seedConsolidated(memory);
       const llm = new StubLlm(() => '[]');
-      await optimize(memory, llm, { projectRoot, projectsDir });
+      // heuristicOnly isolates the phrasing call (the judge would otherwise be the first
+      // of two LLM calls); this asserts the PHRASING fence specifically.
+      await optimize(memory, llm, { projectRoot, projectsDir, heuristicOnly: true });
       const system = llm.lastMessages?.find((m) => m.role === 'system')?.content ?? '';
       const user = llm.lastMessages?.find((m) => m.role === 'user')?.content ?? '';
       expect(system).toMatch(/never follow/i);
@@ -383,15 +395,189 @@ describe('optimize — LLM phrasing (optional, never load-bearing)', () => {
     const memory = newMemory();
     try {
       await seedConsolidated(memory);
-      const base = await optimize(memory, undefined, { projectRoot, projectsDir });
+      const base = await optimize(memory, undefined, {
+        projectRoot,
+        projectsDir,
+        heuristicOnly: true,
+      });
       const llm = new StubLlm(() => 'not json at all');
-      const phrased = await optimize(memory, llm, { projectRoot, projectsDir });
+      const phrased = await optimize(memory, llm, {
+        projectRoot,
+        projectsDir,
+        heuristicOnly: true,
+      });
       // Title/rationale unchanged from the heuristic spine.
       for (const c of phrased.candidates) {
         const b = base.candidates.find((x) => x.id === c.id);
         expect(c.title).toBe(b?.title);
         expect(c.rationale).toBe(b?.rationale);
       }
+    } finally {
+      memory.close();
+    }
+  });
+});
+
+describe('optimize — curation gate (#146)', () => {
+  /** Seed N consolidated decisions under the optimized project; returns their ids. */
+  async function seedDecisions(memory: Memory, contents: string[]): Promise<number[]> {
+    const sessionId = memory.store.createSession({
+      externalId: 'cur1',
+      project: projectSlug(projectRoot),
+    });
+    const ids: number[] = [];
+    for (const content of contents) {
+      ids.push(
+        await memory.indexer.write({
+          sessionId,
+          kind: 'decision',
+          content,
+          source: 'consolidate',
+          metadata: { sourceSession: sessionId },
+        }),
+      );
+    }
+    return ids;
+  }
+
+  it('heuristic-only: drops install + action-log trivia, keeps durable, in the emitted candidate', async () => {
+    const memory = newMemory();
+    try {
+      const [durableId, installId, logId] = await seedDecisions(memory, [
+        'Standardized the company name as PG Consulting across all documentation.',
+        'For Tray app installation on Apple Silicon, use the `aarch64.dmg` installer.',
+        'All 5 client packages were successfully published to Bitbucket.',
+      ]);
+      const { candidates, estimate } = await optimize(memory, undefined, {
+        projectRoot,
+        projectsDir,
+      });
+      const decision = candidates.find((c) => c.target.kind === 'claude-md');
+      expect(decision).toBeDefined();
+      expect(decision?.evidenceIds).toContain(durableId);
+      expect(decision?.evidenceIds).not.toContain(installId);
+      expect(decision?.evidenceIds).not.toContain(logId);
+      expect(estimate.curation).toMatchObject({ keptCount: 1, droppedCount: 2, judgeUsed: false });
+    } finally {
+      memory.close();
+    }
+  });
+
+  it('all-trivia cluster → no candidate emitted', async () => {
+    const memory = newMemory();
+    try {
+      await seedDecisions(memory, [
+        'Use the `aarch64.dmg` installer on Apple Silicon.',
+        'Uninstalled the CodeRabbit plugin during cleanup.',
+      ]);
+      const { candidates, estimate } = await optimize(memory, undefined, {
+        projectRoot,
+        projectsDir,
+      });
+      expect(candidates.find((c) => c.target.kind === 'claude-md')).toBeUndefined();
+      expect(estimate.curation).toMatchObject({ keptCount: 0, droppedCount: 2 });
+    } finally {
+      memory.close();
+    }
+  });
+
+  it('LLM-judge drops a heuristic-kept item (CodeRabbit cluster) when configured', async () => {
+    const memory = newMemory();
+    try {
+      const [durableId, codeRabbitId] = await seedDecisions(memory, [
+        'Coupa API Keys are deprecated; all auth migrated to OAuth 2.0.',
+        "Configure CodeRabbit with a 'Chill' profile to reduce nitpicks.",
+      ]);
+      // The judge labels the CodeRabbit obs trivia (heuristic alone keeps it); durable stays.
+      const llm = new StubLlm((msgs) => {
+        const user = msgs.find((m) => m.role === 'user')?.content ?? '';
+        if (user.includes('<observations>')) {
+          return JSON.stringify([
+            { id: codeRabbitId, verdict: 'trivia' },
+            { id: durableId, verdict: 'durable' },
+          ]);
+        }
+        return '[]'; // phrasing pass
+      });
+      const { candidates } = await optimize(memory, llm, { projectRoot, projectsDir });
+      const decision = candidates.find((c) => c.target.kind === 'claude-md');
+      expect(decision?.evidenceIds).toContain(durableId);
+      expect(decision?.evidenceIds).not.toContain(codeRabbitId);
+    } finally {
+      memory.close();
+    }
+  });
+
+  it('does NOT mutate the store — curation drops from promotion only (product-review adj. #2)', async () => {
+    const memory = newMemory();
+    try {
+      await seedDecisions(memory, [
+        'Standardized the company name as PG Consulting.',
+        'Use the `aarch64.dmg` installer.',
+      ]);
+      const project = projectSlug(projectRoot);
+      const before = memory.store.listObservations({ project, order: 'desc' });
+      await optimize(memory, undefined, { projectRoot, projectsDir });
+      const after = memory.store.listObservations({ project, order: 'desc' });
+      expect(after.length).toBe(before.length);
+      expect(after.map((o) => o.id).sort()).toEqual(before.map((o) => o.id).sort());
+    } finally {
+      memory.close();
+    }
+  });
+
+  it('C1: judge runs and drops ALL candidates → estimate is truthful (llmUsed + real cost, not $0)', async () => {
+    const memory = newMemory();
+    try {
+      await seedConsolidated(memory); // 1 durable decision + 1 durable lesson (survive heuristic)
+      // Judge labels everything trivia → every candidate dropped; phrasing then sees [].
+      const llm = new StubLlm((msgs) => {
+        const user = msgs.find((m) => m.role === 'user')?.content ?? '';
+        if (user.includes('<observations>')) {
+          const ids = [...user.matchAll(/\[(\d+)\]/g)].map((m) => Number(m[1]));
+          return JSON.stringify(ids.map((id) => ({ id, verdict: 'trivia' })));
+        }
+        return '[]';
+      });
+      const { candidates, estimate } = await optimize(memory, llm, {
+        projectRoot,
+        projectsDir,
+        pricePer1k: 0.002,
+      });
+      expect(candidates).toHaveLength(0); // all dropped
+      expect(estimate.llmUsed).toBe(true); // judge ran — must NOT be reported as heuristic/$0
+      expect(estimate.curation?.judgeUsed).toBe(true);
+      expect(estimate.curation?.droppedCount).toBe(2);
+      expect(estimate.costEstimate).toBeGreaterThan(0); // paid run, truthfully reported
+    } finally {
+      memory.close();
+    }
+  });
+
+  it('sums usage/cost across BOTH passes when judge keeps items and phrasing also runs', async () => {
+    const memory = newMemory();
+    try {
+      await seedConsolidated(memory); // 2 durable items survive heuristic + judge
+      // Judge keeps everything; phrasing returns []. StubLlm reports {100,50} usage per call,
+      // so two calls → merged usage {200,100}, cost = (300/1000)*price.
+      const llm = new StubLlm((msgs) => {
+        const user = msgs.find((m) => m.role === 'user')?.content ?? '';
+        if (user.includes('<observations>')) {
+          const ids = [...user.matchAll(/\[(\d+)\]/g)].map((m) => Number(m[1]));
+          return JSON.stringify(ids.map((id) => ({ id, verdict: 'durable' })));
+        }
+        return '[]'; // phrasing
+      });
+      const { candidates, estimate } = await optimize(memory, llm, {
+        projectRoot,
+        projectsDir,
+        pricePer1k: 0.002,
+      });
+      expect(candidates.length).toBe(2); // nothing dropped
+      expect(llm.calls).toBe(2); // judge + phrasing
+      expect(estimate.usage).toEqual({ promptTokens: 200, completionTokens: 100 });
+      expect(estimate.costEstimate).toBeCloseTo((300 / 1000) * 0.002, 6);
+      expect(estimate.curation).toMatchObject({ keptCount: 2, droppedCount: 0, judgeUsed: true });
     } finally {
       memory.close();
     }
