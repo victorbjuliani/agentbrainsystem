@@ -41,6 +41,17 @@ export interface AppConfig {
    * `ABS_RECALL_SCOPE`.
    */
   recallScope: RecallScope;
+  /**
+   * Auto-distill cadence (#138). When `true` (default) and an LLM is configured,
+   * a substantial session ending spawns a detached `consolidate → optimize`
+   * cadence. From `ABS_AUTO_DISTILL` (`0/1/true/false/on/off`, case-insensitive).
+   */
+  autoDistill: boolean;
+  /**
+   * Minimum observations in a just-ended session for the cadence to fire (#138).
+   * Reuses the staleness bar (`STALENESS_MIN_PENDING`, 25). From `DISTILL_MIN_OBS`.
+   */
+  distillMinObs: number;
 }
 
 /** Recall isolation mode (#47). */
@@ -49,6 +60,12 @@ export type RecallScope = 'project' | 'global';
 const VALID_RECALL_SCOPES: readonly RecallScope[] = ['project', 'global'];
 
 const DEFAULT_LLM_TIMEOUT_MS = 60000;
+
+/** Default min-obs bar for the auto-distill cadence (mirrors STALENESS_MIN_PENDING). */
+const DEFAULT_DISTILL_MIN_OBS = 25;
+
+const AUTO_DISTILL_TRUE = new Set(['1', 'true', 'on']);
+const AUTO_DISTILL_FALSE = new Set(['0', 'false', 'off']);
 
 const DEFAULT_LOCAL_MODEL = 'Xenova/all-MiniLM-L6-v2';
 const VALID_PROVIDERS: readonly EmbeddingProviderId[] = ['local', 'gemini', 'voyage'];
@@ -107,12 +124,36 @@ export function loadConfig(): AppConfig {
   }
   const recallScope = (rawScope as RecallScope) || 'project';
 
+  const rawAutoDistill = process.env.ABS_AUTO_DISTILL;
+  let autoDistill = true;
+  if (rawAutoDistill !== undefined) {
+    const normalized = rawAutoDistill.trim().toLowerCase();
+    if (AUTO_DISTILL_TRUE.has(normalized)) autoDistill = true;
+    else if (AUTO_DISTILL_FALSE.has(normalized)) autoDistill = false;
+    else
+      throw new Error(
+        `invalid ABS_AUTO_DISTILL '${rawAutoDistill}' — expected one of 0/1/true/false/on/off`,
+      );
+  }
+
+  let distillMinObs = DEFAULT_DISTILL_MIN_OBS;
+  if (process.env.DISTILL_MIN_OBS) {
+    distillMinObs = Number.parseInt(process.env.DISTILL_MIN_OBS, 10);
+    if (!Number.isInteger(distillMinObs) || distillMinObs <= 0) {
+      throw new Error(
+        `invalid DISTILL_MIN_OBS '${process.env.DISTILL_MIN_OBS}' — expected a positive integer`,
+      );
+    }
+  }
+
   return {
     dataDir,
     dbPath,
     embedding: { provider, model, dimensions },
     llm: loadLlmConfig(),
     recallScope,
+    autoDistill,
+    distillMinObs,
   };
 }
 

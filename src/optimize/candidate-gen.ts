@@ -238,7 +238,11 @@ function titleFor(cluster: Cluster): string {
 export async function generateCandidates(
   memory: Memory,
   options: GenerateCandidatesOptions = {},
-): Promise<{ candidates: OptimizeCandidate[]; curation: CurationEstimate }> {
+): Promise<{
+  candidates: OptimizeCandidate[];
+  curation: CurationEstimate;
+  survivingIds: number[];
+}> {
   const projectRoot = options.projectRoot ?? process.cwd();
   const projectsDir = options.projectsDir ?? defaultProjectsDir();
   const limit = options.limit ?? DEFAULT_LIMIT;
@@ -299,7 +303,10 @@ export async function generateCandidates(
   // High priority first (decisions before lessons), then stable by id.
   const rank: Record<OptimizePriority, number> = { high: 0, medium: 1, low: 2 };
   candidates.sort((a, b) => rank[a.priority] - rank[b.priority]);
-  return { candidates: candidates.slice(0, limit), curation };
+  // `survivingIds` is the UN-sliced keep-set; the slice caps only the candidate
+  // LIST. That asymmetry is the #138 fix — the cursor advance partitions against
+  // the keep-set, so a sliced-off survivor is never mistaken for curated-out.
+  return { candidates: candidates.slice(0, limit), curation, survivingIds: [...keep] };
 }
 
 /** Thin adapter: run curation with the run's LLM/options and return keep-set + estimate. */

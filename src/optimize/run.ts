@@ -11,18 +11,19 @@
  *     write safety (#20), then advance the staleness cursor (#16) on success so
  *     SessionStart stops nagging once memory has been distilled into the files.
  *
- * Sibling import note: the staleness cursor key lives in `hooks/staleness.ts`
- * (its reader, #16). This converge module is the cursor's WRITER (#21); both share
- * the one key constant rather than duplicating the string. Converge logically sits
+ * Sibling import note: the optimize cursor key builder lives in `hooks/staleness.ts`
+ * (its reader, #16). This converge module is the cursor's WRITER (#21/#148); both share
+ * the one key builder rather than duplicating the string. Converge logically sits
  * above both siblings, so the single import is intentional, not a layering leak.
  */
 import { type AppConfig, loadConfig } from '../config.js';
-import { OPTIMIZE_CURSOR_KEY } from '../hooks/staleness.js';
+import { optimizeCursorKey, parseCursor } from '../hooks/staleness.js';
 import { createLlmProvider, type LlmProvider } from '../llm/index.js';
 import type { Memory } from '../memory.js';
 import { type Applier, type ApplyOptions, GatedApplier } from './applier.js';
 import { generateCandidates } from './candidate-gen.js';
 import { phraseCandidates } from './llm-phrasing.js';
+import { projectSlug } from './targets.js';
 import type {
   ApplyResult,
   CurationEstimate,
@@ -46,7 +47,11 @@ export async function optimize(
 ): Promise<GenerateCandidatesResult> {
   // Thread the LLM into generation so the curation judge (#146) runs over the
   // consolidated set BEFORE bullets are built. Heuristic curation runs regardless.
-  const { candidates: curated, curation } = await generateCandidates(memory, {
+  const {
+    candidates: curated,
+    curation,
+    survivingIds,
+  } = await generateCandidates(memory, {
     ...options,
     ...(llm ? { llm } : {}),
   });
@@ -55,7 +60,13 @@ export async function optimize(
     llm,
     options.pricePer1k,
   );
-  return { candidates, estimate: mergeEstimates(phrasing, curation, options.pricePer1k) };
+  // `survivingIds` passes straight through — phrasing only touches title/rationale,
+  // never evidence, so the un-sliced keep-set is unchanged by it (#138).
+  return {
+    candidates,
+    estimate: mergeEstimates(phrasing, curation, options.pricePer1k),
+    survivingIds,
+  };
 }
 
 /**
@@ -130,11 +141,11 @@ export async function generateOptimizations(
 
 /**
  * Apply ONE approved candidate with the gated applier's full safety (allowlist +
- * fail-closed user|feedback guard + backup + atomic write + rollback). On a real
- * write, advance the staleness cursor to the current high-water mark so the
- * "N pending" flag (#16) resets — the memory up to now is considered distilled.
- * A refusal (forbidden target / protected entry / target modified) does NOT
- * advance the cursor: nothing was written.
+ * fail-closed user|feedback guard + backup + atomic write + rollback). The cursor
+ * advance is NO LONGER its job (#138/#148): the per-kind/project advance is explicit
+ * at the run level (`advanceOptimizeCursorsAfterApply`), driven by the curation
+ * keep-set — because the all-curated-out path never reaches apply, and a per-kind
+ * advance cannot be derived from a single per-write side-effect.
  */
 export async function applyApprovedCandidate(
   memory: Memory,
@@ -148,9 +159,99 @@ export async function applyApprovedCandidate(
     options.expectedBaseContent === undefined
       ? { ...options, expectedBaseContent: candidate.baseContent }
       : options;
-  const result = await applyCandidate(candidate, guarded);
-  if (result.applied) {
-    memory.store.setMeta(OPTIMIZE_CURSOR_KEY, String(memory.store.maxObservationId()));
-  }
-  return result;
+  return applyCandidate(candidate, guarded);
 }
+
+/** Map a candidate's target kind to its optimize-cursor obs kind (#138). */
+function cursorKindForTarget(candidate: OptimizeCandidate): 'lesson' | 'decision' {
+  // auto-memory ⇐ lessons (cadence auto-promotes); claude-md ⇐ decisions (manual).
+  return candidate.target.kind === 'auto-memory' ? 'lesson' : 'decision';
+}
+
+/** The four-set partition of `S_kind` (#138/#148 §4 KEEP-SET model). */
+export interface ConsolidatedPartition {
+  /** `keep ∩ S_kind` — survived curation (authoritative, slice-independent). */
+  survivors: Set<number>;
+  /** `S_kind − survivors` — dropped by the heuristic/judge, never promotable. */
+  curatedOut: Set<number>;
+  /** `∪ evidenceIds(applied candidates of this kind)`. */
+  promoted: Set<number>;
+  /** `survivors − promoted` — survived curation but not yet promoted (includes a
+   * declined candidate, a bare preview, a cadence-skipped decision, AND a
+   * `--limit`-sliced survivor). Cursor advances IFF this is empty. */
+  pendingValid: Set<number>;
+}
+
+/**
+ * Partition one kind's `S_kind` (consolidate-obs ids above the cursor) against the
+ * curation KEEP-SET (#138/#148 §4). The keep-set — NOT the post-slice candidate
+ * list — is the source of truth, so a `--limit`-sliced survivor (in `keep`, absent
+ * from any candidate's `evidenceIds`) lands in `pendingValid`, never `curatedOut`.
+ * Pure.
+ */
+export function partitionConsolidated(
+  sKind: number[],
+  keep: Set<number>,
+  candidatesOfKind: OptimizeCandidate[],
+  appliedIds: Set<string>,
+): ConsolidatedPartition {
+  const sSet = new Set(sKind);
+  const survivors = new Set<number>();
+  for (const id of sSet) if (keep.has(id)) survivors.add(id);
+  const curatedOut = new Set<number>();
+  for (const id of sSet) if (!survivors.has(id)) curatedOut.add(id);
+  const promoted = new Set<number>();
+  for (const c of candidatesOfKind) {
+    if (!appliedIds.has(c.id)) continue;
+    for (const eid of c.evidenceIds) if (sSet.has(eid)) promoted.add(eid);
+  }
+  const pendingValid = new Set<number>();
+  for (const id of survivors) if (!promoted.has(id)) pendingValid.add(id);
+  return { survivors, curatedOut, promoted, pendingValid };
+}
+
+/**
+ * Advance ONE kind's project-scoped optimize cursor IFF every surviving obs of that
+ * kind was promoted (#138/#148 §4). No-op when `S_kind` is empty. The advance target
+ * is `maxConsolidatedId(project, kind)` — never a higher raw-turn id, never another
+ * project's id. A sliced-off survivor keeps the cursor pinned (pending-valid).
+ */
+export function advanceOptimizeCursorForKind(
+  memory: Memory,
+  kind: 'lesson' | 'decision',
+  projectSlugValue: string,
+  keep: Set<number>,
+  candidatesOfKind: OptimizeCandidate[],
+  appliedIds: Set<string>,
+): void {
+  const key = optimizeCursorKey(kind, projectSlugValue);
+  const cursor = parseCursor(memory.store.getMeta(key));
+  const sKind = memory.store.consolidatedIdsSince(projectSlugValue, kind, cursor);
+  if (sKind.length === 0) return; // nothing reviewed for this kind/project
+  const { pendingValid } = partitionConsolidated(sKind, keep, candidatesOfKind, appliedIds);
+  if (pendingValid.size === 0) {
+    memory.store.setMeta(key, String(memory.store.maxConsolidatedId(projectSlugValue, kind)));
+  }
+}
+
+/**
+ * Run-level cursor advance after the apply loop (#138/#148): advance each kind's
+ * project-scoped cursor per the §4 keep-set partition. Both the cadence runner
+ * (Phase 4) and manual `cmdOptimize` (Phase 5) call THIS, passing the SAME run-wide
+ * `keep` set (the kind-agnostic survivingIds; the per-kind `S_kind ∩` scopes it).
+ */
+export function advanceOptimizeCursorsAfterApply(
+  memory: Memory,
+  projectSlugValue: string,
+  keep: Set<number>,
+  candidates: OptimizeCandidate[],
+  appliedIds: Set<string>,
+): void {
+  for (const kind of ['lesson', 'decision'] as const) {
+    const ofKind = candidates.filter((c) => cursorKindForTarget(c) === kind);
+    advanceOptimizeCursorForKind(memory, kind, projectSlugValue, keep, ofKind, appliedIds);
+  }
+}
+
+/** Re-export so callers compute the same slug the cursor keys use (#138). */
+export { projectSlug };

@@ -14,7 +14,7 @@ import type { Database } from 'better-sqlite3';
 import { observationContentHash } from './content-hash.js';
 
 /** The schema version the running code expects. Bump when adding a migration. */
-export const CURRENT_SCHEMA_VERSION = 5;
+export const CURRENT_SCHEMA_VERSION = 6;
 
 /**
  * Run a multi-statement DDL/SQL batch on the connection. Thin wrapper over
@@ -188,6 +188,21 @@ export const MIGRATIONS: readonly Migration[] = [
       runDdl(
         db,
         'CREATE UNIQUE INDEX idx_observations_content_hash ON observations(content_hash);',
+      );
+    },
+  },
+  {
+    version: 6,
+    name: 'observations-session-source-index',
+    up(db) {
+      // Composite index on (session_id, source) so the auto-distill cadence (#138)
+      // keeps its two read-only signals O(indexed): the "needs consolidate"
+      // anti-join (raw turns whose session has no source='consolidate' row) and
+      // the per-kind/project consolidated counts both filter on session_id +
+      // source. Forward-only, no data transform; the runner wraps `up` in a tx.
+      runDdl(
+        db,
+        'CREATE INDEX idx_observations_session_source ON observations(session_id, source);',
       );
     },
   },

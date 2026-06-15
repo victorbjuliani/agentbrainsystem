@@ -1072,6 +1072,118 @@ export class MemoryStore {
     return row.c;
   }
 
+  /**
+   * Count raw turns whose session has NO `source='consolidate'` row — the #138
+   * "needs consolidate" signal as a session-level anti-join (NOT an id cursor).
+   * A global high-water cursor would strand raw turns of a session whose ids sit
+   * below an already-consolidated session's id (Gate 0b C1); the anti-join can't.
+   * Consolidate rows themselves are never counted as raw. Rides
+   * `idx_observations_session_source`.
+   */
+  countUnconsolidatedRawTurns(): number {
+    const row = this.conn()
+      .prepare(
+        `SELECT COUNT(*) AS c FROM observations o
+         WHERE COALESCE(o.source, '') != 'consolidate'
+           AND NOT EXISTS (
+             SELECT 1 FROM observations c
+             WHERE c.session_id = o.session_id AND c.source = 'consolidate'
+           )`,
+      )
+      .get() as { c: number };
+    return row.c;
+  }
+
+  /**
+   * Count DISTINCT sessions that still need consolidate (same anti-join as
+   * `countUnconsolidatedRawTurns`, by session). Drives the banner's "across M
+   * session(s)" copy (#138).
+   */
+  countUnconsolidatedSessions(): number {
+    const row = this.conn()
+      .prepare(
+        `SELECT COUNT(DISTINCT o.session_id) AS c FROM observations o
+         WHERE COALESCE(o.source, '') != 'consolidate'
+           AND NOT EXISTS (
+             SELECT 1 FROM observations c
+             WHERE c.session_id = o.session_id AND c.source = 'consolidate'
+           )`,
+      )
+      .get() as { c: number };
+    return row.c;
+  }
+
+  /**
+   * Count consolidate observations of one `kind` in one `project` above the
+   * per-kind/project optimize cursor (#138/#148). The "needs optimize" signal,
+   * project-scoped via the same `session_id IN (SELECT id FROM sessions WHERE
+   * project = …)` subquery as `buildObservationQuery`. Raw turns are excluded by
+   * the `source='consolidate'` filter.
+   */
+  countConsolidatedSince(
+    project: string,
+    kind: 'lesson' | 'decision',
+    minIdExclusive: number,
+  ): number {
+    const row = this.conn()
+      .prepare(
+        `SELECT COUNT(*) AS c FROM observations
+         WHERE source = 'consolidate' AND kind = @kind AND id > @cursor
+           AND session_id IN (SELECT id FROM sessions WHERE project = @project)`,
+      )
+      .get({ project, kind, cursor: minIdExclusive }) as { c: number };
+    return row.c;
+  }
+
+  /**
+   * The highest consolidate-obs id for one `kind` in one `project`, or 0 when
+   * none. The advance target for that kind/project's optimize cursor (#138/#148)
+   * — never a higher raw-turn id, never another project's id.
+   */
+  maxConsolidatedId(project: string, kind: 'lesson' | 'decision'): number {
+    const row = this.conn()
+      .prepare(
+        `SELECT COALESCE(MAX(id), 0) AS m FROM observations
+         WHERE source = 'consolidate' AND kind = @kind
+           AND session_id IN (SELECT id FROM sessions WHERE project = @project)`,
+      )
+      .get({ project, kind }) as { m: number };
+    return row.m;
+  }
+
+  /**
+   * The ids of consolidate observations of one `kind` in one `project` above the
+   * cursor (`S_kind` for the #138 partition advance). The keep-set partition
+   * needs the FULL id list (a `--limit`-sliced survivor never appears in any
+   * candidate's `evidenceIds`), so this is the source of truth for `S_kind`.
+   */
+  consolidatedIdsSince(
+    project: string,
+    kind: 'lesson' | 'decision',
+    minIdExclusive: number,
+  ): number[] {
+    const rows = this.conn()
+      .prepare(
+        `SELECT id FROM observations
+         WHERE source = 'consolidate' AND kind = @kind AND id > @cursor
+           AND session_id IN (SELECT id FROM sessions WHERE project = @project)
+         ORDER BY id ASC`,
+      )
+      .all({ project, kind, cursor: minIdExclusive }) as Array<{ id: number }>;
+    return rows.map((r) => r.id);
+  }
+
+  /**
+   * Count observations belonging to one session (#138 cadence-due gate, W2).
+   * Rides `idx_observations_session`. Unknown id → 0.
+   */
+  countObservationsBySession(sessionId: number): number {
+    const row = this.conn()
+      .prepare('SELECT COUNT(*) AS c FROM observations WHERE session_id = ?')
+      .get(sessionId) as { c: number };
+    return row.c;
+  }
+
   /** REAL row counts across the relational + index tables. */
   counts(): CountsResult {
     const db = this.conn();

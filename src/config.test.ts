@@ -13,6 +13,8 @@ const ENV_KEYS = [
   'ABS_LLM_TIMEOUT_MS',
   'ABS_LLM_PRICE_PER_1K',
   'ABS_RECALL_SCOPE',
+  'ABS_AUTO_DISTILL',
+  'DISTILL_MIN_OBS',
 ];
 
 describe('loadConfig', () => {
@@ -142,5 +144,46 @@ describe('loadConfig', () => {
     expect(() => loadConfig()).toThrow(/ABS_LLM_PRICE_PER_1K/);
     process.env.ABS_LLM_PRICE_PER_1K = '-1';
     expect(() => loadConfig()).toThrow(/ABS_LLM_PRICE_PER_1K/);
+  });
+
+  // --- Auto-distill cadence (issue #138) -------------------------------------
+
+  it('defaults autoDistill to true (cadence on by default)', () => {
+    expect(loadConfig().autoDistill).toBe(true);
+  });
+
+  it('honours ABS_AUTO_DISTILL falsey values (0/false/off, case-insensitive)', () => {
+    for (const v of ['0', 'false', 'off', 'FALSE', 'Off']) {
+      process.env.ABS_AUTO_DISTILL = v;
+      expect(loadConfig().autoDistill).toBe(false);
+    }
+  });
+
+  it('honours ABS_AUTO_DISTILL truthy values (1/true/on, case-insensitive)', () => {
+    for (const v of ['1', 'true', 'on', 'TRUE', 'On']) {
+      process.env.ABS_AUTO_DISTILL = v;
+      expect(loadConfig().autoDistill).toBe(true);
+    }
+  });
+
+  it('throws on an unknown ABS_AUTO_DISTILL value', () => {
+    process.env.ABS_AUTO_DISTILL = 'maybe';
+    expect(() => loadConfig()).toThrow(/ABS_AUTO_DISTILL/);
+  });
+
+  it('defaults distillMinObs to 25 (reuses the staleness bar)', () => {
+    expect(loadConfig().distillMinObs).toBe(25);
+  });
+
+  it('honours a positive integer DISTILL_MIN_OBS override', () => {
+    process.env.DISTILL_MIN_OBS = '50';
+    expect(loadConfig().distillMinObs).toBe(50);
+  });
+
+  it('throws on a non-positive / non-integer DISTILL_MIN_OBS', () => {
+    process.env.DISTILL_MIN_OBS = '0';
+    expect(() => loadConfig()).toThrow(/DISTILL_MIN_OBS/);
+    process.env.DISTILL_MIN_OBS = 'garbage';
+    expect(() => loadConfig()).toThrow(/DISTILL_MIN_OBS/);
   });
 });

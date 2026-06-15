@@ -20,9 +20,10 @@ export { HOOK_REGISTRY, installHooks, uninstallHooks } from './installer.js';
 export type { HookEvent, HookPayload } from './payload.js';
 export { buildContextOutput, parseHookPayload, readStdin } from './payload.js';
 export { DEFAULT_HOOK_TIMEOUT_MS, runHookSafely } from './runner.js';
-export type { StalenessVerdict } from './staleness.js';
+export type { TwoSignalInput, TwoSignalVerdict } from './staleness.js';
 export {
-  evaluateStaleness,
-  OPTIMIZE_CURSOR_KEY,
+  evaluateTwoSignalStaleness,
+  optimizeCursorKey,
+  parseCursor,
   STALENESS_MIN_PENDING,
 } from './staleness.js';

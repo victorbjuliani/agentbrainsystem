@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { SessionStartFacts } from './session-start.js';
 import { handleSessionStart, renderBaseline, renderNotice } from './session-start.js';
 
 /** Extract the injected additionalContext from a SessionStart hook output line. */
@@ -7,43 +8,74 @@ function injected(line: string | undefined): string {
   return JSON.parse(line).hookSpecificOutput.additionalContext as string;
 }
 
+/** Two-signal facts with both signals clear by default; override per test. */
+function facts(overrides: Partial<SessionStartFacts> = {}): SessionStartFacts {
+  return {
+    sessions: 2,
+    observations: 40,
+    rawPending: 0,
+    rawSessions: 0,
+    rawFlagged: false,
+    lessonsPending: 0,
+    decisionsPending: 0,
+    consolidatedFlagged: false,
+    hasLlm: true,
+    ...overrides,
+  };
+}
+
 describe('renderBaseline', () => {
   it('emits no block for an empty store', () => {
-    expect(renderBaseline({ sessions: 0, observations: 0, pending: 0, flagged: false })).toBe('');
+    expect(renderBaseline(facts({ sessions: 0, observations: 0 }))).toBe('');
   });
 
-  it('reports stats without a staleness line when not flagged', () => {
-    const block = renderBaseline({ sessions: 2, observations: 40, pending: 3, flagged: false });
+  it('reports stats without any staleness line when both signals clear', () => {
+    const block = renderBaseline(facts());
     expect(block).toContain('40 observation(s) across 2 session(s)');
     expect(block).not.toContain('Staleness');
   });
 
-  it('adds the pending-optimization line when flagged', () => {
-    const block = renderBaseline({ sessions: 2, observations: 100, pending: 60, flagged: true });
-    expect(block).toContain('60 new observation(s) since the last optimization');
+  it('raw-pending + LLM → "not yet distilled" and auto handles it', () => {
+    const block = renderBaseline(
+      facts({ rawPending: 30, rawSessions: 2, rawFlagged: true, hasLlm: true }),
+    );
+    expect(block).toContain('30 turn(s) across 2 session(s) not yet distilled');
+    expect(block).toContain('auto-distill');
+    expect(block).not.toContain('abs consolidate');
+  });
+
+  it('raw-pending + NO LLM → configure an LLM / run `abs consolidate`', () => {
+    const block = renderBaseline(
+      facts({ rawPending: 30, rawSessions: 2, rawFlagged: true, hasLlm: false }),
+    );
+    expect(block).toContain('not yet distilled');
+    expect(block).toContain('ABS_LLM_BASE_URL');
+    expect(block).toContain('abs consolidate');
+  });
+
+  it('consolidated-pending (decisions only) → run `abs optimize`', () => {
+    const block = renderBaseline(
+      facts({ lessonsPending: 0, decisionsPending: 4, consolidatedFlagged: true }),
+    );
+    expect(block).toContain('0 lesson(s) + 4 decision(s) pending promotion');
     expect(block).toContain('abs optimize');
   });
 
+  it('both signals clear → no staleness line; old single-cursor copy is gone', () => {
+    const block = renderBaseline(facts());
+    expect(block).not.toContain('Staleness');
+    // The old "N new observation(s) since the last optimization" line is removed.
+    expect(block).not.toContain('since the last optimization');
+  });
+
   it('surfaces a degraded note when the index is stale (#101)', () => {
-    const block = renderBaseline({
-      sessions: 2,
-      observations: 40,
-      pending: 0,
-      flagged: false,
-      indexStale: true,
-    });
+    const block = renderBaseline(facts({ indexStale: true }));
     expect(block).toContain('DEGRADED');
     expect(block).toContain('abs doctor');
   });
 
   it('omits the degraded note when the index is healthy', () => {
-    const block = renderBaseline({
-      sessions: 2,
-      observations: 40,
-      pending: 0,
-      flagged: false,
-      indexStale: false,
-    });
+    const block = renderBaseline(facts({ indexStale: false }));
     expect(block).not.toContain('DEGRADED');
   });
 });
@@ -52,7 +84,7 @@ describe('handleSessionStart', () => {
   it('wraps the baseline in the SessionStart additionalContext envelope', async () => {
     const line = await handleSessionStart(
       { source: 'startup' },
-      { gatherFacts: async () => ({ sessions: 1, observations: 10, pending: 0, flagged: false }) },
+      { gatherFacts: async () => facts({ sessions: 1, observations: 10 }) },
     );
     expect(line).not.toBeUndefined();
     const parsed = JSON.parse(line as string);
@@ -63,7 +95,7 @@ describe('handleSessionStart', () => {
   it('returns undefined (injects nothing) for an empty store', async () => {
     const line = await handleSessionStart(
       {},
-      { gatherFacts: async () => ({ sessions: 0, observations: 0, pending: 0, flagged: false }) },
+      { gatherFacts: async () => facts({ sessions: 0, observations: 0 }) },
     );
     expect(line).toBeUndefined();
   });
@@ -93,13 +125,7 @@ describe('renderNotice (memory transparency)', () => {
 });
 
 describe('handleSessionStart — memory notice', () => {
-  const noticeFacts = {
-    sessions: 1,
-    observations: 5,
-    pending: 0,
-    flagged: false,
-    hasBinding: false,
-  };
+  const noticeFacts = facts({ sessions: 1, observations: 5, hasBinding: false });
 
   it('injects the notice when a session id + cwd are present and no binding exists', async () => {
     const line = await handleSessionStart(
@@ -134,13 +160,7 @@ describe('handleSessionStart — memory notice', () => {
     const line = await handleSessionStart(
       { sessionId: 'sess-new', cwd: '/Users/me/Devs/foo', source: 'startup' },
       {
-        gatherFacts: async () => ({
-          sessions: 0,
-          observations: 0,
-          pending: 0,
-          flagged: false,
-          hasBinding: false,
-        }),
+        gatherFacts: async () => facts({ sessions: 0, observations: 0, hasBinding: false }),
       },
     );
     const ctx = injected(line);
