@@ -98,14 +98,22 @@ const FENCE_CLOSE = '</recalled-memory>';
 /**
  * Observation ids whose anchors may be healed by `verifyOnRecall` on this recall (#137/F7-03).
  *
- * Self-healing resolves anchors against the CURRENT repo's symbol index (`process.cwd()`),
- * but recall surfaces cross-project GLOBAL facts whose anchors point into a DIFFERENT repo.
- * Healing those here would resolve them against the wrong index — false-staling them (or
- * re-anchoring to a coincidental homonym) in every project they are recalled from, and `stale`
- * is terminal. Exclude global hits: their home repo heals them. Non-global hits are already
- * scoped to the current project by `recallFts`, so they belong to this repo's index.
+ * Self-healing resolves anchors against the CURRENT repo's symbol index (`process.cwd()`), so
+ * an anchor may only be healed here when it is known to belong to THIS repo. That holds only
+ * when recall is project-scoped:
+ *   - Store-wide recall (`ABS_RECALL_SCOPE=global` → `activeProject` undefined) returns hits
+ *     from EVERY project; their anchors point into other repos, so heal NOTHING — resolving
+ *     them against cwd would false-stale (or homonym-reanchor) another repo's facts.
+ *   - Project-scoped recall (the default) returns only current-project hits plus the reserved
+ *     cross-project GLOBAL brain; exclude the global ones (their home repo heals them) and
+ *     heal the rest, which belong to this repo's index.
+ * `stale` is recoverable, so getting this scope wrong would actively corrupt foreign facts.
  */
-export function healableObservationIds(hits: RecallHit[]): number[] {
+export function healableObservationIds(
+  hits: RecallHit[],
+  activeProject: string | undefined,
+): number[] {
+  if (activeProject === undefined) return [];
   return hits.filter((h) => !h.global).map((h) => h.observation.id);
 }
 
@@ -177,7 +185,7 @@ async function recallFromStore(prompt: string, payload: HookPayload): Promise<Sc
     // they are recalled from. Exclude global hits; their home repo heals them.
     const provider = createGroundTruthProvider(process.cwd());
     try {
-      verifyOnRecall(memory.store, provider, healableObservationIds(hits));
+      verifyOnRecall(memory.store, provider, healableObservationIds(hits, project));
     } finally {
       provider.close();
     }

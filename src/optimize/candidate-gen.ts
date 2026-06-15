@@ -169,7 +169,7 @@ export async function generateCandidates(
     const proposedText = buildAppendBlock(cluster, current);
     const diff = renderAppendDiff(labelFor(target), current, proposedText);
     candidates.push({
-      id: candidateId(target, cluster),
+      id: candidateId(target, cluster, current, proposedText),
       target,
       title: titleFor(cluster),
       rationale: heuristicRationale(cluster),
@@ -190,16 +190,24 @@ export async function generateCandidates(
 }
 
 /**
- * Content-addressed candidate id (#135 / F3-06): a hash of the target kind + the exact
- * evidence ids, NOT a positional `cand-N` counter. Positional ids recycle across runs, so
- * `apply cand-2` could bind to a DIFFERENT candidate than the one previewed when the
- * candidate set shifted. A content id is stable for the same proposal and CHANGES when the
- * evidence does — so a stale `apply <id>` misses the cache (safe) instead of applying an
- * unapproved diff.
+ * Content-addressed candidate id (#135 / F3-06): a hash of the WHOLE proposal — target
+ * (kind + path), the exact evidence ids, AND the rendered content (base + proposed text) —
+ * NOT a positional `cand-N` counter. Positional ids recycle across runs, so `apply cand-2`
+ * could bind to a DIFFERENT candidate than the one previewed when the set shifted. Hashing
+ * the proposal makes the id stable for an identical diff and CHANGE whenever ANYTHING that
+ * alters the diff changes — including the target file mutating between runs under unchanged
+ * evidence — so a stale `apply <id>` misses the cache (safe) instead of applying a diff the
+ * user never reviewed. (Non-cryptographic id digest; sha256 to avoid the sha1 lint.)
  */
-function candidateId(target: OptimizeTarget, cluster: Cluster): string {
-  const digest = createHash('sha1')
-    .update(`${target.kind}:${cluster.observations.map((o) => o.id).join(',')}`)
+function candidateId(
+  target: OptimizeTarget,
+  cluster: Cluster,
+  baseContent: string,
+  proposedText: string,
+): string {
+  const evidence = cluster.observations.map((o) => o.id).join(',');
+  const digest = createHash('sha256')
+    .update(`${target.kind}:${target.absPath}:${evidence}:${baseContent}:${proposedText}`)
     .digest('hex')
     .slice(0, 12);
   return `cand-${digest}`;

@@ -173,6 +173,28 @@ describe('optimize — candidate generation (diffs-only)', () => {
     }
   });
 
+  it('candidate id CHANGES when the target file mutates under identical evidence (#135/F3-06)', async () => {
+    const memory = newMemory();
+    try {
+      await seedConsolidated(memory);
+      const before = await optimize(memory, undefined, { projectRoot, projectsDir });
+      const idBefore = before.candidates.find((c) => c.target.kind === 'claude-md')?.id;
+
+      // Same evidence, but CLAUDE.md now has different content → the proposed diff differs,
+      // so a stale id must NOT keep mapping to a now-different candidate.
+      await mkdir(projectRoot, { recursive: true });
+      await writeFile(claudeMdPath(projectRoot), '# CLAUDE.md\n\nhand-edited since the preview.\n');
+      const after = await optimize(memory, undefined, { projectRoot, projectsDir });
+      const idAfter = after.candidates.find((c) => c.target.kind === 'claude-md')?.id;
+
+      expect(idBefore).toBeDefined();
+      expect(idAfter).toBeDefined();
+      expect(idAfter).not.toBe(idBefore);
+    } finally {
+      memory.close();
+    }
+  });
+
   it('writes NOTHING — no files are created during generation', async () => {
     const memory = newMemory();
     try {
