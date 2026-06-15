@@ -136,10 +136,16 @@ function surfaceDecisions(
   const query = [...terms].join(' ');
   if (query.length === 0) return undefined;
 
-  const hits = memory.recall.recallFts(query, { limit: RECALL_POOL, project, includeGlobal: true });
+  const hits = memory.recall.recallFts(query, {
+    limit: RECALL_POOL,
+    project,
+    includeGlobal: true,
+    rankByKind: true, // prefer durable decision/lesson/note in the surfaced slice (#141)
+  });
   // Surface any relevant memory for the touched file/symbols (not only decision/lesson) —
   // session-captured memory is user/assistant kind, so a decision/lesson-only filter would be
-  // silent without consolidation. Warn-only, capped, prompt-injection-fenced as before. (#1)
+  // silent without consolidation. rankByKind lifts durable kinds into the slice when present
+  // but still surfaces raw turns when nothing durable matches. Warn-only, capped, fenced. (#1)
   const decisions = hits.slice(0, MAX_DECISIONS);
   if (decisions.length === 0) return undefined;
 

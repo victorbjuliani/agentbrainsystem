@@ -9,6 +9,7 @@
 import type { EmbeddingProvider } from '../embedding/index.js';
 import { GLOBAL_PROJECT } from '../global.js';
 import type { AnchorState, MemoryStore, Observation } from '../store/index.js';
+import { kindWeight } from './kind-weight.js';
 import { DEFAULT_RRF_K, reciprocalRankFusion } from './rrf.js';
 import { stemVariants } from './stemming.js';
 
@@ -57,6 +58,14 @@ export interface RecallFtsOptions {
   project?: string;
   /** Also include the global brain (`__global__`) alongside the project (#). */
   includeGlobal?: boolean;
+  /**
+   * Rank curated/durable kinds (`decision`/`lesson`/`note`) above raw turns (#141).
+   * Default `false` keeps the legacy pure-FTS order and `score = -distance` contract — so
+   * non-recall callers (e.g. delete-by-search) are unaffected. When `true`, over-fetch a
+   * candidate pool and re-rank by `1/(RRF_K+pos) × kindWeight(kind)`; `score` becomes the
+   * weighted value. Opt in only on the always-on recall-injection hooks.
+   */
+  rankByKind?: boolean;
 }
 
 /**
@@ -151,12 +160,22 @@ export class Recall {
    *
    * `ftsRank` is the raw FTS5 rank (more negative = better); callers that want a
    * descending "best first" score can negate it. Returns at most `limit` hits.
+   *
+   * With `options.rankByKind` (#141) the result is re-ranked so curated/durable kinds
+   * outrank raw turns, and `score` becomes the weighted value (not `-distance`) — see
+   * `RecallFtsOptions.rankByKind` and {@link recallFtsRankedByKind}. Default is the
+   * legacy pure-FTS order, so non-recall callers (e.g. delete-by-search) are unaffected.
    */
   recallFts(query: string, options: RecallFtsOptions = {}): RecallHit[] {
     const limit = options.limit ?? 8;
     const ftsExpr = toFtsQuery(query);
     if (ftsExpr === null) return [];
 
+    if (options.rankByKind) {
+      return this.recallFtsRankedByKind(ftsExpr, limit, options);
+    }
+
+    // Default path — pure FTS order, `score = -distance` (unchanged contract; #141).
     const matches = this.store.searchFts(ftsExpr, limit, options.project, options.includeGlobal);
     const hits: RecallHit[] = [];
     for (const m of matches) {
@@ -165,6 +184,45 @@ export class Recall {
       hits.push({
         observation,
         score: -m.distance,
+        ftsRank: m.distance,
+        global: m.project === GLOBAL_PROJECT,
+      });
+    }
+    return hits;
+  }
+
+  /**
+   * Kind-weighted FTS recall (#141): over-fetch a candidate pool, lift durable kinds with a
+   * reciprocal-rank base × `kindWeight`, then take the top `limit`. NOT a hard filter — when
+   * no durable kind matches, every weight is 1 and the order collapses to pure FTS (raw turns
+   * still surface). The pool is the lexical floor: a durable obs must be in the top-N FTS
+   * matches to be promoted, so it always at least matched the query terms.
+   */
+  private recallFtsRankedByKind(
+    ftsExpr: string,
+    limit: number,
+    options: RecallFtsOptions,
+  ): RecallHit[] {
+    const candidates = Math.max(limit * 5, 40);
+    const matches = this.store.searchFts(
+      ftsExpr,
+      candidates,
+      options.project,
+      options.includeGlobal,
+    );
+    // `pos` is the FTS rank position (best = 0). Stable sort keeps FTS order within ties.
+    const ranked = matches
+      .map((m, pos) => ({ m, score: (1 / (DEFAULT_RRF_K + pos)) * kindWeight(m.kind ?? '') }))
+      .sort((a, b) => b.score - a.score);
+
+    const hits: RecallHit[] = [];
+    for (const { m, score } of ranked) {
+      if (hits.length >= limit) break;
+      const observation = this.store.getObservation(m.id);
+      if (!observation) continue; // index drifted ahead of rows — skip defensively
+      hits.push({
+        observation,
+        score,
         ftsRank: m.distance,
         global: m.project === GLOBAL_PROJECT,
       });

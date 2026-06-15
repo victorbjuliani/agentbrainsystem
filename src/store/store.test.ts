@@ -367,6 +367,18 @@ describe('MemoryStore', () => {
       expect(hits[0]?.id).toBe(a);
     });
 
+    it('searchFts populates kind; knn leaves it undefined (#141)', () => {
+      const a = store.createObservation({ sessionId, kind: 'lesson', content: 'cache eviction' });
+      store.indexFts(a, 'cache eviction');
+      store.upsertVector(a, unitVector(3));
+
+      const ftsHit = store.searchFts('cache', 5).find((h) => h.id === a);
+      expect(ftsHit?.kind).toBe('lesson');
+
+      const knnHit = store.knn(unitVector(3), 1).find((h) => h.id === a);
+      expect(knnHit?.kind).toBeUndefined();
+    });
+
     it('searchFts with includeGlobal returns project hits AND global hits, tagged by project', () => {
       const proj = store.createSession({ externalId: 'p1', project: '-Users-me-Devs-foo' });
       const glob = store.createSession({ externalId: '__global__', project: '__global__' });
