@@ -26,7 +26,7 @@ export function getOrCreateGlobalSession(store: MemoryStore): number {
  * (decision|lesson|note). A curated promote never carries raw ingest kinds
  * (`user`/`assistant`/`tool_edit`) into the global layer; those normalize to `note`.
  */
-export const CURATED_KINDS = new Set(['decision', 'lesson', 'note']);
+export const CURATED_KINDS: ReadonlySet<string> = new Set(['decision', 'lesson', 'note']);
 
 export interface PromoteArgs {
   id: number;
