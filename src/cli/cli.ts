@@ -10,7 +10,6 @@
 import { spawn } from 'node:child_process';
 import { existsSync, rmSync } from 'node:fs';
 import { platform } from 'node:os';
-import { basename } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from '../config.js';
