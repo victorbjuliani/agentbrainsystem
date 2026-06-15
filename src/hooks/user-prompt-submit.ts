@@ -96,6 +96,20 @@ const FENCE_OPEN = '<recalled-memory>';
 const FENCE_CLOSE = '</recalled-memory>';
 
 /**
+ * Observation ids whose anchors may be healed by `verifyOnRecall` on this recall (#137/F7-03).
+ *
+ * Self-healing resolves anchors against the CURRENT repo's symbol index (`process.cwd()`),
+ * but recall surfaces cross-project GLOBAL facts whose anchors point into a DIFFERENT repo.
+ * Healing those here would resolve them against the wrong index — false-staling them (or
+ * re-anchoring to a coincidental homonym) in every project they are recalled from, and `stale`
+ * is terminal. Exclude global hits: their home repo heals them. Non-global hits are already
+ * scoped to the current project by `recallFts`, so they belong to this repo's index.
+ */
+export function healableObservationIds(hits: RecallHit[]): number[] {
+  return hits.filter((h) => !h.global).map((h) => h.observation.id);
+}
+
+/**
  * Render the recalled hits into a bounded, data-fenced context block. Pure: dedupes
  * by normalized content, drops too-thin hits, and truncates the bullet list to the
  * char budget (the fence envelope is fixed overhead and not charged against it).
@@ -154,13 +168,16 @@ async function recallFromStore(prompt: string, payload: HookPayload): Promise<Sc
     // Lazy self-healing (#28): re-verify the verified anchors of the facts about
     // to be surfaced, so a stale claim is caught at the exact moment of use.
     // Fail-open and bounded to these few hits — no graph, no cost.
+    //
+    // CRITICAL: heal ONLY anchors that belong to the current repo. The provider is
+    // built over `process.cwd()` and resolves against THIS repo's symbol index, but
+    // `includeGlobal` surfaces cross-project facts whose anchors point into a
+    // DIFFERENT repo. Healing those here would resolve them against the wrong index —
+    // false-staling them (or re-anchoring to a coincidental homonym) in every project
+    // they are recalled from. Exclude global hits; their home repo heals them.
     const provider = createGroundTruthProvider(process.cwd());
     try {
-      verifyOnRecall(
-        memory.store,
-        provider,
-        hits.map((h) => h.observation.id),
-      );
+      verifyOnRecall(memory.store, provider, healableObservationIds(hits));
     } finally {
       provider.close();
     }

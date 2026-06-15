@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { EmbeddingProvider } from '../embedding/index.js';
 import { LocalEmbeddingProvider } from '../embedding/index.js';
-import { MemoryStore } from '../store/index.js';
+import { EMBED_DEGRADED_KEY, MemoryStore, REBUILD_FAILED_KEY } from '../store/index.js';
 import { Indexer } from './indexer.js';
 
 /** Deterministic, offline provider so lifecycle branches test fast without a model. */
@@ -59,6 +59,58 @@ describe('Indexer — index at write', () => {
 
     const ftsHits = store.searchFts('cat', 5);
     expect(ftsHits.map((h) => h.id)).toContain(obsId);
+    store.close();
+  });
+});
+
+describe('Indexer — degraded-flag lifecycle (#136)', () => {
+  it('a successful write clears EMBED_DEGRADED_KEY (F2-05)', async () => {
+    const store = newStore(8);
+    const indexer = new Indexer(store, new FakeProvider());
+    const sessionId = store.createSession({ externalId: 's1' });
+    // A prior first-run model-load timeout left the flag set; nothing ever cleared it.
+    store.setMeta(EMBED_DEGRADED_KEY, '2026-05-26T00:00:00.000Z');
+
+    await indexer.write({ sessionId, kind: 'note', content: 'model works now' });
+
+    expect(store.getMeta(EMBED_DEGRADED_KEY)).toBeNull();
+    store.close();
+  });
+
+  it('a successful rebuild clears REBUILD_FAILED_KEY on the CLI path (F7-07)', async () => {
+    const store = newStore(8);
+    const sessionId = store.createSession({ externalId: 's1' });
+    // Seed an observation under one signature, then force a signature-change rebuild.
+    await new Indexer(store, new FakeProvider()).write({ sessionId, kind: 'note', content: 'x' });
+    store.setMeta(REBUILD_FAILED_KEY, '2026-01-01T00:00:00.000Z');
+
+    // A provider with a DIFFERENT id → signature change → ensureIndex rebuilds.
+    class OtherProvider implements EmbeddingProvider {
+      readonly id = 'other';
+      readonly model = 'fake-v1';
+      readonly dimensions = 8;
+      async embed(texts: string[]): Promise<number[][]> {
+        return new FakeProvider().embed(texts);
+      }
+    }
+    const result = await new Indexer(store, new OtherProvider()).ensureIndex();
+
+    expect(result.rebuilt).toBe(true);
+    expect(store.getMeta(REBUILD_FAILED_KEY)).toBeNull(); // CLI path now clears it, not only MCP
+    store.close();
+  });
+
+  it('ensureIndex clears REBUILD_FAILED_KEY even when the index is already fresh', async () => {
+    const store = newStore(8);
+    const sessionId = store.createSession({ externalId: 's1' });
+    const indexer = new Indexer(store, new FakeProvider());
+    await indexer.write({ sessionId, kind: 'note', content: 'x' }); // fresh, signature stamped
+    store.setMeta(REBUILD_FAILED_KEY, '2026-01-01T00:00:00.000Z');
+
+    const result = await indexer.ensureIndex();
+
+    expect(result.rebuilt).toBe(false);
+    expect(store.getMeta(REBUILD_FAILED_KEY)).toBeNull();
     store.close();
   });
 });

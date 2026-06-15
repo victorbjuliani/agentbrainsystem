@@ -11,7 +11,7 @@ import type { Memory } from '../memory.js';
 import { Recall } from '../recall/index.js';
 import { MemoryStore } from '../store/index.js';
 import { applyApprovedCandidate, generateOptimizations } from './run.js';
-import { claudeMdPath } from './targets.js';
+import { claudeMdPath, projectSlug } from './targets.js';
 
 /** Deterministic offline embedding provider (mirrors the integration test fake). */
 class FakeEmbedding implements EmbeddingProvider {
@@ -55,7 +55,11 @@ function newMemory(): Memory {
 }
 
 async function seedConsolidated(memory: Memory): Promise<number> {
-  const sessionId = memory.store.createSession({ externalId: 's1' });
+  // Optimize is project-scoped (#135): seed under the optimized project's label.
+  const sessionId = memory.store.createSession({
+    externalId: 's1',
+    project: projectSlug(projectRoot),
+  });
   await memory.indexer.write({
     sessionId,
     kind: 'decision',

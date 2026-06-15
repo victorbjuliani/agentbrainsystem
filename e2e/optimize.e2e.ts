@@ -95,8 +95,13 @@ describe('F — consolidate via a fake OpenAI-compatible endpoint', () => {
 });
 
 describe('H — optimize (consumes consolidated memory)', () => {
-  /** Ingest + consolidate so the store holds a decision and a lesson to optimize. */
-  async function seedConsolidated(): Promise<void> {
+  /**
+   * Ingest + consolidate so the store holds a decision and a lesson to optimize.
+   * The transcript's cwd IS `projectRoot`, so the consolidated decision/lesson land under
+   * `projectSlug(projectRoot)` — optimize is project-scoped (#135), so it only consumes the
+   * memory of the very project it writes into.
+   */
+  async function seedConsolidated(projectRoot: string): Promise<void> {
     fake = await fakeOpenAi(
       lessonsJson([
         {
@@ -109,7 +114,24 @@ describe('H — optimize (consumes consolidated memory)', () => {
         },
       ]),
     );
-    await ingestFixtures(h.env);
+    const projectsDir = join(h.home, 'transcripts');
+    const sessDir = join(projectsDir, 'demo');
+    mkdirSync(sessDir, { recursive: true });
+    const turn = (role: 'user' | 'assistant', content: string): string =>
+      JSON.stringify({
+        type: role,
+        sessionId: 'sessOpt',
+        cwd: projectRoot,
+        message: { role, content },
+      });
+    writeFileSync(
+      join(sessDir, 'sessOpt.jsonl'),
+      `${turn('user', 'How should we bind the UI server and handle embeddings?')}\n${turn(
+        'assistant',
+        'Bind the UI to 127.0.0.1 only, never 0.0.0.0. Local embeddings stay offline after the first model cache.',
+      )}\n`,
+    );
+    await ingestFixtures(h.env, projectsDir);
     const run = await abs(['consolidate'], {
       env: { ...h.env, ABS_LLM_BASE_URL: fake.baseUrl, ABS_LLM_MODEL: 'stub' },
     });
@@ -117,8 +139,8 @@ describe('H — optimize (consumes consolidated memory)', () => {
   }
 
   it('preview writes nothing; --apply writes CLAUDE.md with a backup', async () => {
-    await seedConsolidated();
     const projectRoot = join(h.home, 'proj');
+    await seedConsolidated(projectRoot);
     mkdirSync(projectRoot, { recursive: true });
     const claudeMd = join(projectRoot, 'CLAUDE.md');
     const seed = '# CLAUDE.md\n\nseed content.\n';
@@ -143,8 +165,8 @@ describe('H — optimize (consumes consolidated memory)', () => {
   });
 
   it('refuses to overwrite a protected (type: user) auto-memory entry', async () => {
-    await seedConsolidated();
     const projectRoot = join(h.home, 'proj');
+    await seedConsolidated(projectRoot);
     mkdirSync(projectRoot, { recursive: true });
     writeFileSync(join(projectRoot, 'CLAUDE.md'), '# CLAUDE.md\n');
 

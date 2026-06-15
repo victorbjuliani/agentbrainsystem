@@ -58,6 +58,34 @@ describe('AbsIndexProvider', () => {
     expect(r?.filePath).toBe(join(repo, 'note.rs'));
     p.close();
   });
+  it('does NOT bind a same-file lookup to a same-named symbol in ANOTHER file (#134/F4-02)', async () => {
+    // `helper` lives ONLY in b.ts. A same-file lookup against a.ts (which has no `helper`)
+    // must return null — never silently resolve to b.ts. Otherwise heal would seal the
+    // anchor `verified` carrying b.ts's line while it still points at a.ts, and the
+    // explicit unique-move path would become dead code.
+    writeFileSync(join(repo, 'b.ts'), 'export function helper(){}');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-q', '-m', 'add helper');
+    await refreshIndex(repo);
+    const p = new AbsIndexProvider(repo);
+    expect(p.resolveSymbol('helper', { filePath: join(repo, 'a.ts') })).toBeNull();
+    // Sanity: the same name DOES resolve cross-file when no filePath constrains it (move path).
+    expect(p.resolveSymbol('helper')?.filePath).toBe(join(repo, 'b.ts'));
+    p.close();
+  });
+
+  it('is UNAVAILABLE over a never-built index, so heal/sweep cannot false-stale (#137/F7-02)', () => {
+    // A repo whose symbol index was never refreshed has no `indexed_commit`. Resolving
+    // against it would miss every symbol and mass-stale correct anchors; report unavailable.
+    const fresh = mkdtempSync(join(tmpdir(), 'abs-piU-'));
+    git(fresh, 'init', '-q');
+    writeFileSync(join(fresh, 'x.ts'), 'export function only(){}');
+    const p = new AbsIndexProvider(fresh);
+    expect(p.isAvailable()).toBe(false);
+    p.close();
+    rmSync(fresh, { recursive: true, force: true });
+  });
+
   it('resolveFile: existing resolves, missing is null', () => {
     const p = new AbsIndexProvider(repo);
     expect(p.resolveFile(join(repo, 'a.ts'))).not.toBeNull();

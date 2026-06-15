@@ -50,6 +50,7 @@ import {
 } from '../optimize/index.js';
 import { projectSlug } from '../optimize/targets.js';
 import { type RecallHit, resolveRecallProject } from '../recall/index.js';
+import { EMBED_DEGRADED_KEY, REBUILD_FAILED_KEY } from '../store/index.js';
 import { startUiServer } from '../ui/index.js';
 import { VERSION } from '../version.js';
 import { MCP_SERVER_NAME, type RunFn, type RunResult, unregisterMcpServer } from './setup.js';
@@ -320,7 +321,13 @@ export async function cmdDoctor(deps: DoctorDeps = {}): Promise<void> {
     const counts = memory.store.counts();
     const status = memory.indexer.status();
     const drift = counts.vectors !== counts.observations || counts.fts !== counts.observations;
-    const healthy = integrity.ok && !status.stale && !drift;
+    // Durable degraded signals that drive the SessionStart "DEGRADED" banner. doctor opens
+    // with ensure:false (no silent rebuild), so it reports the on-disk truth — and must SURFACE
+    // these or it would say healthy:true while the banner says broken (the two contradicting).
+    const rebuildFailedAt = memory.store.getMeta(REBUILD_FAILED_KEY);
+    const embedDegradedAt = memory.store.getMeta(EMBED_DEGRADED_KEY);
+    const degraded = rebuildFailedAt !== null || embedDegradedAt !== null;
+    const healthy = integrity.ok && !status.stale && !drift && !degraded;
     // Best-effort, offline-safe (null on any failure). Explicit command only.
     const latest = await fetchLatest();
     const updateAvailable = latest !== null && isOutdated(VERSION, latest);
@@ -337,6 +344,10 @@ export async function cmdDoctor(deps: DoctorDeps = {}): Promise<void> {
             signature: status.signature,
             expectedSignature: status.expectedSignature,
           },
+          degraded: {
+            rebuildFailedAt,
+            embedModelTimeoutAt: embedDegradedAt,
+          },
           walSizeBytes: memory.store.walSizeBytes(),
           backupPath: memory.store.backupPath(),
           version: { current: VERSION, latest, updateAvailable },
@@ -347,11 +358,17 @@ export async function cmdDoctor(deps: DoctorDeps = {}): Promise<void> {
     );
     if (!healthy) {
       err(
-        integrity.ok
-          ? 'abs doctor: index is STALE/drifted — recall is degraded. It rebuilds on the next ' +
-              'MCP launch (`abs start`); run `abs status` to trigger a rebuild now.'
-          : 'abs doctor: memory.db FAILED its integrity check — restore from the `.bak` next to ' +
-              'the db, or your last `abs export`.',
+        !integrity.ok
+          ? 'abs doctor: memory.db FAILED its integrity check — restore from the `.bak` next to ' +
+              'the db, or your last `abs export`.'
+          : degraded && !status.stale && !drift
+            ? 'abs doctor: a degraded flag is set' +
+              (rebuildFailedAt ? ` (rebuild failed at ${rebuildFailedAt})` : '') +
+              (embedDegradedAt ? ` (embedding model load timed out at ${embedDegradedAt})` : '') +
+              '. The index itself looks fresh — run `abs status` to clear it after a successful ' +
+              'rebuild/embed; if it persists, recall may be degraded.'
+            : 'abs doctor: index is STALE/drifted — recall is degraded. It rebuilds on the next ' +
+              'MCP launch (`abs start`); run `abs status` to trigger a rebuild now.',
       );
       process.exitCode = 1;
     }
