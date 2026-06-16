@@ -45,6 +45,38 @@ struct AppState {
     last_max_obs_id: Mutex<i64>,
 }
 
+/// Terminate a spawned sidecar AND any process it spawned, then reap it. On Windows the
+/// global `abs` is an `abs.cmd` shim, so the stored `Child` is the cmd WRAPPER, not the
+/// Node server — `child.kill()` would terminate only the wrapper and leave the Node
+/// process (and its bound UI port) alive after quit (Codex review on PR #171). `taskkill
+/// /T` kills the whole process tree. On Unix the `Child` IS the Node process (shebang
+/// script), so a direct kill suffices. Best-effort throughout.
+fn kill_child_tree(child: &mut Child) {
+    #[cfg(target_os = "windows")]
+    {
+        let pid = child.id().to_string();
+        let _ = Command::new("taskkill")
+            .args(["/PID", pid.as_str(), "/T", "/F"])
+            .status();
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = child.kill();
+    }
+    let _ = child.wait(); // reap so we don't leave a zombie / wrapper handle
+}
+
+/// Kill the held `abs ui` sidecar (if any) and reap it. `std::process::Child` does NOT
+/// kill on drop, so without this the Node sidecar orphans on app exit and leaks its port
+/// across quit/relaunch cycles (F5-01). Best-effort: a missing/dead child is a no-op.
+fn kill_sidecar(state: &tauri::State<'_, AppState>) {
+    if let Ok(mut slot) = state.sidecar.lock() {
+        if let Some(mut child) = slot.take() {
+            kill_child_tree(&mut child);
+        }
+    }
+}
+
 /// Resolve the store path with the SAME precedence as `loadConfig` (config.ts):
 /// `ABS_DB_PATH` → `$ABS_HOME/memory.db` → `~/.agentbrainsystem/memory.db`.
 fn resolve_db_path() -> PathBuf {
@@ -291,14 +323,14 @@ fn open_ocean(app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Resul
         })?;
 
     let mut stderr = child.stderr.take();
+    let stdout = child.stdout.take().ok_or_else(|| match lang {
+        Lang::En => "the sidecar produced no stdout".to_string(),
+        Lang::Pt => "o sidecar não produziu stdout".to_string(),
+    })?;
+    let mut reader = BufReader::new(stdout);
 
     // The first stdout line is the URL (cli.ts cmdUi prints it before anything else).
     let url = {
-        let stdout = child.stdout.take().ok_or_else(|| match lang {
-            Lang::En => "the sidecar produced no stdout".to_string(),
-            Lang::Pt => "o sidecar não produziu stdout".to_string(),
-        })?;
-        let mut reader = BufReader::new(stdout);
         let mut line = String::new();
         reader.read_line(&mut line).map_err(|e| match lang {
             Lang::En => format!("couldn't read the sidecar URL: {e}"),
@@ -309,7 +341,7 @@ fn open_ocean(app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Resul
     if url.is_empty() {
         // The sidecar died before emitting a URL. Surface its stderr (e.g. a native
         // better-sqlite3 ABI mismatch) so the failure is diagnosable, not just "no URL".
-        let _ = child.kill();
+        kill_child_tree(&mut child); // tree-kill so a Windows cmd-shim's Node child dies too
         let detail = stderr
             .as_mut()
             .and_then(|s| {
@@ -331,10 +363,25 @@ fn open_ocean(app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Resul
         });
     }
 
+    // F5-04: the sidecar keeps logging to stdout/stderr AFTER this first URL line. If the
+    // pipe read-ends close when this fn returns (the BufReader + the `stderr` handle being
+    // dropped), the sidecar's next write hits EPIPE — which can kill it (server gone →
+    // blank window) and loses its logs. Forward BOTH pipes to the tray's own stdout/stderr
+    // on background threads: writes never break, the logs are retained, and each thread
+    // ends when the child is killed on quit (the pipe hits EOF).
+    std::thread::spawn(move || {
+        let _ = std::io::copy(&mut reader, &mut std::io::stdout());
+    });
+    if let Some(mut err) = stderr.take() {
+        std::thread::spawn(move || {
+            let _ = std::io::copy(&mut err, &mut std::io::stderr());
+        });
+    }
+
     // Keep the sidecar alive for the window's lifetime (replacing any prior one).
     if let Ok(mut slot) = state.sidecar.lock() {
         if let Some(mut old) = slot.take() {
-            let _ = old.kill();
+            kill_child_tree(&mut old); // tree-kill the replaced sidecar (Windows shim child too)
         }
         *slot = Some(child);
     }
@@ -394,7 +441,7 @@ fn tooltip_text(s: &Stats) -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             get_stats,
@@ -517,6 +564,15 @@ pub fn run() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running the agentbrainsystem companion");
+        .build(tauri::generate_context!())
+        .expect("error while building the agentbrainsystem companion");
+
+    // F5-01: kill the sidecar on ANY exit path (Quit menu's `app.exit(0)`, Cmd+Q, the
+    // last window closing) — not just the tray "quit" item — so the `abs ui` Node process
+    // can never orphan and leak its port across relaunches.
+    app.run(|app_handle, event| {
+        if let tauri::RunEvent::Exit = event {
+            kill_sidecar(&app_handle.state::<AppState>());
+        }
+    });
 }

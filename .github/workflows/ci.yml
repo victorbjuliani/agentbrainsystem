@@ -99,3 +99,45 @@ jobs:
       - run: npm run build
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e:pw
+
+  # Compile-check the Rust tray companion (src-tauri/). It cannot be built locally
+  # (crates.io is unreachable behind the dev proxy), and release.yml only builds it on
+  # a `v*` tag — so without this PR job a tray change (e.g. #161 sidecar lifecycle) has
+  # NO compile verification before release. `cargo check` is the cheap pre-release gate.
+  tray-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden the runner (audit mode)
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Install Linux system deps (webkit2gtk + tray)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            build-essential \
+            file \
+            libssl-dev \
+            libgtk-3-dev
+      # rustup ships on every GitHub-hosted runner — resilient + equivalent to the
+      # dtolnay action (mirrors release.yml's rationale).
+      - name: Set up Rust toolchain
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          rustc --version
+      - name: Cache cargo
+        uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: src-tauri
+      - name: cargo check (tray)
+        working-directory: src-tauri
+        run: cargo check
