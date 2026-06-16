@@ -1,0 +1,48 @@
+# zizmor — static analysis of the GitHub Actions workflows themselves.
+# Catches unpinned actions, template/script injection, dangerous triggers
+# (pull_request_target), over-broad token permissions, and known-bad action
+# versions in everything under .github/workflows/. Findings go to the Security
+# tab (SARIF). Runs in AUDIT mode: `continue-on-error` keeps the build green
+# while it surfaces the backlog — remove that line to make it blocking once the
+# existing workflows are clean.
+name: zizmor
+
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/**"]
+  pull_request:
+    paths: [".github/workflows/**"]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  zizmor:
+    name: zizmor analysis
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read # read other workflow files for cross-references
+      security-events: write # upload SARIF to the Security tab
+    steps:
+      - name: Harden the runner (audit mode)
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Run zizmor
+        uses: zizmorcore/zizmor-action@5f14fd08f7cf1cb1609c1e344975f152c7ee938d # v0.5.6
+        # Audit mode: report findings to the Security tab without failing CI.
+        # The existing ci.yml / release.yml use unpinned tags, which zizmor flags
+        # by design — that backlog is the point. Drop this once they're clean.
+        continue-on-error: true
+        with:
+          # Scan the whole repo's workflows; uploads SARIF (advanced-security
+          # defaults to true and is free on public repos).
+          inputs: .
