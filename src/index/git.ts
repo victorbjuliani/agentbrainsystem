@@ -29,6 +29,17 @@ export function headCommit(root: string): string | undefined {
 }
 
 /**
+ * True when `sha` resolves to a commit object in `root`. Lets the indexer tell a
+ * PERMANENTLY-unavailable diff base (a stored `indexed_commit` whose commit was pruned,
+ * rebased away, or lost to a re-clone at the same path) apart from a transient git error:
+ * the former must trigger a cold rebuild, not an endless retry of an impossible diff.
+ */
+export function commitExists(root: string, sha: string): boolean {
+  // `cat-file -e <sha>^{commit}` exits 0 iff the object exists and peels to a commit.
+  return git(root, ['cat-file', '-e', `${sha}^{commit}`]) !== undefined;
+}
+
+/**
  * Tracked files (repo-relative). `undefined` when GIT FAILED (timeout/error); a real
  * empty result is `[]`. The distinction matters: the indexer must not stamp the index
  * fresh off a failed listing (F7-05) — `undefined` says "don't trust this", `[]` says

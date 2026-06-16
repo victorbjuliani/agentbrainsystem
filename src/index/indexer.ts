@@ -16,7 +16,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { extname, isAbsolute, join } from 'node:path';
-import { diffNames, dirtyFiles, headCommit, lsFiles, repoRoot } from './git.js';
+import { commitExists, diffNames, dirtyFiles, headCommit, lsFiles, repoRoot } from './git.js';
 import { initParser, parseDefinitions } from './parser.js';
 import { type FileOp, openSymbolStore, type SymbolStore } from './symbol-store.js';
 
@@ -262,7 +262,15 @@ export async function refreshIndex(
     };
 
     const head = headCommit(root); // undefined for an empty repo
-    const indexed = store.getMeta('indexed_commit');
+    let indexed = store.getMeta('indexed_commit');
+    // F7-05 follow-up (Codex review on PR #170): a stored base commit that no longer
+    // exists — repo re-cloned at the same path, or the commit pruned/rebased away —
+    // makes `git diff <indexed> HEAD` fail PERMANENTLY (status 128, bad object), not
+    // transiently. Treat it as a cold start (full re-list) so the index can recover,
+    // instead of retrying an impossible diff forever and never becoming ready.
+    if (indexed && head && indexed !== head && !commitExists(root, indexed)) {
+      indexed = undefined;
+    }
     let commitComplete = true;
     if (head && head !== indexed) {
       const files = indexed ? diffNames(root, indexed, head) : lsFiles(root);

@@ -207,6 +207,29 @@ describe('refreshIndex', () => {
     expect(store.queryByName('scratch')).toHaveLength(0);
     store.close();
   });
+
+  it('cold-rebuilds when the stored indexed_commit no longer exists (F7-05 follow-up)', async () => {
+    // Codex review on PR #170: a pruned/rebased/re-cloned base makes `git diff <old> HEAD`
+    // fail permanently (status 128). The refresh must recover via a cold re-list, not stay
+    // not-ready forever retrying the impossible diff.
+    writeFileSync(join(repo, 'a.ts'), 'export function foo(){}');
+    commit('c1');
+    await refreshIndex(repo); // stamps the real HEAD
+
+    let store = openSymbolStore(repo);
+    store.setMeta('indexed_commit', '0000000000000000000000000000000000000000'); // bogus base
+    store.close();
+    writeFileSync(join(repo, 'b.ts'), 'export function bar(){}');
+    commit('c2');
+
+    const r = await refreshIndex(repo);
+    expect(r.ready).toBe(true); // recovered, not stuck not-ready
+    store = openSymbolStore(repo);
+    expect(store.getMeta('indexed_commit')).toBeTruthy();
+    expect(store.queryByName('foo')).toHaveLength(1); // full re-list indexed everything
+    expect(store.queryByName('bar')).toHaveLength(1);
+    store.close();
+  });
 });
 
 describe('acquireIndexLock — atomic ownership & steal (F1-03)', () => {
