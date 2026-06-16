@@ -391,7 +391,6 @@ describe('export / import round-trip', () => {
       target.setMeta('gemini:lastid:/some/gemini.json', 'msg-42');
       target.setMeta('opencode:cursor:ses_abc123', 'prt_999'); // PR #165: must also clear
       target.setMeta('index:rebuild_failed_at', '2026-01-01T00:00:00Z');
-      target.setMeta('ingest:deferred_at', '2026-01-01T00:00:00Z');
       target.setMeta('embed:model_load_timeout_at', '2026-01-01T00:00:00Z');
       // Explicit user project binding — must SURVIVE the reset.
       target.setMeta('session-project:codex:keepme', '{"project":"chosen"}');
@@ -405,7 +404,6 @@ describe('export / import round-trip', () => {
       expect(target.getMeta('gemini:lastid:/some/gemini.json')).toBeNull();
       expect(target.getMeta('opencode:cursor:ses_abc123')).toBeNull(); // PR #165
       expect(target.getMeta('index:rebuild_failed_at')).toBeNull();
-      expect(target.getMeta('ingest:deferred_at')).toBeNull();
       expect(target.getMeta('embed:model_load_timeout_at')).toBeNull();
       // Project binding preserved.
       expect(target.getMeta('session-project:codex:keepme')).toBe('{"project":"chosen"}');
