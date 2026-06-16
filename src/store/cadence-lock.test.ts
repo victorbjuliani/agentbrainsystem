@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync, statSync, utimesSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -27,6 +27,18 @@ describe('cadence-lock — dedicated cadence-vs-cadence advisory lock (#138 C3)'
     const lock = acquireCadenceLock(dbPath);
     expect(lock.acquired).toBe(true);
     expect(existsSync(cadenceLockPath(dbPath))).toBe(true);
+    lock.release();
+  });
+
+  it('uses a filesystem-safe token — no colon in the steal scratch name (Windows, PR #168)', () => {
+    const lock = acquireCadenceLock(dbPath);
+    expect(lock.acquired).toBe(true);
+    const { token } = JSON.parse(readFileSync(cadenceLockPath(dbPath), 'utf8')) as {
+      token: string;
+    };
+    // The token is embedded in `.dead-${token}`; `:` is invalid on Windows. pid-uuid only.
+    expect(token).not.toContain(':');
+    expect(token).toMatch(/^\d+-[0-9a-f-]+$/i);
     lock.release();
   });
 

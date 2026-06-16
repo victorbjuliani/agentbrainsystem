@@ -82,7 +82,11 @@ function ownsIndexLock(lockPath: string, token: string): boolean {
  */
 export function acquireIndexLock(dbPath: string): IndexLock | null {
   const lockPath = `${dbPath}.refresh.lock`;
-  const token = `${process.pid}:${randomUUID()}`;
+  // Filesystem-safe separator (Codex review on PR #168): the token is embedded in the
+  // `.dead-${token}` steal-scratch FILENAME, and `:` is invalid on Windows (treated as an
+  // alternate data stream), so a colon would make the steal `rename` fail and leave a
+  // crashed lock in place. pid + randomUUID() (digits/hex/hyphens) are all path-safe.
+  const token = `${process.pid}-${randomUUID()}`;
   const payload = JSON.stringify({ pid: process.pid, token, startedAt: new Date().toISOString() });
   const make = (): IndexLock => {
     let lastBeat = Date.now();

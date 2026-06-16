@@ -1,5 +1,13 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -178,6 +186,16 @@ describe('acquireIndexLock — atomic ownership & steal (F1-03)', () => {
     expect(existsSync(lockPath())).toBe(true);
     lock?.release();
     expect(existsSync(lockPath())).toBe(false);
+  });
+
+  it('uses a filesystem-safe token — no colon in the steal scratch name (Windows, PR #168)', () => {
+    const lock = acquireIndexLock(dbPath);
+    expect(lock).not.toBeNull();
+    const { token } = JSON.parse(readFileSync(lockPath(), 'utf8')) as { token: string };
+    // The token is embedded in `.dead-${token}`; `:` is invalid on Windows. pid-uuid only.
+    expect(token).not.toContain(':');
+    expect(token).toMatch(/^\d+-[0-9a-f-]+$/i);
+    lock?.release();
   });
 
   it('returns null when a fresh foreign lock is held (no steal of a live holder)', () => {

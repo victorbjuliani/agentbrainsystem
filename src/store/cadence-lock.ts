@@ -83,7 +83,10 @@ function isStale(path: string, ttlMs: number): boolean {
  */
 export function acquireCadenceLock(dbPath: string): CadenceLock {
   const path = cadenceLockPath(dbPath);
-  const token = `${process.pid}:${randomUUID()}`;
+  // Filesystem-safe separator (Codex review on PR #168 — same pattern as the index lock):
+  // the token goes into the `.dead-${token}` steal-scratch FILENAME, and `:` is invalid on
+  // Windows, so a colon would make the steal `rename` fail. pid + randomUUID() are path-safe.
+  const token = `${process.pid}-${randomUUID()}`;
   const payload = JSON.stringify({ pid: process.pid, token, startedAt: new Date().toISOString() });
   let acquired = false;
   try {
