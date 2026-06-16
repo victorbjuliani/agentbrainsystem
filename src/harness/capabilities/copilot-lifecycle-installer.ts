@@ -95,13 +95,34 @@ function readConfig(path: string): CopilotConfig {
     return {}; // missing or malformed → start fresh (the user's bytes are preserved via backup)
   }
 }
-function backupConfig(path: string): void {
+/**
+ * Is the file PRESENT-but-unparseable? (#159 F2-02) A truly MISSING file (ENOENT) is a
+ * silent fresh start — fine. But a present file whose JSON we cannot parse means the
+ * caller is about to replace the user's config, so it must warn (not silently clobber).
+ */
+function isMalformedPresent(path: string): boolean {
+  let raw: string;
+  try {
+    raw = readFileSync(path, 'utf8');
+  } catch {
+    return false; // ENOENT / unreadable → not "present-but-malformed"
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    return typeof parsed !== 'object' || parsed === null; // valid JSON but not an object
+  } catch {
+    return true; // present + unparseable
+  }
+}
+function backupConfig(path: string): string | undefined {
   try {
     readFileSync(path);
   } catch {
-    return;
+    return undefined;
   }
-  copyFileSync(path, `${path}.${new Date().toISOString().replace(/[:.]/g, '-')}.bak`);
+  const backupPath = `${path}.${new Date().toISOString().replace(/[:.]/g, '-')}.bak`;
+  copyFileSync(path, backupPath);
+  return backupPath;
 }
 function atomicWriteFile(path: string, content: string): void {
   const dir = dirname(path);
@@ -142,6 +163,9 @@ export function copilotLifecycleInstaller(
           return undefined;
         }
       })();
+      // #159 (F2-02): a present-but-unparseable file is about to be replaced. Detect it
+      // now so we can warn (naming the file + backup) AFTER the backup is taken below.
+      const malformed = isMalformedPresent(hooksPath);
       const config = readConfig(hooksPath);
       const hooks: HookMap = { ...(config.hooks ?? {}) };
       for (const spec of COPILOT_HOOKS) {
@@ -158,8 +182,18 @@ export function copilotLifecycleInstaller(
       const serialized = `${JSON.stringify(next, null, 2)}\n`;
       const report: InstallReport = { wired: MOMENTS };
       if (serialized === before) return report; // true no-op: no backup, no write
-      backupConfig(hooksPath);
+      const backupPath = backupConfig(hooksPath);
       atomicWriteFile(hooksPath, serialized);
+      // Kill the silence (#159 F2-02): a malformed config WAS replaced — tell the user
+      // where the original bytes went. Install still succeeds (we do NOT abort).
+      if (malformed) {
+        process.stderr.write(
+          `[abs] WARNING: ${hooksPath} was not valid JSON and has been replaced with a ` +
+            `fresh agentbrainsystem config.${
+              backupPath ? ` Your original bytes are preserved at ${backupPath}.` : ''
+            }\n`,
+        );
+      }
       return report;
     },
     uninstall: async () => {

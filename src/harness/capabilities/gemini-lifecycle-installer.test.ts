@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GEMINI_HOOKS, geminiLifecycleInstaller } from './gemini-lifecycle-installer.js';
 
 let tmp: string;
@@ -82,6 +82,41 @@ describe('geminiLifecycleInstaller (#68)', () => {
     await expect(
       geminiLifecycleInstaller({ settingsPath: link, baseCommand: 'abs hook' }).install(),
     ).rejects.toThrow(/symlink/);
+  });
+
+  // #159 (F2-02): a PRESENT-but-unparseable settings.json was silently clobbered. ENOENT
+  // (truly missing) is still a silent fresh start, but a malformed-PRESENT file must warn
+  // loudly — naming the file AND the backup path — so the user knows their config was
+  // replaced and where the original bytes went.
+  it('warns to stderr (naming file + backup) when an EXISTING settings.json is malformed (#159 F2-02)', async () => {
+    const p = join(tmp, 'settings.json');
+    writeFileSync(p, '{ this is not json');
+    const stderr = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation(() => true) as unknown as ReturnType<typeof vi.fn>;
+    await geminiLifecycleInstaller({ settingsPath: p, baseCommand: 'abs hook' }).install();
+    const written = (stderr.mock.calls as unknown[][]).map((c) => String(c[0])).join('');
+    stderr.mockRestore();
+    const { readdirSync } = await import('node:fs');
+    const bak = readdirSync(tmp).find((f) => f.endsWith('.bak'));
+    expect(bak).toBeDefined();
+    expect(written).toContain(p); // names the malformed file
+    expect(written).toContain(bak as string); // names where the original bytes went
+    // install still succeeds (does NOT abort) — our hooks are written
+    expect(JSON.parse(readFileSync(p, 'utf8')).hooks.SessionEnd[0].hooks[0].command).toBe(
+      'abs hook session-end',
+    );
+  });
+
+  it('does NOT warn on a truly MISSING settings.json (ENOENT stays a silent fresh start, #159 F2-02)', async () => {
+    const p = join(tmp, 'settings.json'); // never created
+    const stderr = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation(() => true) as unknown as ReturnType<typeof vi.fn>;
+    await geminiLifecycleInstaller({ settingsPath: p, baseCommand: 'abs hook' }).install();
+    const written = (stderr.mock.calls as unknown[][]).map((c) => String(c[0])).join('');
+    stderr.mockRestore();
+    expect(written).toBe(''); // no warning for a genuinely-absent file
   });
 
   it('uninstall removes only our entries and leaves the file otherwise intact', async () => {

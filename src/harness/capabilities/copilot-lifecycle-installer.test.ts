@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { COPILOT_HOOKS, copilotLifecycleInstaller } from './copilot-lifecycle-installer.js';
 
 let tmp: string;
@@ -97,6 +97,39 @@ describe('copilotLifecycleInstaller (#69)', () => {
     const { readdirSync } = await import('node:fs');
     expect(readdirSync(tmp).filter((f) => f.endsWith('.bak')).length).toBe(1);
     expect(JSON.parse(readFileSync(p, 'utf8')).version).toBe(1);
+  });
+
+  // #159 (F2-02): a PRESENT-but-unparseable config was silently clobbered. ENOENT
+  // (truly missing) is still a silent fresh start, but a malformed-PRESENT file must
+  // warn loudly — naming the file AND the backup path — so the user knows their config
+  // was replaced and where the original bytes went.
+  it('warns to stderr (naming file + backup) when an EXISTING config is malformed (#159 F2-02)', async () => {
+    const p = join(tmp, 'hooks.json');
+    writeFileSync(p, '{ this is not json');
+    const stderr = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation(() => true) as unknown as ReturnType<typeof vi.fn>;
+    await copilotLifecycleInstaller({ hooksPath: p, baseCommand: 'abs hook' }).install();
+    const written = (stderr.mock.calls as unknown[][]).map((c) => String(c[0])).join('');
+    stderr.mockRestore();
+    const { readdirSync } = await import('node:fs');
+    const bak = readdirSync(tmp).find((f) => f.endsWith('.bak'));
+    expect(bak).toBeDefined();
+    expect(written).toContain(p); // names the malformed file
+    expect(written).toContain(bak as string); // names where the original bytes went
+    // install still succeeds (does NOT abort)
+    expect(JSON.parse(readFileSync(p, 'utf8')).version).toBe(1);
+  });
+
+  it('does NOT warn on a truly MISSING config (ENOENT stays a silent fresh start, #159 F2-02)', async () => {
+    const p = join(tmp, 'hooks.json'); // never created
+    const stderr = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation(() => true) as unknown as ReturnType<typeof vi.fn>;
+    await copilotLifecycleInstaller({ hooksPath: p, baseCommand: 'abs hook' }).install();
+    const written = (stderr.mock.calls as unknown[][]).map((c) => String(c[0])).join('');
+    stderr.mockRestore();
+    expect(written).toBe(''); // no warning for a genuinely-absent file
   });
 
   it('uninstall removes ONLY our bash entries, drops emptied keys, keeps foreign entries + version', async () => {

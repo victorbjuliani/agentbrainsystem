@@ -108,15 +108,26 @@ export function sqliteTranscriptSource(
       let db: Database.Database;
       try {
         db = new Database(dbPath, { readonly: true, fileMustExist: true });
-      } catch {
-        // Vanished / unreadable DB → fail-open, ingest nothing.
+      } catch (e) {
+        // Vanished / unreadable DB → fail-open, ingest nothing. A genuinely-MISSING DB
+        // (ENOENT, fileMustExist) is expected and stays silent; anything else (corrupt
+        // header, permissions) emits ONE trace so the failure is not invisible (#159 F2-06).
+        if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
+          process.stderr.write(`[abs] opencode-capture: unable to read ${dbPath} — skipping\n`);
+        }
         return result;
       }
       try {
-        db.pragma('query_only = 1');
-        const rows = db
-          .prepare(
-            `SELECT p.id AS part_id, p.time_created AS p_time, p.data AS p_data,
+        // Reading the parts is where a CORRUPT/unreadable db (valid path, bad bytes)
+        // actually throws — `new Database` opens lazily, so the SqliteError surfaces on
+        // the first pragma/prepare. Fail-open with ONE trace (mirrors the open-failure
+        // path above); nothing is written and the watermark never advances (#159 F2-06).
+        let rows: PartRow[];
+        try {
+          db.pragma('query_only = 1');
+          rows = db
+            .prepare(
+              `SELECT p.id AS part_id, p.time_created AS p_time, p.data AS p_data,
                     m.id AS msg_id, m.time_created AS m_time, m.data AS m_data,
                     s.directory AS directory
              FROM part p
@@ -124,8 +135,12 @@ export function sqliteTranscriptSource(
              JOIN session s ON s.id = p.session_id
              WHERE p.session_id = ?
              ORDER BY p.time_created ASC, p.id ASC`,
-          )
-          .all(sessionId) as PartRow[];
+            )
+            .all(sessionId) as PartRow[];
+        } catch {
+          process.stderr.write(`[abs] opencode-capture: unable to read ${dbPath} — skipping\n`);
+          return result;
+        }
 
         if (rows.length === 0) return result;
 

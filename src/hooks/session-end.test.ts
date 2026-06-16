@@ -6,7 +6,7 @@ import { loadConfig } from '../config.js';
 import { EmbeddingLoadTimeoutError } from '../embedding/index.js';
 import type { GroundTruthProvider, ResolvedSymbol } from '../ground-truth/index.js';
 import { type Memory, openMemory } from '../memory.js';
-import { acquireRebuildLock, EMBED_DEGRADED_KEY, INGEST_DEFERRED_KEY } from '../store/index.js';
+import { acquireRebuildLock, EMBED_DEGRADED_KEY } from '../store/index.js';
 import { handleSessionEnd } from './session-end.js';
 
 describe('handleSessionEnd — auto-ingest, $0, no injection', () => {
@@ -108,7 +108,7 @@ describe('SessionEnd defers ingest while a rebuild holds the write lock (#103)',
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('records a deferral marker and skips ingest instead of racing into busy_timeout', async () => {
+  it('logs a defer line to stderr and skips ingest instead of racing into busy_timeout', async () => {
     const cfg = loadConfig();
     // Materialize the db dir then hold the cross-process rebuild lock.
     (await openMemory(undefined, { ensure: false })).close();
@@ -117,14 +117,21 @@ describe('SessionEnd defers ingest while a rebuild holds the write lock (#103)',
     const t = join(dir, 't.jsonl');
     writeFileSync(t, '{"role":"user","text":"hi"}\n');
 
+    // The stderr defer log is the RELIABLE deferral signal (#159 F2-03 removed the
+    // write-only kv_meta marker that used to be asserted here).
+    const stderr = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation(() => true) as unknown as ReturnType<typeof vi.fn>;
     // Real path (no injected ingest) → the lock check must short-circuit it.
     const result = await handleSessionEnd({ transcriptPath: t, cwd: dir });
+    const written = (stderr.mock.calls as unknown[][]).map((c) => String(c[0])).join('');
+    stderr.mockRestore();
     expect(result).toBeUndefined();
+    expect(written).toContain('deferred'); // the early-return defer was logged
 
     const mem = await openMemory(undefined, { ensure: false });
     try {
-      expect(mem.store.getMeta(INGEST_DEFERRED_KEY)).not.toBeNull();
-      // Nothing was ingested while deferred.
+      // Nothing was ingested while deferred (the byte-cursor never advanced).
       expect(mem.store.counts().observations).toBe(0);
     } finally {
       mem.close();

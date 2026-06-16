@@ -51,7 +51,7 @@ import {
 } from '../optimize/index.js';
 import { projectSlug } from '../optimize/targets.js';
 import { type RecallHit, resolveRecallProject } from '../recall/index.js';
-import { EMBED_DEGRADED_KEY, REBUILD_FAILED_KEY } from '../store/index.js';
+import { EMBED_DEGRADED_KEY, isRebuildLocked, REBUILD_FAILED_KEY } from '../store/index.js';
 import { startUiServer } from '../ui/index.js';
 import { VERSION } from '../version.js';
 import { MCP_SERVER_NAME, type RunFn, type RunResult, unregisterMcpServer } from './setup.js';
@@ -559,6 +559,20 @@ export async function cmdOpencodeCapture(
   // The plugin passes the session's project dir (#107) so the post-capture anchor
   // sweep roots ground truth correctly; default to the process cwd otherwise.
   const cwd = optionValue(args, '--cwd') ?? process.cwd();
+  // #159 (F1-01): mirror the SessionEnd rebuild-lock defer (session-end.ts). If a
+  // background MCP rebuild holds the cross-process write lock, racing our ingest into
+  // it would block on busy_timeout and then fail-open, SILENTLY losing this session.
+  // Defer instead — the opencode cursor is NOT advanced, so a later capture re-pulls
+  // it (no data lost). Do NOT write a kv_meta marker (#159 F2-03 removed that dead
+  // state); the stderr line is the reliable defer signal.
+  const { dbPath: storeDbPath } = loadConfig();
+  if (isRebuildLocked(storeDbPath)) {
+    err(
+      'opencode-capture deferred: an index rebuild is in progress; ' +
+        'this session will be re-ingested later (no data lost).',
+    );
+    return;
+  }
   const memory = await openMemory(loadConfig());
   try {
     await sqliteTranscriptSource(dbPath ? { dbPath } : {}).ingestSession(memory, sessionId);

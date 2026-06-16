@@ -31,7 +31,6 @@ export type {
 export {
   acquireRebuildLock,
   EMBED_DEGRADED_KEY,
-  INGEST_DEFERRED_KEY,
   isRebuildLocked,
   REBUILD_FAILED_KEY,
   REBUILD_HEARTBEAT_MS,
