@@ -15,8 +15,22 @@
  * identically to a human; benign content (no fence token) is returned byte-identical.
  */
 
-/** The DATA-envelope tokens an injected observation could spoof — both families, both forms. */
-const FENCE_TOKEN = /<(\/?)(recalled-memory|recalled-decisions)>/gi;
+/**
+ * The DATA-envelope tokens an injected observation could spoof — both families, both
+ * forms. F4-04: the consumer is an LLM, which reads tags LENIENTLY, so a forged close
+ * with whitespace inside the tag (`</ recalled-memory>`, `</recalled-memory >`,
+ * `< / recalled-memory >`, tabs/newlines) would still be honored and escape the
+ * envelope. We therefore tolerate optional whitespace after `<`, around the `/`, and
+ * before `>` (and any case, via `i`) so every variant is defanged, not just the tight
+ * form. The slash (+ its own trailing whitespace) and tag name are captured so the
+ * replacement re-emits them.
+ *
+ * Linear by construction (no ReDoS): the optional `/`'s whitespace lives INSIDE the
+ * `(\/\s*)?` group, which only activates after a literal `/`, leaving a SINGLE free `\s*`
+ * over any run of whitespace — a long all-whitespace string backtracks linearly. The
+ * `<\s*(\/?)\s*…` form (two free `\s*` straddling the optional `/`) would be quadratic.
+ */
+const FENCE_TOKEN = /<\s*(\/\s*)?(recalled-memory|recalled-decisions)\s*>/gi;
 
 /** Zero-width space inserted after `<` to defang a spoofed fence token (renders invisibly). */
 const ZWSP = String.fromCharCode(0x200b);
