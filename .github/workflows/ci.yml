@@ -10,10 +10,18 @@ on:
     # between main pushes — see the `e2e-ui` job (#113).
     - cron: "0 6 * * *"
 
+# Least privilege: every job here only reads the repo to build and test.
+permissions:
+  contents: read
+
 jobs:
   check:
     runs-on: ubuntu-latest
     steps:
+      - name: Harden the runner (audit mode)
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
@@ -36,6 +44,10 @@ jobs:
   e2e:
     runs-on: ubuntu-latest
     steps:
+      - name: Harden the runner (audit mode)
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
@@ -53,6 +65,10 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
+      - name: Harden the runner (audit mode)
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
