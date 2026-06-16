@@ -1,0 +1,43 @@
+# CodeQL — continuous SAST for the TypeScript/JS sources. Runs on every PR and
+# push to main plus a weekly schedule; findings land in the Security tab. JS/TS
+# is interpreted, so no build step is needed (CodeQL extracts directly).
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "33 6 * * 2" # Tuesdays 06:33 UTC
+
+permissions: {}
+
+jobs:
+  analyze:
+    name: CodeQL analyze
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write # upload results to code scanning
+      contents: read
+      actions: read
+    steps:
+      - name: Harden the runner (audit mode)
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@dd903d2e4f5405488e5ef1422510ee31c8b32357 # v3.36.2
+        with:
+          languages: javascript-typescript
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@dd903d2e4f5405488e5ef1422510ee31c8b32357 # v3.36.2
+        with:
+          category: "/language:javascript-typescript"
