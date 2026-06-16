@@ -288,8 +288,16 @@ async function serveStatic(
     sendText(res, 404, 'not found');
     return;
   }
-  // realpath defends against symlink escape too.
-  const real = realpathSync(candidate);
+  // realpath defends against symlink escape too. F8-04: it can throw on a broken
+  // symlink / loop / a path raced away after existsSync — contain it per-request as a
+  // 404 rather than letting it bubble to an unhandledRejection that kills the server.
+  let real: string;
+  try {
+    real = realpathSync(candidate);
+  } catch {
+    sendText(res, 404, 'not found');
+    return;
+  }
   if (real !== dir && !real.startsWith(dirWithSep)) {
     sendText(res, 403, 'forbidden');
     return;
@@ -321,7 +329,15 @@ async function serveIndex(res: import('node:http').ServerResponse, dir: string):
     sendText(res, 404, 'not found');
     return;
   }
-  const real = realpathSync(file);
+  // F8-04: same per-request containment as serveStatic — a realpath failure must not
+  // escape as an unhandledRejection.
+  let real: string;
+  try {
+    real = realpathSync(file);
+  } catch {
+    sendText(res, 404, 'not found');
+    return;
+  }
   if (real !== file && !real.startsWith(dirWithSep)) {
     sendText(res, 403, 'forbidden');
     return;

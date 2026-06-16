@@ -514,6 +514,41 @@ describe('background startup rebuild (MCP boot latency)', () => {
     });
     expect(existsSync(rebuildLockPath(config().dbPath))).toBe(false);
   });
+
+  it('contains a throwing setMeta on the failure path — never rejects, still releases the lock (F8-01)', async () => {
+    // A degraded-flag write that throws used to bubble out of the catch as an
+    // unhandledRejection that could kill the long-lived MCP server.
+    const failing = { ensureIndex: () => Promise.reject(new Error('embed provider down')) };
+    const throwingStore = {
+      setMeta: () => {
+        throw new Error('db write failed');
+      },
+      deleteMeta: () => {},
+    };
+    await expect(
+      backgroundEnsure(failing, {
+        store: throwingStore,
+        dbPath: config().dbPath,
+        willRebuild: true,
+      }),
+    ).resolves.toBeUndefined();
+    expect(isRebuildLocked(config().dbPath)).toBe(false);
+  });
+
+  it('contains a throwing deleteMeta on the success path — still forwards the result (F8-01)', async () => {
+    const throwingStore = {
+      setMeta: () => {},
+      deleteMeta: () => {
+        throw new Error('db write failed');
+      },
+    };
+    const ok = await backgroundEnsure(mem.indexer, {
+      store: throwingStore,
+      dbPath: config().dbPath,
+      willRebuild: false,
+    });
+    expect(ok).toMatchObject({ reason: expect.any(String) });
+  });
 });
 
 describe('setSessionProjectAction — single-prefix guard (R4, #67)', () => {
