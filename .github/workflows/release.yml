@@ -9,11 +9,15 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+# Least privilege at the top level; the build job widens to write for the release.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
+    # tauri-action creates the GitHub Release and uploads installers -> needs write.
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
