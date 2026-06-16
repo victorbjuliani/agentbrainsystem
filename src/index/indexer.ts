@@ -154,6 +154,26 @@ function isAtHead(store: SymbolStore, root: string): boolean {
   return !head || store.getMeta('indexed_commit') === head;
 }
 
+/**
+ * Meta key holding the JSON list of files the working-tree overlay last touched. On the
+ * next refresh, any file in this set that is no longer dirty is reconciled back to its
+ * committed/reverted state, so a dirty→clean transition leaves no stale overlay symbols
+ * (F7-06).
+ */
+const OVERLAY_FILES_KEY = 'overlay_files';
+
+/** The previous overlay file set (the files made dirty at the last refresh), or []. */
+function readOverlaySet(store: SymbolStore): string[] {
+  const raw = store.getMeta(OVERLAY_FILES_KEY);
+  if (!raw) return [];
+  try {
+    const v = JSON.parse(raw) as unknown;
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
 interface ParseControl {
   /** Trips when the interactive time budget is spent — stop before the next file. */
   overBudget: () => boolean;
@@ -246,17 +266,42 @@ export async function refreshIndex(
     let commitComplete = true;
     if (head && head !== indexed) {
       const files = indexed ? diffNames(root, indexed, head) : lsFiles(root);
-      const parsed = await parseFiles(root, files, ctrl);
-      commitComplete = parsed.complete;
-      // Stamp the commit ONLY when the full diff was applied — atomic with the upserts,
-      // so `indexed_commit` can never run ahead of the indexed state.
-      store.applyBatch(parsed.ops, parsed.complete ? head : undefined);
+      if (files === undefined) {
+        // F7-05: git failed (timeout/error) — `undefined`, NOT an empty diff. Do NOT
+        // stamp `indexed_commit` over content we never indexed (false-fresh). Leave the
+        // stamp where it is and report not-ready; the next refresh retries the diff.
+        commitComplete = false;
+      } else {
+        const parsed = await parseFiles(root, files, ctrl);
+        commitComplete = parsed.complete;
+        // Stamp the commit ONLY when the full diff was applied — atomic with the upserts,
+        // so `indexed_commit` can never run ahead of the indexed state.
+        store.applyBatch(parsed.ops, parsed.complete ? head : undefined);
+      }
     }
 
-    // Working-tree overlay (always): reflect uncommitted edits/additions/deletions. It
-    // never stamps a commit, so a truncated overlay just re-applies on the next refresh.
-    const dirty = await parseFiles(root, dirtyFiles(root), ctrl);
-    store.applyBatch(dirty.ops);
+    // Working-tree overlay: reflect uncommitted edits/additions/deletions, and RECONCILE
+    // files that were dirty last time but are clean now (F7-06) — a dirty→clean revert
+    // must not leave the overlay's stale symbols behind. Never stamps a commit, so a
+    // truncated overlay just re-applies on the next refresh.
+    const currentDirty = dirtyFiles(root);
+    if (currentDirty !== undefined) {
+      // git succeeded (`[]` = genuinely clean). A git FAILURE returns undefined → skip
+      // overlay work entirely rather than mistake an error for "clean" and wipe symbols.
+      const prevOverlay = readOverlaySet(store);
+      const stale = prevOverlay.filter((f) => !currentDirty.includes(f));
+      // Re-parse stale files from their now-clean disk state (committed/reverted), or
+      // drop them if deleted — parseFiles emits a null-defs drop op for a missing file.
+      const reconciled = await parseFiles(root, stale, ctrl);
+      const dirty = await parseFiles(root, currentDirty, ctrl);
+      store.applyBatch([...reconciled.ops, ...dirty.ops]);
+      // Remember the new overlay set. If reconciliation was budget-truncated, keep the
+      // un-finished stale files so they are retried next time instead of leaving residue.
+      const nextOverlay = reconciled.complete
+        ? currentDirty
+        : [...new Set([...currentDirty, ...stale])];
+      store.setMeta(OVERLAY_FILES_KEY, JSON.stringify(nextOverlay));
+    }
 
     const ready = !head || (commitComplete && store.getMeta('indexed_commit') === head);
     return { ready };

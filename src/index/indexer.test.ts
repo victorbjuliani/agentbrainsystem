@@ -165,6 +165,48 @@ describe('refreshIndex', () => {
       rmSync(lockPath, { force: true });
     }
   });
+
+  it('reconciles a dirty→clean revert — no stale overlay symbols (F7-06)', async () => {
+    writeFileSync(join(repo, 'a.ts'), 'export function foo(){}');
+    commit('c1');
+    await refreshIndex(repo);
+
+    // A dirty (uncommitted) edit adds `bar` via the working-tree overlay.
+    writeFileSync(join(repo, 'a.ts'), 'export function foo(){}\nexport function bar(){}');
+    await refreshIndex(repo);
+    let store = openSymbolStore(repo);
+    expect(store.queryByName('bar')).toHaveLength(1);
+    store.close();
+
+    // Revert the edit (NO commit): tree clean, HEAD unchanged so the commit path is a
+    // no-op. The overlay's `bar` must be reconciled away, not left as residue.
+    writeFileSync(join(repo, 'a.ts'), 'export function foo(){}');
+    await refreshIndex(repo);
+    store = openSymbolStore(repo);
+    expect(store.queryByName('bar')).toHaveLength(0); // overlay residue cleared
+    expect(store.queryByName('foo')).toHaveLength(1); // committed symbol intact
+    store.close();
+  });
+
+  it('reconciles a dirty untracked file that is then deleted (F7-06)', async () => {
+    writeFileSync(join(repo, 'a.ts'), 'export function foo(){}');
+    commit('c1');
+    await refreshIndex(repo);
+
+    // An untracked file enters the overlay…
+    writeFileSync(join(repo, 'scratch.ts'), 'export function scratch(){}');
+    await refreshIndex(repo);
+    let store = openSymbolStore(repo);
+    expect(store.queryByName('scratch')).toHaveLength(1);
+    store.close();
+
+    // …then is deleted. It is no longer dirty, so reconciliation must drop its symbols.
+    rmSync(join(repo, 'scratch.ts'));
+    await refreshIndex(repo);
+    store = openSymbolStore(repo);
+    expect(store.queryByName('scratch')).toHaveLength(0);
+    store.close();
+  });
 });
 
 describe('acquireIndexLock — atomic ownership & steal (F1-03)', () => {
