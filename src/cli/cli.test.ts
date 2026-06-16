@@ -25,6 +25,7 @@ import { acquireRebuildLock, EMBED_DEGRADED_KEY } from '../store/index.js';
 import {
   cmdDoctor,
   cmdForget,
+  cmdImport,
   cmdIngest,
   cmdOpencodeCapture,
   cmdOpencodeRecall,
@@ -34,11 +35,15 @@ import {
   cmdRemember,
   cmdUninstall,
   gatherHarnessStatus,
+  hasFlag,
+  optionValue,
+  optionValues,
   parseForgetSelector,
   parseIds,
   parseProjectAction,
   resolveHarnesses,
   resolveSessionId,
+  stripFlagPair,
 } from './cli.js';
 
 /**
@@ -85,6 +90,71 @@ describe('parseIds — --ids validation', () => {
 
   it('rejects an all-empty input', () => {
     expect(() => parseIds('')).toThrow(/empty entry/);
+  });
+});
+
+// F6-04 — the shared option helpers must accept BOTH `--flag value` (space form)
+// and `--flag=value` (inline form). The inline form was previously a single token
+// that indexOf(flag) never matched, so the value was silently dropped.
+describe('option helpers — space form and --flag=value form (F6-04)', () => {
+  describe('optionValue', () => {
+    it('reads the space form `--flag value`', () => {
+      expect(optionValue(['--mode', 'replace'], '--mode')).toBe('replace');
+    });
+    it('reads the inline form `--flag=value`', () => {
+      expect(optionValue(['--mode=replace'], '--mode')).toBe('replace');
+    });
+    it('reads `--flag=` as an empty string (not undefined)', () => {
+      expect(optionValue(['--mode='], '--mode')).toBe('');
+    });
+    it('preserves `=` inside the value (only the first `=` splits)', () => {
+      expect(optionValue(['--as=a=b'], '--as')).toBe('a=b');
+    });
+    it('returns undefined when the flag is absent', () => {
+      expect(optionValue(['--other', 'x'], '--mode')).toBeUndefined();
+    });
+  });
+
+  describe('stripFlagPair', () => {
+    it('drops both tokens for the space form', () => {
+      expect(stripFlagPair(['--kind', 'lesson', 'text'], '--kind')).toEqual(['text']);
+    });
+    it('drops the single token for the inline form', () => {
+      expect(stripFlagPair(['--kind=lesson', 'text'], '--kind')).toEqual(['text']);
+    });
+    it('leaves args untouched when the flag is absent', () => {
+      expect(stripFlagPair(['text', '--global'], '--kind')).toEqual(['text', '--global']);
+    });
+    it('strips ALL occurrences so a duplicate flag can not leak its value as positional', () => {
+      // Both forms, duplicated: nothing flag-related must survive for positional().
+      expect(stripFlagPair(['--kind=a', '--kind=b'], '--kind')).toEqual([]);
+      expect(stripFlagPair(['--kind', 'a', '--kind', 'b', 'text'], '--kind')).toEqual(['text']);
+      expect(stripFlagPair(['--kind', 'a', 'text', '--kind=b'], '--kind')).toEqual(['text']);
+    });
+  });
+
+  describe('hasFlag — presence test honoring both forms', () => {
+    it('detects the bare space form', () => {
+      expect(hasFlag(['--session', 'x'], '--session')).toBe(true);
+    });
+    it('detects the inline `--flag=value` form (args.includes would miss it)', () => {
+      expect(hasFlag(['--session=other'], '--session')).toBe(true);
+    });
+    it('is false when the flag is absent (and not fooled by a different flag)', () => {
+      expect(hasFlag(['--sessions', '--session-x=1'], '--session')).toBe(false);
+    });
+  });
+
+  describe('optionValues', () => {
+    it('collects repeated space-form values', () => {
+      expect(optionValues(['--project', 'a', '--project', 'b'], '--project')).toEqual(['a', 'b']);
+    });
+    it('collects repeated inline-form values', () => {
+      expect(optionValues(['--project=a', '--project=b'], '--project')).toEqual(['a', 'b']);
+    });
+    it('collects a mix of both forms', () => {
+      expect(optionValues(['--project', 'a', '--project=b'], '--project')).toEqual(['a', 'b']);
+    });
   });
 });
 
@@ -302,6 +372,18 @@ describe('cmdIngest — opt-in historical ingest (#62, hermetic, no model load)'
     expect(mem.store.getSessionByExternalId('sa')).toBeNull();
     mem.close();
   });
+
+  // F6-02 — `--all` and `--project` are mutually exclusive: `--all` used to silently
+  // win and drop `--project`. Now it errors before any ingest happens.
+  it('errors when --all and --project are combined (mutually exclusive)', async () => {
+    await cmdIngest(['--apply', '--all', '--project', 'A', '--dir', projectsDir]);
+    expect(errLines.join('')).toMatch(/--all and --project are mutually exclusive/);
+    expect(process.exitCode).toBe(1);
+    // Errored before opening the store ⇒ nothing ingested.
+    const mem = await openMemory(loadConfig(), { ensure: false });
+    expect(mem.store.getSessionByExternalId('sa')).toBeNull();
+    mem.close();
+  });
 });
 
 describe('parseProjectAction — exactly one action', () => {
@@ -335,6 +417,17 @@ describe('resolveSessionId — env vs --session, no mtime fallback', () => {
   it('prefers an explicit --session', () => {
     process.env.CLAUDE_CODE_SESSION_ID = 'env-id';
     expect(resolveSessionId(['--session', 'flag-id'])).toEqual({ id: 'flag-id', source: 'flag' });
+  });
+
+  it('honors the inline `--session=id` form — does NOT fall back to the ambient session', () => {
+    // Regression: the presence check used `args.includes('--session')`, so the inline
+    // form was ignored and a destructive `--skip --session=other` retargeted the
+    // ambient session (Codex review on PR #167).
+    process.env.CLAUDE_CODE_SESSION_ID = 'env-id';
+    expect(resolveSessionId(['--skip', '--session=other', '--yes'])).toEqual({
+      id: 'other',
+      source: 'flag',
+    });
   });
 
   it('falls back to CLAUDE_CODE_SESSION_ID', () => {
@@ -450,6 +543,27 @@ describe('cmdProject — set / cwd / skip / status (hermetic, tmp ABS_HOME)', ()
       includeGlobal: true,
     });
     expect(hits.some((h) => h.observation.id === o.newId)).toBe(true);
+    mem2.close();
+  });
+
+  it('promote with the inline `--as=text` form files a curated copy (not a MOVE)', async () => {
+    // Regression: `asPresent` used `args.includes('--as')`, so the inline form fell
+    // through to the whole-observation MOVE path instead of the curated copy (Codex
+    // review on PR #167). With the both-forms presence check it is treated as a copy.
+    process.env.ABS_EMBED_DIM = '384';
+    const mem = await openMemory(loadConfig(), { ensure: false });
+    const sid = mem.store.createSession({ externalId: 's-inline', project: '-Users-me-Devs-baz' });
+    const id = mem.store.createObservation({ sessionId: sid, kind: 'decision', content: 'raw X' });
+    mem.close();
+
+    await cmdPromote([String(id), '--as=curated wording only', '--json']);
+    const o = JSON.parse(outLines.join('')) as { id: number; newId: number; curated: boolean };
+    expect(o).toMatchObject({ id, scope: 'global', curated: true, applied: true });
+
+    const mem2 = await openMemory(loadConfig(), { ensure: false });
+    // original kept (a copy, not a move) and the curated copy holds exactly the text.
+    expect(mem2.store.getObservation(id)?.sessionId).toBe(sid);
+    expect(mem2.store.getObservation(o.newId)?.content).toBe('curated wording only');
     mem2.close();
   });
 
@@ -929,6 +1043,107 @@ describe('cmdRemember — global authoring (hermetic, tmp ABS_HOME, real local p
     await cmdRemember(['some text', '--json']);
     expect(outLines.join('')).toContain('--global');
     expect(process.exitCode).toBe(1);
+  });
+
+  // F6-01 — the text positional must resolve regardless of where the value-taking
+  // `--kind` flag sits relative to it. The space form BEFORE the text used to store
+  // the flag's VALUE ('lesson') and drop the user's text.
+  async function storedContents(): Promise<string[]> {
+    const mem = await openMemory(loadConfig(), { ensure: false });
+    const g = mem.store.getSessionByExternalId('__global__');
+    const rows = mem.store.listObservations({ sessionId: g?.id });
+    mem.close();
+    return rows.map((r) => r.content);
+  }
+
+  it('stores the text, not the --kind value, when --kind (space form) precedes the text', async () => {
+    await cmdRemember(['--kind', 'lesson', 'the actual text', '--global', '--json']);
+    expect(process.exitCode).toBe(0);
+    const o = JSON.parse(outLines.join(''));
+    expect(o).toMatchObject({ scope: 'global', kind: 'lesson', applied: true });
+    expect(await storedContents()).toContain('the actual text');
+    expect(await storedContents()).not.toContain('lesson');
+  });
+
+  it('stores the text with the --kind=lesson inline form before the text', async () => {
+    await cmdRemember(['--kind=lesson', 'inline text', '--global', '--json']);
+    expect(process.exitCode).toBe(0);
+    const o = JSON.parse(outLines.join(''));
+    expect(o).toMatchObject({ kind: 'lesson' });
+    expect(await storedContents()).toContain('inline text');
+  });
+
+  it('stores the text with the text-first order `"text" --kind lesson`', async () => {
+    await cmdRemember(['text first', '--kind', 'lesson', '--global', '--json']);
+    expect(process.exitCode).toBe(0);
+    const o = JSON.parse(outLines.join(''));
+    expect(o).toMatchObject({ kind: 'lesson' });
+    expect(await storedContents()).toContain('text first');
+  });
+});
+
+describe('cmdImport — --mode reaches the importer in both flag forms (F6-04)', () => {
+  let dir: string;
+  let outLines: string[];
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'abs-cli-import-'));
+    process.env.ABS_HOME = dir;
+    delete process.env.ABS_EMBED_DIM; // default dim matches the local provider (embeds for real)
+    outLines = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation((c: string | Uint8Array) => {
+      outLines.push(String(c));
+      return true;
+    });
+    vi.spyOn(process.stderr, 'write').mockImplementation((c: string | Uint8Array) => {
+      outLines.push(String(c));
+      return true;
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete process.env.ABS_HOME;
+    process.exitCode = undefined;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('honours `--mode=replace` (inline form) instead of silently defaulting to merge', async () => {
+    // Seed one observation, export it, then import that artifact in replace mode.
+    const mem = await openMemory(loadConfig(), { ensure: false });
+    const g = getOrCreateGlobalSession(mem.store);
+    await mem.indexer.write({ sessionId: g, kind: 'note', content: 'seed' });
+    mem.close();
+    const artifact = join(dir, 'dump.ndjson');
+    const { exportStore } = await import('../export/index.js');
+    const mem2 = await openMemory(loadConfig(), { ensure: false });
+    await exportStore(mem2.store, artifact);
+    mem2.close();
+
+    outLines.length = 0;
+    await cmdImport([`--mode=replace`, artifact]);
+    expect(outLines.join('')).toContain('(replace)');
+  });
+
+  it('honours the SPACE form `--mode replace <path>` (path not read as the mode value)', async () => {
+    // The original F6-01 bug: `positional()` grabbed `replace` as the source path. This
+    // asserts the space-form value reaches the importer AND the artifact path resolves
+    // (Codex/CodeRabbit review on PR #167).
+    const mem = await openMemory(loadConfig(), { ensure: false });
+    const g = getOrCreateGlobalSession(mem.store);
+    await mem.indexer.write({ sessionId: g, kind: 'note', content: 'seed' });
+    mem.close();
+    const artifact = join(dir, 'dump.ndjson');
+    const { exportStore } = await import('../export/index.js');
+    const mem2 = await openMemory(loadConfig(), { ensure: false });
+    await exportStore(mem2.store, artifact);
+    mem2.close();
+
+    outLines.length = 0;
+    await cmdImport(['--mode', 'replace', artifact]);
+    const out = outLines.join('');
+    expect(out).toContain('(replace)');
+    expect(out).not.toMatch(/source path|requires a source/i); // path resolved, not 'replace'
   });
 });
 
