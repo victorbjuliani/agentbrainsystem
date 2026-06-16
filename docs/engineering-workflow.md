@@ -49,6 +49,21 @@ When workflow docs disagree, use this order:
 - The **embed → persist → recall** path is the project's critical surface — it must have automated coverage before a recall-related change is considered done (the tool we replace failed exactly here).
 - If a check cannot run, say why and record the blocker in the PR.
 
+## CI & Automated Gates
+
+- **Branch protection (`main`):** PR-based merges only; required status checks **`check`** + **`e2e`**; 0 required approvals (solo); admin bypass on. Direct pushes to `main` are blocked for non-admins.
+- **CI (`ci.yml`):** `check` (lint → typecheck → build → test) and `e2e` (headless system E2E) on every PR; `e2e-ui` (Playwright) on main pushes / nightly / manual dispatch.
+- **PR review bots:** CodeRabbit (`.coderabbit.yaml`) + Codex (`chatgpt-codex-connector`) review every PR — resolve or reply to their threads before merge. (These are the *review* bots, distinct from the Codex *harness adapter* the product supports.)
+- **Security scanning** (findings land in the Security tab):
+  - **GitGuardian** — secret scanning (PR check).
+  - **CodeQL** (`codeql.yml`) — JS/TS SAST on PRs, main, weekly.
+  - **OpenSSF Scorecard** (`scorecard.yml`) — supply-chain posture, weekly + main; publishes the score.
+  - **zizmor** (`zizmor.yml`) — GitHub Actions static analysis, audit mode (`continue-on-error`); config in `.github/zizmor.yml` (ignores `cache-poisoning` for `release.yml`, with rationale).
+  - **Harden-Runner** — first step of every `ci.yml`/`release.yml` job, `egress-policy: audit`.
+  - Private vulnerability reporting is enabled; reporting process in `SECURITY.md`.
+- **Dependencies:** **Renovate** (`.github/renovate.json`) — weekly, grouped; GitHub Actions bumps auto-merge for **non-major only**; npm devDeps grouped; vulnerability alerts labelled.
+- **GitHub Actions pinning:** every action is pinned to a commit SHA with a trailing `# vX.Y.Z` comment (Renovate keeps digests fresh). New workflow steps must follow this.
+
 ## Suggested Defaults (active)
 
 - issue first
