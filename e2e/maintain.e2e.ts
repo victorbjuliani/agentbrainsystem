@@ -117,6 +117,30 @@ describe('M — auto-distill cadence `abs maintain --auto`', () => {
     return { ...h.env, ABS_LLM_BASE_URL: (fake as FakeLlm).baseUrl, ABS_LLM_MODEL: 'stub' };
   }
 
+  /**
+   * Seed (and ingest) a SECOND distinct session in the same project. Its turns ran in
+   * `projectRoot` too, so its consolidated lesson lands under the same slug — giving the
+   * NEXT cadence run a brand-new session to consolidate (a new `source='consolidate'`
+   * row with a new id). Used by the duplication regression: the 2nd run must append only
+   * the NEW lesson, never re-append the 1st run's already-promoted one.
+   */
+  async function seedSecondSession(projectRoot: string, sessionId: string): Promise<void> {
+    const projectsDir = join(h.home, 'transcripts');
+    const sessDir = join(projectsDir, 'demo2');
+    mkdirSync(sessDir, { recursive: true });
+    const turn = (role: 'user' | 'assistant', content: string): string =>
+      JSON.stringify({ type: role, sessionId, cwd: projectRoot, message: { role, content } });
+    writeFileSync(
+      join(sessDir, `${sessionId}.jsonl`),
+      `${turn('user', 'Remind me how we handle embeddings and the UI bind address?')}\n${turn(
+        'assistant',
+        'Local embeddings stay offline after the first model cache; bind the UI to 127.0.0.1 only.',
+      )}\n`,
+    );
+    const ingest = await ingestFixtures(h.env, projectsDir);
+    expect(ingest.code, ingest.stderr).toBe(0);
+  }
+
   it('consolidates + auto-applies the lesson to auto-memory, never touches CLAUDE.md, and is idempotent', async () => {
     const projectRoot = makeProjectRoot(h.home);
     const llmEnv = await seedSession(projectRoot);
@@ -158,6 +182,38 @@ describe('M — auto-distill cadence `abs maintain --auto`', () => {
     expect(await obsCount(h.env)).toBe(afterConsolidate); // consolidate skipped → count stable
     expect(existsSync(lessonsFile)).toBe(true);
     expect(existsSync(join(projectRoot, 'CLAUDE.md'))).toBe(false);
+  });
+
+  it('two cadence runs over DISTINCT sessions never duplicate a `_(memory #id)_` bullet (FIX1)', async () => {
+    const projectRoot = makeProjectRoot(h.home);
+    const llmEnv = await seedSession(projectRoot);
+
+    // First cadence run: consolidate session #1 → auto-apply its lesson to auto-memory.
+    const run1 = await abs(['maintain', '--auto'], { env: llmEnv, cwd: projectRoot });
+    expect(run1.code, run1.stderr).toBe(0);
+
+    const memDir = autoMemoryDirFor(h.home, projectRoot);
+    const lessonsFile = join(memDir, 'consolidated-lessons.md');
+    expect(existsSync(lessonsFile)).toBe(true);
+
+    // Seed + ingest a SECOND distinct session, then run the cadence again so it
+    // consolidates the NEW session (a fresh `source='consolidate'` lesson row).
+    await seedSecondSession(projectRoot, 'sessMaintain2');
+    const run2 = await abs(['maintain', '--auto'], { env: llmEnv, cwd: projectRoot });
+    expect(run2.code, run2.stderr).toBe(0);
+
+    // The regression guard: every `_(memory #<id>)_` marker appears AT MOST ONCE. Before
+    // the cursor filter, the 2nd run re-clustered session #1's already-promoted lesson and
+    // the append applier wrote its bullet a second time → a duplicated marker here.
+    const lessons = readFileSync(lessonsFile, 'utf8');
+    const markers = [...lessons.matchAll(/_\(memory #(\d+)\)_/g)].map((m) => m[1]);
+    expect(markers.length).toBeGreaterThan(0); // at least the two runs' lessons were written
+    const seen = new Map<string, number>();
+    for (const id of markers) seen.set(id as string, (seen.get(id as string) ?? 0) + 1);
+    const duplicated = [...seen.entries()].filter(([, n]) => n > 1);
+    expect(duplicated, `duplicated memory markers: ${JSON.stringify(duplicated)}`).toEqual([]);
+    // Two DISTINCT lesson rows were promoted across the two runs (no collapse, no dup).
+    expect(seen.size).toBe(2);
   });
 
   it('is a benign no-op with no LLM configured (cannot consolidate, writes nothing)', async () => {

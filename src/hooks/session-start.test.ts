@@ -269,6 +269,29 @@ describe('gatherFactsFromStore — one-time auto-distill notice (#138, real stor
     expect(second).not.toContain('ABS_AUTO_DISTILL=0'); // never re-injected
   });
 
+  it('an EMPTY-STRING sessionId does NOT consume the one-shot flag (#138 FIX3)', async () => {
+    // A degenerate SessionStart with `sessionId: ''` has nothing to auto-distill, so it
+    // must NOT fire the notice NOR burn the install-wide one-shot flag — otherwise the
+    // next REAL session would silently never see the spend notice.
+    (await openMemory(undefined, { ensure: false })).close();
+    const empty = injected(
+      await handleSessionStart({ sessionId: '', cwd: dir, source: 'startup' }),
+    );
+    expect(empty).not.toContain('ABS_AUTO_DISTILL=0'); // never fired on the empty id
+
+    // The flag is still UNSET, so a subsequent real session fires the notice as normal.
+    const mem = await openMemory(undefined, { ensure: false });
+    try {
+      expect(mem.store.getMeta(AUTO_DISTILL_NOTICE_SHOWN_KEY)).toBeNull();
+    } finally {
+      mem.close();
+    }
+    const real = injected(
+      await handleSessionStart({ sessionId: 'sess-real', cwd: dir, source: 'startup' }),
+    );
+    expect(real).toContain('ABS_AUTO_DISTILL=0'); // the real session still gets it
+  });
+
   it('never fires when auto-distill is opted out (ABS_AUTO_DISTILL=0)', async () => {
     process.env.ABS_AUTO_DISTILL = '0';
     (await openMemory(undefined, { ensure: false })).close();

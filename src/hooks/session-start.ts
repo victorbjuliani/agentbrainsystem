@@ -129,13 +129,13 @@ async function gatherFactsFromStore(payload: HookPayload): Promise<SessionStartF
       hasLlm: cfg.llm !== undefined,
     });
     // One-time auto-distill spend notice (#138/§3): fire (and consume the flag) ONLY
-    // when this is a real session (a session id to scope the cadence to), an LLM is
-    // configured, auto-distill is on, AND it has not been shown. Gating on the session
-    // id keeps a session-less SessionStart (a degenerate edge — nothing to auto-distill)
-    // from burning the one-shot. The flag write lives here (the one place the store is
-    // open read/write on this path).
+    // when this is a real session (a TRUTHY session id to scope the cadence to), an LLM
+    // is configured, auto-distill is on, AND it has not been shown. `Boolean(sessionId)`
+    // (not `!== undefined`) so a degenerate EMPTY-STRING id — nothing to auto-distill —
+    // can't burn the install-wide one-shot before a real session ever sees the notice.
+    // The flag write lives here (the one place the store is open read/write on this path).
     const showAutoDistillNotice =
-      payload.sessionId !== undefined &&
+      Boolean(payload.sessionId) &&
       cfg.llm !== undefined &&
       cfg.autoDistill &&
       consumeAutoDistillNoticeFlag(memory.store);

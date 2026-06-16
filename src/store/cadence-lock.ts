@@ -130,6 +130,20 @@ export function acquireCadenceLock(dbPath: string): CadenceLock {
     },
     release() {
       // Only remove the lockfile if WE still own it — never delete a peer's lock.
+      //
+      // TOCTOU residual (CodeRabbit, intentionally bounded — NOT a heavy inode rewrite):
+      // there is a window between the `ownsLock` check and `rmSync` where, in theory, a
+      // peer could steal a lock it believes is stale and we could then rm THEIR fresh
+      // lock. In practice this is unreachable under normal operation: the holder
+      // heartbeats the mtime every CADENCE_HEARTBEAT_MS (3s) up until `clearInterval`
+      // immediately precedes this `release()` (see `runMaintainAuto`'s finally), so the
+      // lock is provably non-stale at release time and no peer steals it. The window is
+      // only reachable if THIS process freezes for > CADENCE_LOCK_TTL_MS (15s) between
+      // the check and the rm — e.g. a laptop sleeping mid-`finally`. Even if hit, the
+      // blast radius is bounded by consolidate idempotency: at worst a peer cadence makes
+      // one redundant LLM call on an already-consolidated session (a rare extra spend),
+      // never data corruption. The token-checked `ownsLock`+`rmSync` below is therefore
+      // sufficient; a defensive atomic rename-then-delete would add cost for no real gain.
       if (!acquired) return;
       try {
         if (existsSync(path) && ownsLock(path, token)) rmSync(path, { force: true });

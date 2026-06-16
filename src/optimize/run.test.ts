@@ -10,6 +10,7 @@ import { Indexer } from '../indexer/index.js';
 import type { Memory } from '../memory.js';
 import { Recall } from '../recall/index.js';
 import { MemoryStore } from '../store/index.js';
+import { generateCandidates } from './candidate-gen.js';
 import {
   advanceOptimizeCursorForKind,
   advanceOptimizeCursorsAfterApply,
@@ -100,6 +101,89 @@ describe('generateOptimizations — config-aware wrapper', () => {
       });
       expect(result.estimate.llmUsed).toBe(false);
       expect(result.candidates.length).toBeGreaterThan(0);
+    } finally {
+      memory.close();
+    }
+  });
+});
+
+describe('generateCandidates — cursor-filtered generation (idempotent, #138 FIX1)', () => {
+  it('emits ONLY above-cursor lessons; already-promoted (≤ cursor) are excluded', async () => {
+    const memory = newMemory();
+    try {
+      const slug = projectSlug(projectRoot);
+      const l1 = await seedConsolidatedLesson(memory, 'lesson one promoted');
+      const l2 = await seedConsolidatedLesson(memory, 'lesson two pending');
+      // The lesson cursor sits AT l1 (already promoted) — only l2 is above it.
+      memory.store.setMeta(optimizeCursorKey('lesson', slug), String(l1));
+
+      const { candidates } = await generateCandidates(memory, {
+        projectRoot,
+        projectsDir,
+        heuristicOnly: true,
+      });
+      const lessonCand = candidates.find((c) => c.target.kind === 'auto-memory');
+      expect(lessonCand).toBeDefined();
+      // Only l2 (above the cursor) is evidence; l1 is never re-clustered.
+      expect(lessonCand?.evidenceIds).toEqual([l2]);
+    } finally {
+      memory.close();
+    }
+  });
+
+  it('emits NO lesson candidate when every lesson is at or below the cursor', async () => {
+    const memory = newMemory();
+    try {
+      const slug = projectSlug(projectRoot);
+      const l1 = await seedConsolidatedLesson(memory, 'lesson one');
+      const l2 = await seedConsolidatedLesson(memory, 'lesson two');
+      // Cursor at the max → nothing left to promote.
+      memory.store.setMeta(optimizeCursorKey('lesson', slug), String(l2));
+      void l1;
+
+      const { candidates } = await generateCandidates(memory, {
+        projectRoot,
+        projectsDir,
+        heuristicOnly: true,
+      });
+      expect(candidates.find((c) => c.target.kind === 'auto-memory')).toBeUndefined();
+    } finally {
+      memory.close();
+    }
+  });
+
+  it('filters decisions on the decision cursor independently of the lesson cursor', async () => {
+    const memory = newMemory();
+    try {
+      const slug = projectSlug(projectRoot);
+      const d1 = await seedConsolidated(memory); // a consolidate decision
+      // Decision cursor at d1 → no decision candidate; lesson cursor untouched.
+      memory.store.setMeta(optimizeCursorKey('decision', slug), String(d1));
+
+      const { candidates } = await generateCandidates(memory, {
+        projectRoot,
+        projectsDir,
+        heuristicOnly: true,
+      });
+      expect(candidates.find((c) => c.target.kind === 'claude-md')).toBeUndefined();
+    } finally {
+      memory.close();
+    }
+  });
+
+  it('with no cursor set, emits all consolidate obs (cursor=0 is the floor)', async () => {
+    const memory = newMemory();
+    try {
+      const l1 = await seedConsolidatedLesson(memory, 'lesson one');
+      const l2 = await seedConsolidatedLesson(memory, 'lesson two');
+      const { candidates } = await generateCandidates(memory, {
+        projectRoot,
+        projectsDir,
+        heuristicOnly: true,
+      });
+      const lessonCand = candidates.find((c) => c.target.kind === 'auto-memory');
+      // No cursor → both lessons (desc order: l2 then l1).
+      expect(lessonCand?.evidenceIds.slice().sort((a, b) => a - b)).toEqual([l1, l2]);
     } finally {
       memory.close();
     }

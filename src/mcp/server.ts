@@ -30,9 +30,11 @@ import {
 } from '../maintain/index.js';
 import { type Memory, openMemory } from '../memory.js';
 import {
+  advanceOptimizeCursorsAfterApply,
   applyApprovedCandidate,
   generateOptimizations,
   type OptimizeCandidate,
+  projectSlug,
 } from '../optimize/index.js';
 import { resolveRecallProject } from '../recall/index.js';
 import { acquireRebuildLock, REBUILD_FAILED_KEY, REBUILD_HEARTBEAT_MS } from '../store/index.js';
@@ -222,7 +224,23 @@ export function createMcpServer(memory: Memory, harnessId?: string): McpServer {
   // flag → calls `optimize` → shows the diffs → the USER approves → agent calls
   // `apply` per approved id. `apply` never auto-writes: it is an explicit call and
   // the fail-closed user|feedback guard still refuses protected entries.
-  const optimizeCache = new Map<string, { candidate: OptimizeCandidate; projectRoot: string }>();
+  //
+  // `optimizeCache` indexes the CURRENT run's candidates by id (fast `apply` lookup);
+  // `optimizeRun` holds the run-wide context the per-kind cursor advance needs (#138
+  // FIX2): the FULL candidate list, the un-sliced `survivingIds` keep-set, the
+  // `projectRoot`, and the set of ids already applied this run. Each `optimize`
+  // REPLACES both — a fresh run invalidates the prior one's ids. The CLI + cadence
+  // advance the cursor via `advanceOptimizeCursorsAfterApply`; `apply` now does the
+  // same so the MCP path never leaves the cursor stale (it keeps nagging otherwise).
+  const optimizeCache = new Map<string, OptimizeCandidate>();
+  let optimizeRun:
+    | {
+        projectRoot: string;
+        survivingIds: number[];
+        candidates: OptimizeCandidate[];
+        applied: Set<string>;
+      }
+    | undefined;
 
   server.registerTool(
     'optimize',
@@ -247,12 +265,19 @@ export function createMcpServer(memory: Memory, harnessId?: string): McpServer {
     async ({ project, limit }) =>
       withReady(memory, async () => {
         const projectRoot = project ?? process.cwd();
-        const { candidates, estimate } = await generateOptimizations(memory, loadConfig(), {
-          projectRoot,
-          ...(limit !== undefined ? { limit } : {}),
-        });
+        const { candidates, estimate, survivingIds } = await generateOptimizations(
+          memory,
+          loadConfig(),
+          {
+            projectRoot,
+            ...(limit !== undefined ? { limit } : {}),
+          },
+        );
         optimizeCache.clear();
-        for (const c of candidates) optimizeCache.set(c.id, { candidate: c, projectRoot });
+        for (const c of candidates) optimizeCache.set(c.id, c);
+        // Pin the run-wide context the cursor advance needs (#138 FIX2): a fresh run
+        // REPLACES the prior one, so a stale id never advances against the wrong keep-set.
+        optimizeRun = { projectRoot, survivingIds, candidates, applied: new Set<string>() };
         return jsonContent({
           candidates: candidates.map((c) => ({
             id: c.id,
@@ -285,8 +310,8 @@ export function createMcpServer(memory: Memory, harnessId?: string): McpServer {
     },
     async ({ candidateId }) =>
       withReady(memory, async () => {
-        const entry = optimizeCache.get(candidateId);
-        if (!entry) {
+        const candidate = optimizeCache.get(candidateId);
+        if (!candidate || !optimizeRun) {
           // Candidate ids live in this in-process Map (#114) and do NOT survive a
           // server restart. An empty cache has two innocent causes — the last
           // `optimize` produced no candidates, OR the server restarted since the ids
@@ -302,10 +327,28 @@ export function createMcpServer(memory: Memory, harnessId?: string): McpServer {
                 'Re-run `optimize` to refresh candidates, then apply.';
           return jsonContent({ error });
         }
-        const result = await applyApprovedCandidate(memory, entry.candidate, {
-          projectRoot: entry.projectRoot,
+        const run = optimizeRun;
+        const result = await applyApprovedCandidate(memory, candidate, {
+          projectRoot: run.projectRoot,
           projectsDir: defaultClaudeProjectsDir(),
         });
+        // Advance the per-kind/project cursor on a successful write (#138 FIX2). The CLI
+        // + cadence advance once after their apply loop; MCP applies candidates one at a
+        // time, so we re-run the advance after EACH apply with the cumulative applied set.
+        // It is idempotent and converges: a kind's cursor advances only once its LAST
+        // surviving candidate has been applied (`pendingValid` empty), so re-running it
+        // per apply never over- or under-advances. A refusal/no-write does not mark the
+        // id applied, so it can't move the cursor.
+        if (result.applied) {
+          run.applied.add(candidate.id);
+          advanceOptimizeCursorsAfterApply(
+            memory,
+            projectSlug(run.projectRoot),
+            new Set(run.survivingIds),
+            run.candidates,
+            run.applied,
+          );
+        }
         return jsonContent(result);
       }),
   );

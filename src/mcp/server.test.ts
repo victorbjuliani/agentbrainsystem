@@ -6,6 +6,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppConfig } from '../config.js';
 import { __clearDeleteCacheForTests } from '../delete/delete.js';
+import { optimizeCursorKey } from '../hooks/staleness.js';
 import type { EnsureResult } from '../indexer/index.js';
 import { readBinding } from '../ingest/index.js';
 import { type Memory, openMemory } from '../memory.js';
@@ -305,6 +306,46 @@ describe('MCP server', () => {
 
     const { existsSync } = await import('node:fs');
     expect(existsSync(join(projectRoot, 'CLAUDE.md'))).toBe(true);
+  });
+
+  it('apply advances the per-kind/project optimize cursor (lesson path) — and not before (#138 FIX2)', async () => {
+    const projectRoot = join(dir, 'proj');
+    const slug = projectSlug(projectRoot);
+    // Seed a consolidate LESSON under the optimized project's slug (auto-memory path).
+    const sessionId = mem.store.createSession({ externalId: 'sL', project: slug });
+    const lessonId = await mem.indexer.write({
+      sessionId,
+      kind: 'lesson',
+      content: 'Keep local embeddings the offline default after the first model cache.',
+      source: 'consolidate',
+      metadata: { sourceSession: sessionId },
+    });
+
+    const lessonCursorKey = optimizeCursorKey('lesson', slug);
+    expect(mem.store.getMeta(lessonCursorKey)).toBeNull(); // unset to start
+
+    const client = await connectedClient();
+    const gen = parse(
+      await client.callTool({ name: 'optimize', arguments: { project: projectRoot } }),
+    ) as { candidates: Array<{ id: string; target: { kind: string } }> };
+    const lessonCand = gen.candidates.find((c) => c.target.kind === 'auto-memory');
+    expect(lessonCand).toBeDefined();
+    if (!lessonCand) return;
+
+    // optimize alone must NOT advance the cursor — only a successful apply does.
+    expect(mem.store.getMeta(lessonCursorKey)).toBeNull();
+
+    const applied = parse(
+      await client.callTool({ name: 'apply', arguments: { candidateId: lessonCand.id } }),
+    ) as { applied: boolean };
+    expect(applied.applied).toBe(true);
+
+    // After applying the only surviving lesson candidate, its kind's cursor advances to
+    // the project+kind max (idempotent — converges as candidates are applied one-by-one).
+    expect(mem.store.getMeta(lessonCursorKey)).toBe(
+      String(mem.store.maxConsolidatedId(slug, 'lesson')),
+    );
+    expect(mem.store.getMeta(lessonCursorKey)).toBe(String(lessonId));
   });
 
   it('apply on a fresh server (empty cache) explains both causes, not just restart (#114)', async () => {
