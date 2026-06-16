@@ -88,6 +88,20 @@ function defaultDataDir(): string {
 }
 
 /**
+ * Parse a strict positive-integer env var. Unlike `Number.parseInt`, which silently
+ * truncates lenient forms (`'1e3'`→1, `'768px'`→768, `'7.5'`→7, `' 30000'`, `'0x10'`)
+ * straight past `Number.isInteger`, this requires the raw string to be digits only.
+ * Throws with `name` in the message on any non-integer or non-positive value. (F6-09)
+ */
+function parsePositiveIntEnv(name: string, raw: string): number {
+  const n = /^[0-9]+$/.test(raw) ? Number.parseInt(raw, 10) : Number.NaN;
+  if (!Number.isInteger(n) || n <= 0) {
+    throw new Error(`invalid ${name} '${raw}' — expected a positive integer`);
+  }
+  return n;
+}
+
+/**
  * Build the active config from environment, falling back to local-first defaults.
  * Pure and cheap — call it wherever config is needed rather than caching globally,
  * so tests can set env per-case.
@@ -106,15 +120,10 @@ export function loadConfig(): AppConfig {
   }
   const provider = (rawProvider as EmbeddingProviderId) || 'local';
   const model = process.env.ABS_EMBED_MODEL || (provider === 'local' ? DEFAULT_LOCAL_MODEL : '');
-  const dimensions = process.env.ABS_EMBED_DIM
-    ? Number.parseInt(process.env.ABS_EMBED_DIM, 10)
-    : PROVIDER_DEFAULT_DIM[provider];
   // Fail loud at startup rather than letting NaN/0 reach the vec0 DDL (float[NaN]).
-  if (!Number.isInteger(dimensions) || dimensions <= 0) {
-    throw new Error(
-      `invalid ABS_EMBED_DIM '${process.env.ABS_EMBED_DIM}' — expected a positive integer`,
-    );
-  }
+  const dimensions = process.env.ABS_EMBED_DIM
+    ? parsePositiveIntEnv('ABS_EMBED_DIM', process.env.ABS_EMBED_DIM)
+    : PROVIDER_DEFAULT_DIM[provider];
 
   const rawScope = process.env.ABS_RECALL_SCOPE;
   if (rawScope && !VALID_RECALL_SCOPES.includes(rawScope as RecallScope)) {
@@ -138,12 +147,7 @@ export function loadConfig(): AppConfig {
 
   let distillMinObs = DEFAULT_DISTILL_MIN_OBS;
   if (process.env.DISTILL_MIN_OBS) {
-    distillMinObs = Number.parseInt(process.env.DISTILL_MIN_OBS, 10);
-    if (!Number.isInteger(distillMinObs) || distillMinObs <= 0) {
-      throw new Error(
-        `invalid DISTILL_MIN_OBS '${process.env.DISTILL_MIN_OBS}' — expected a positive integer`,
-      );
-    }
+    distillMinObs = parsePositiveIntEnv('DISTILL_MIN_OBS', process.env.DISTILL_MIN_OBS);
   }
 
   return {
@@ -179,12 +183,7 @@ function loadLlmConfig(): LlmConfig | undefined {
 
   let timeoutMs = DEFAULT_LLM_TIMEOUT_MS;
   if (process.env.ABS_LLM_TIMEOUT_MS) {
-    timeoutMs = Number.parseInt(process.env.ABS_LLM_TIMEOUT_MS, 10);
-    if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
-      throw new Error(
-        `invalid ABS_LLM_TIMEOUT_MS '${process.env.ABS_LLM_TIMEOUT_MS}' — expected a positive integer`,
-      );
-    }
+    timeoutMs = parsePositiveIntEnv('ABS_LLM_TIMEOUT_MS', process.env.ABS_LLM_TIMEOUT_MS);
   }
 
   let pricePer1k: number | undefined;

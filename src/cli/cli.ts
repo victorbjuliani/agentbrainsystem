@@ -176,6 +176,14 @@ export async function cmdIngest(args: string[]): Promise<void> {
   const projects = optionValues(args, '--project');
   const base = dir ? { projectsDir: dir } : {};
 
+  // F6-02: `--all` (every project) and `--project <slug>` (specific) contradict each
+  // other; `--all` used to silently win and drop `--project`. Refuse before any work.
+  if (all && projects.length > 0) {
+    err('--all and --project are mutually exclusive — pass one or the other.');
+    process.exitCode = 1;
+    return;
+  }
+
   if (!apply) {
     // Preview: survey on-disk transcripts by project. Read-only ⇒ ensure:false so we
     // never load the embedding model just to list what's available.
@@ -399,8 +407,10 @@ async function cmdExport(args: string[]): Promise<void> {
   }
 }
 
-async function cmdImport(args: string[]): Promise<void> {
-  const path = positional(args);
+export async function cmdImport(args: string[]): Promise<void> {
+  // F6-01: drop the `--mode <value>` pair so the space form (`import --mode replace
+  // <path>`) can't read 'replace' as the source path.
+  const path = positional(stripFlagPair(args, '--mode'));
   if (!path) throw new Error('import requires a source path: abs import <path>');
   const mode = (optionValue(args, '--mode') ?? 'merge') as 'merge' | 'replace';
   if (mode !== 'merge' && mode !== 'replace') {
@@ -1427,7 +1437,11 @@ export async function cmdProject(args: string[]): Promise<void> {
 /** `abs remember "<text>" --global [--kind K]` — author a global-brain memory. */
 export async function cmdRemember(args: string[]): Promise<void> {
   const json = args.includes('--json');
-  const text = positional(args);
+  // F6-01: resolve the text WITHOUT letting the shared `positional()` mistake the
+  // value of the only value-taking flag (`--kind`) for the text. The `--kind=value`
+  // inline form is already a single `-`-prefixed token `positional()` skips; the
+  // space form (`--kind lesson "text"`) needs the pair dropped first.
+  const text = positional(stripFlagPair(args, '--kind'));
   if (!text) {
     err('error: remember requires text, e.g. `abs remember "..." --global`');
     process.exitCode = 1;
@@ -1505,29 +1519,56 @@ export async function cmdPromote(args: string[]): Promise<void> {
   }
 }
 
-/** Read the value following a `--flag` token. */
-function optionValue(args: string[], flag: string): string | undefined {
-  const i = args.indexOf(flag);
-  return i >= 0 ? args[i + 1] : undefined;
+/**
+ * Read the value of `--flag`, accepting BOTH supported forms:
+ *   space form   `--flag value`  → the token after `--flag`
+ *   inline form  `--flag=value`  → the substring after the first `=` (may be empty)
+ * Returns undefined when the flag is absent (or is the space form with no following
+ * token). `--flag=` yields '' rather than swallowing the next token.
+ */
+export function optionValue(args: string[], flag: string): string | undefined {
+  const prefix = `${flag}=`;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i] as string;
+    if (a.startsWith(prefix)) return a.slice(prefix.length);
+    if (a === flag) return args[i + 1];
+  }
+  return undefined;
 }
 
 /**
- * A copy of `args` with the first `flag <value>` pair removed (value = the token
- * after the flag, if any). Lets a command resolve its positional id without the
- * shared `positional()` mistaking a flag's value for the positional.
+ * A copy of `args` with the FIRST occurrence of `flag` removed, including its value:
+ *   space form   `--flag value`  → drops both tokens
+ *   inline form  `--flag=value`  → drops the single token
+ * Lets a command resolve its positional without the shared `positional()` mistaking
+ * a flag's value for the positional.
  */
-function stripFlagPair(args: string[], flag: string): string[] {
-  const i = args.indexOf(flag);
-  if (i < 0) return args;
-  const end = i + (args[i + 1] !== undefined ? 2 : 1);
-  return [...args.slice(0, i), ...args.slice(end)];
+export function stripFlagPair(args: string[], flag: string): string[] {
+  const prefix = `${flag}=`;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i] as string;
+    if (a.startsWith(prefix)) return [...args.slice(0, i), ...args.slice(i + 1)];
+    if (a === flag) {
+      const end = i + (args[i + 1] !== undefined ? 2 : 1);
+      return [...args.slice(0, i), ...args.slice(end)];
+    }
+  }
+  return args;
 }
 
-/** All values of a repeatable flag, e.g. `--project a --project b` → ['a','b']. */
-function optionValues(args: string[], flag: string): string[] {
+/**
+ * All values of a repeatable flag, accepting both forms per occurrence:
+ * `--project a --project=b` → ['a','b']. The inline `--flag=` contributes an empty
+ * string (mirrors optionValue); the space form contributes only when a following
+ * token exists.
+ */
+export function optionValues(args: string[], flag: string): string[] {
+  const prefix = `${flag}=`;
   const values: string[] = [];
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === flag && args[i + 1] !== undefined) values.push(args[i + 1] as string);
+    const a = args[i] as string;
+    if (a.startsWith(prefix)) values.push(a.slice(prefix.length));
+    else if (a === flag && args[i + 1] !== undefined) values.push(args[i + 1] as string);
   }
   return values;
 }

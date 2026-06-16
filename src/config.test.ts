@@ -87,6 +87,15 @@ describe('loadConfig', () => {
     expect(() => loadConfig()).toThrow(/ABS_EMBED_DIM/);
   });
 
+  it('rejects lenient numeric forms for ABS_EMBED_DIM (1e3, trailing units)', () => {
+    // F6-09: Number.parseInt('1e3') === 1 and Number.parseInt('768px') === 768 both
+    // sneak past Number.isInteger; the raw string must be a clean integer.
+    for (const v of ['1e3', '768px', ' 768', '7.5', '0x10']) {
+      process.env.ABS_EMBED_DIM = v;
+      expect(() => loadConfig()).toThrow(/ABS_EMBED_DIM/);
+    }
+  });
+
   it('throws on an unknown ABS_EMBED_PROVIDER', () => {
     process.env.ABS_EMBED_PROVIDER = 'nope';
     expect(() => loadConfig()).toThrow(/ABS_EMBED_PROVIDER/);
@@ -137,6 +146,17 @@ describe('loadConfig', () => {
     expect(() => loadConfig()).toThrow(/ABS_LLM_TIMEOUT_MS/);
   });
 
+  it('rejects lenient numeric forms for ABS_LLM_TIMEOUT_MS (60s, 1e3)', () => {
+    // F6-09: Number.parseInt('60s') === 60 and Number.parseInt('1e3') === 1 both pass
+    // Number.isInteger; the raw string must be a clean integer.
+    process.env.ABS_LLM_BASE_URL = 'http://localhost:11434/v1';
+    process.env.ABS_LLM_MODEL = 'qwen2.5';
+    for (const v of ['60s', '1e3', '30000ms', ' 30000']) {
+      process.env.ABS_LLM_TIMEOUT_MS = v;
+      expect(() => loadConfig()).toThrow(/ABS_LLM_TIMEOUT_MS/);
+    }
+  });
+
   it('throws on a bad ABS_LLM_PRICE_PER_1K (non-finite or negative)', () => {
     process.env.ABS_LLM_BASE_URL = 'http://localhost:11434/v1';
     process.env.ABS_LLM_MODEL = 'qwen2.5';
@@ -185,5 +205,14 @@ describe('loadConfig', () => {
     expect(() => loadConfig()).toThrow(/DISTILL_MIN_OBS/);
     process.env.DISTILL_MIN_OBS = 'garbage';
     expect(() => loadConfig()).toThrow(/DISTILL_MIN_OBS/);
+  });
+
+  it('rejects lenient numeric forms for DISTILL_MIN_OBS (25x, 1e3)', () => {
+    // F6-09: Number.parseInt('25x') === 25 and Number.parseInt('1e3') === 1 both pass
+    // Number.isInteger; the raw string must be a clean integer.
+    for (const v of ['25x', '1e3', '25.0', ' 25']) {
+      process.env.DISTILL_MIN_OBS = v;
+      expect(() => loadConfig()).toThrow(/DISTILL_MIN_OBS/);
+    }
   });
 });
