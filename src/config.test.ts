@@ -96,6 +96,21 @@ describe('loadConfig', () => {
     }
   });
 
+  it('treats an EMPTY numeric env var as unset → provider default, not an error', () => {
+    // Deliberate (Codex/CodeRabbit review on PR #167): F6-09 rejects malformed NON-empty
+    // values; an empty string is the conventional "unset" and falls back to the safe
+    // provider-correct default rather than crashing the session. Locked so neither the
+    // strict-reject nor a future lenient-parse regression can slip in unnoticed.
+    process.env.ABS_EMBED_DIM = '';
+    expect(loadConfig().embedding.dimensions).toBe(384); // local default
+    process.env.DISTILL_MIN_OBS = '';
+    expect(loadConfig().distillMinObs).toBe(25); // STALENESS_MIN_PENDING default
+    process.env.ABS_LLM_BASE_URL = 'http://localhost:11434/v1';
+    process.env.ABS_LLM_MODEL = 'qwen2.5';
+    process.env.ABS_LLM_TIMEOUT_MS = '';
+    expect(loadConfig().llm?.timeoutMs).toBe(60000); // DEFAULT_LLM_TIMEOUT_MS
+  });
+
   it('throws on an unknown ABS_EMBED_PROVIDER', () => {
     process.env.ABS_EMBED_PROVIDER = 'nope';
     expect(() => loadConfig()).toThrow(/ABS_EMBED_PROVIDER/);

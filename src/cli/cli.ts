@@ -648,7 +648,7 @@ export function resolveHarnesses(args: string[]): HarnessAdapter[] | null {
   // fall-back to the default Claude adapter (Codex review on #77): falling through
   // would run real setup (settings.json / MCP registration) on a typo like
   // `abs setup --harness`. Mirrors the `--session` strict-parse contract.
-  if (args.includes('--harness')) {
+  if (hasFlag(args, '--harness')) {
     const id = optionValue(args, '--harness');
     if (id === undefined || id.startsWith('-')) {
       out('! --harness requires a harness id value');
@@ -1265,7 +1265,7 @@ export type SessionResolution = { id: string; source: 'flag' | 'env' } | { error
  * `abs project --skip --session --yes`.
  */
 export function resolveSessionId(args: string[]): SessionResolution {
-  if (args.includes('--session')) {
+  if (hasFlag(args, '--session')) {
     const explicit = optionValue(args, '--session');
     if (explicit === undefined || explicit.startsWith('-')) {
       return { error: '--session requires a session id value' };
@@ -1471,7 +1471,7 @@ export async function cmdRemember(args: string[]): Promise<void> {
  */
 export async function cmdPromote(args: string[]): Promise<void> {
   const json = args.includes('--json');
-  const asPresent = args.includes('--as');
+  const asPresent = hasFlag(args, '--as');
   const asValue = optionValue(args, '--as');
   // Resolve the id WITHOUT teaching the shared `positional()` about --as: drop the
   // `--as <value>` pair from a local copy so the curated text can't be read as the id
@@ -1537,23 +1537,40 @@ export function optionValue(args: string[], flag: string): string | undefined {
 }
 
 /**
- * A copy of `args` with the FIRST occurrence of `flag` removed, including its value:
+ * Presence test for a VALUE-taking flag, accepting BOTH forms — the bare `--flag`
+ * (space form, value follows) and `--flag=value` (inline). A plain `args.includes('--flag')`
+ * misses the inline form, so a caller that gates on presence and then reads the value with
+ * `optionValue` would IGNORE `--flag=value` entirely (e.g. an explicit `--session=other`
+ * silently falling back to the ambient session — a destructive footgun). Boolean flags
+ * have no `=value` form, so they keep using `args.includes`.
+ */
+export function hasFlag(args: string[], flag: string): boolean {
+  const prefix = `${flag}=`;
+  return args.some((a) => a === flag || a.startsWith(prefix));
+}
+
+/**
+ * A copy of `args` with EVERY occurrence of `flag` removed, including its value:
  *   space form   `--flag value`  → drops both tokens
  *   inline form  `--flag=value`  → drops the single token
  * Lets a command resolve its positional without the shared `positional()` mistaking
- * a flag's value for the positional.
+ * a flag's value for the positional. ALL occurrences are dropped (not just the first):
+ * a duplicate value flag (`--kind a --kind b text`) would otherwise leave the second
+ * pair behind and `positional()` would read that value (`b`) as the positional.
  */
 export function stripFlagPair(args: string[], flag: string): string[] {
   const prefix = `${flag}=`;
+  const out: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i] as string;
-    if (a.startsWith(prefix)) return [...args.slice(0, i), ...args.slice(i + 1)];
+    if (a.startsWith(prefix)) continue; // inline form — drop this single token
     if (a === flag) {
-      const end = i + (args[i + 1] !== undefined ? 2 : 1);
-      return [...args.slice(0, i), ...args.slice(end)];
+      if (args[i + 1] !== undefined) i += 1; // space form — also skip its value token
+      continue;
     }
+    out.push(a);
   }
-  return args;
+  return out;
 }
 
 /**
