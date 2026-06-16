@@ -14,10 +14,18 @@
  * Both take a `MemoryStore` instance (not `openMemory`) so callers/tests stay
  * fast and offline — no embedding provider is ever constructed here.
  */
-import { createReadStream, createWriteStream } from 'node:fs';
+import { createReadStream, createWriteStream, renameSync, rmSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { loadConfig } from '../config.js';
+import { OPENCODE_CURSOR_PREFIX } from '../harness/capabilities/sqlite-transcript-source.js';
+import {
+  CODEX_CWD_PREFIX,
+  COPILOT_CWD_PREFIX,
+  CURSOR_PREFIX,
+  GEMINI_LASTID_PREFIX,
+} from '../ingest/ingest.js';
 import type { MemoryStore } from '../store/memory-store.js';
+import { EMBED_DEGRADED_KEY, REBUILD_FAILED_KEY } from '../store/write-lock.js';
 import {
   EXPORT_FORMAT,
   EXPORT_VERSION,
@@ -72,7 +80,26 @@ export async function exportStore(store: MemoryStore, outPath: string): Promise<
   const externalIdById = new Map<number, string>();
   for (const s of sessions) externalIdById.set(s.id, s.externalId);
 
-  const stream = createWriteStream(outPath, { encoding: 'utf8' });
+  // Pre-count the observations that will actually be WRITTEN — those whose session
+  // resolves to an exported session. The header must declare THIS, not the raw total:
+  // an orphan row (corrupt store; FK CASCADE normally prevents one) is skipped below,
+  // so a header claiming the full `counts.observations` would over-declare and THIS
+  // build's importer rejects the artifact as truncated (`observationLines.length <
+  // header.counts.observations`) — i.e. an export this build cannot reimport (Codex
+  // review on PR #165). The pre-pass is cheap: `iterateObservations` yields no vectors
+  // (those load per-row only in the write loop below).
+  let writableObservations = 0;
+  for (const obs of store.iterateObservations()) {
+    if (externalIdById.has(obs.sessionId)) writableObservations += 1;
+  }
+
+  // Write to a sibling temp path and only `rename` it over `outPath` after the
+  // stream closes cleanly (F3-03). `createWriteStream` truncates its target up
+  // front, so writing straight to `outPath` would leave it empty/partial on a
+  // mid-write crash. A rename publishes the artifact atomically — `outPath` only
+  // ever appears on full success.
+  const tmpPath = `${outPath}.tmp`;
+  const stream = createWriteStream(tmpPath, { encoding: 'utf8' });
   const closed = new Promise<void>((resolve, reject) => {
     stream.on('error', reject);
     stream.on('finish', resolve);
@@ -88,7 +115,7 @@ export async function exportStore(store: MemoryStore, outPath: string): Promise<
         model: config.embedding.model,
         dimensions,
       },
-      counts: { sessions: counts.sessions, observations: counts.observations },
+      counts: { sessions: counts.sessions, observations: writableObservations },
     };
     await writeLine(stream, header);
 
@@ -105,11 +132,14 @@ export async function exportStore(store: MemoryStore, outPath: string): Promise<
     }
 
     let observations = 0;
+    let danglingSkipped = 0;
     for (const obs of store.iterateObservations()) {
       const sessionExternalId = externalIdById.get(obs.sessionId);
       if (sessionExternalId === undefined) {
         // An observation with no resolvable session would be unimportable; skip it
-        // rather than emit a dangling reference.
+        // rather than emit a dangling reference. Counted so the reconciliation
+        // below distinguishes a legitimate skip from a lost row.
+        danglingSkipped += 1;
         continue;
       }
       const line: ObservationLine = {
@@ -128,9 +158,34 @@ export async function exportStore(store: MemoryStore, outPath: string): Promise<
 
     stream.end();
     await closed;
+
+    // Reconcile what we actually walked against the counts taken before the iteration
+    // (F3-02). Two invariants: (1) we wrote EXACTLY the writable count the header
+    // declares — so the artifact is self-consistent and reimports cleanly; (2) every
+    // row `counts()` promised was seen (written or skipped-dangling) — a shortfall
+    // means rows vanished mid-walk (a truncation/inconsistency) and finalizing would
+    // publish a lying artifact that imports as a silent partial.
+    const observationsSeen = observations + danglingSkipped;
+    if (
+      sessions.length !== counts.sessions ||
+      observations !== writableObservations ||
+      observationsSeen !== counts.observations
+    ) {
+      throw new Error(
+        `export count mismatch: expected ${counts.sessions} sessions / ${writableObservations} writable observations; ` +
+          `wrote ${sessions.length} sessions / ${observations} observations ` +
+          `(+${danglingSkipped} dangling, ${observationsSeen} of ${counts.observations} total seen)`,
+      );
+    }
+
+    // Success — publish the artifact atomically. Only now does `outPath` exist.
+    renameSync(tmpPath, outPath);
     return { sessions: sessions.length, observations };
   } catch (err) {
     stream.destroy();
+    // Drop the partial temp file so a failed export leaves no debris and never
+    // touches `outPath`.
+    rmSync(tmpPath, { force: true });
     throw err;
   }
 }
@@ -186,11 +241,45 @@ function parseHeader(raw: string, store: MemoryStore): ExportHeader {
   return header as ExportHeader;
 }
 
-/** Delete every session (cascades to observations + index rows) → an empty store. */
+/**
+ * kv_meta key prefixes whose values describe ingest PROGRESS, not durable user
+ * intent. A `replace` is a full reset, so these must be cleared too (F3-04):
+ * otherwise the next ingest resumes from cursors / degraded flags that point at
+ * data the wipe just deleted, silently skipping records on resync.
+ *
+ * `session-project:*` bindings are deliberately ABSENT — they are explicit user
+ * project decisions, not derived from the observation rows being replaced, so a
+ * reset preserves them.
+ */
+const INGEST_STATE_META_PREFIXES = [
+  CURSOR_PREFIX, // ingest:cursor:*
+  CODEX_CWD_PREFIX, // codex:cwd:*
+  COPILOT_CWD_PREFIX, // ingest:copilot-cwd:*
+  GEMINI_LASTID_PREFIX, // gemini:lastid:*
+  OPENCODE_CURSOR_PREFIX, // opencode:cursor:* (Codex review on PR #165)
+];
+
+/** Single-key ingest-state kv_meta flags cleared on a full reset (F3-04). */
+const INGEST_STATE_META_KEYS = [REBUILD_FAILED_KEY, EMBED_DEGRADED_KEY];
+
+/** Delete every ingest-progress kv_meta key/prefix — but never user bindings. */
+function clearIngestStateMeta(store: MemoryStore): void {
+  for (const prefix of INGEST_STATE_META_PREFIXES) {
+    for (const key of store.listMetaKeys(prefix)) store.deleteMeta(key);
+  }
+  for (const key of INGEST_STATE_META_KEYS) store.deleteMeta(key);
+}
+
+/**
+ * Delete every session (cascades to observations + index rows) → an empty store,
+ * and clear ingest-progress bookkeeping so the next ingest does not resume from
+ * stale cursors/flags (F3-04). PRESERVES `session-project:*` user bindings.
+ */
 function wipe(store: MemoryStore): void {
   for (const s of store.listSessions()) store.deleteSession(s.id);
   // Defensive: prune any index rows orphaned by a prior crash.
   store.pruneIndexOrphans();
+  clearIngestStateMeta(store);
 }
 
 /**
@@ -201,8 +290,15 @@ function wipe(store: MemoryStore): void {
  * get fresh numeric ids — recall identity is by content/vector, not id — and
  * are reindexed (vector if present, FTS always).
  *
- * The file is read line-by-line via `readline` so a large artifact streams in
- * without materializing in memory.
+ * Integrity (issue #157): the import is two-phase. PHASE 1 streams the file
+ * line-by-line via `readline` (no materialized giant string) and parses + counts
+ * every line WITHOUT touching the store. The dimension check runs in this phase,
+ * before any mutation. Only once the whole file parses and its row count
+ * reconciles against the header do we enter PHASE 2 — wipe (replace) plus all
+ * inserts inside ONE `store.transaction()`, so any failure mid-apply rolls the
+ * store back to its exact pre-import state (F3-01). A truncated artifact (header
+ * declares more rows than are present) is rejected here, never imported as a
+ * silent partial success (F3-02).
  */
 export async function importStore(
   store: MemoryStore,
@@ -216,21 +312,29 @@ export async function importStore(
     crlfDelay: Number.POSITIVE_INFINITY, // treat \r\n and \n alike (Windows portability)
   });
 
+  // ---------------------------------------------------------------- PHASE 1
+  // Parse + validate the whole artifact into ordered, in-memory records. No
+  // store mutation happens here, so a parse/validation error leaves the target
+  // untouched regardless of mode.
   let header: ExportHeader | null = null;
-  // externalId → local session id, populated as session lines arrive (or reused).
-  const sessionIdByExternalId = new Map<string, number>();
-  let sessionsImported = 0;
-  let observationsImported = 0;
+  const sessionLines: SessionLine[] = [];
+  const observationLines: ObservationLine[] = [];
+  // The set of session externalIds the artifact declares — observations may only
+  // reference one of these (parse-time integrity, independent of store state).
+  const declaredSessionIds = new Set<string>();
 
+  // The readline interface holds an open file descriptor; close it on EVERY exit
+  // path — normal return or any throw from phase 1, the validation below, or the
+  // phase-2 apply — so an error past phase 1 never leaks an fd (issue #157).
   try {
     for await (const rawLine of rl) {
       const line = rawLine.trim();
       if (line.length === 0) continue;
 
       if (header === null) {
+        // parseHeader runs the dimension check BEFORE any mutation (still true:
+        // nothing is mutated in this phase at all).
         header = parseHeader(line, store);
-        // Header validated (incl. dimension match) — only now safe to mutate.
-        if (mode === 'replace') wipe(store);
         continue;
       }
 
@@ -244,6 +348,53 @@ export async function importStore(
 
       if (record.t === 'session') {
         const s = record as SessionLine;
+        declaredSessionIds.add(s.externalId);
+        sessionLines.push(s);
+      } else if (record.t === 'obs') {
+        const o = record as ObservationLine;
+        if (!declaredSessionIds.has(o.sessionExternalId)) {
+          throw new Error(
+            `invalid export artifact: observation references unknown session '${o.sessionExternalId}'`,
+          );
+        }
+        observationLines.push(o);
+      }
+      // Unknown line type: ignore for forward-compatibility within the same version.
+    }
+
+    if (header === null) {
+      // No header line was ever seen. Nothing was mutated, so a `replace` against
+      // an empty/header-less file leaves the store untouched.
+      throw new Error('invalid export artifact: file is empty or has no header');
+    }
+
+    // Reconcile parsed rows against the header counts (F3-02). A truncated artifact
+    // — fewer data lines than the header declares — must be rejected loudly, not
+    // imported as a partial success. (Forward-compat unknown line types are ignored
+    // above, so an over-count from those is not treated as truncation.)
+    if (observationLines.length < header.counts.observations) {
+      throw new Error(
+        `export artifact truncated: header declares ${header.counts.observations} observations, found ${observationLines.length}`,
+      );
+    }
+    if (sessionLines.length < header.counts.sessions) {
+      throw new Error(
+        `export artifact truncated: header declares ${header.counts.sessions} sessions, found ${sessionLines.length}`,
+      );
+    }
+
+    // ---------------------------------------------------------------- PHASE 2
+    // Apply everything atomically. `store.transaction` runs the closure inside a
+    // single better-sqlite3 transaction that rolls back wholesale on any throw, so
+    // a mid-apply failure leaves the store at its exact pre-import state (F3-01).
+    const apply = store.transaction((): ImportResult => {
+      if (mode === 'replace') wipe(store);
+
+      const sessionIdByExternalId = new Map<string, number>();
+      let sessionsImported = 0;
+      let observationsImported = 0;
+
+      for (const s of sessionLines) {
         if (mode === 'merge') {
           const existing = store.getSessionByExternalId(s.externalId);
           if (existing) {
@@ -261,13 +412,14 @@ export async function importStore(
         });
         sessionIdByExternalId.set(s.externalId, id);
         sessionsImported += 1;
-        continue;
       }
 
-      if (record.t === 'obs') {
-        const o = record as ObservationLine;
+      for (const o of observationLines) {
         const sessionId = sessionIdByExternalId.get(o.sessionExternalId);
         if (sessionId === undefined) {
+          // Unreachable: parse phase already proved every obs references a declared
+          // session, and every declared session is created/reused above. Guarded so
+          // a future change can't slip a dangling insert past the transaction.
           throw new Error(
             `invalid export artifact: observation references unknown session '${o.sessionExternalId}'`,
           );
@@ -285,18 +437,11 @@ export async function importStore(
         observationsImported += 1;
       }
 
-      // Unknown line type: ignore for forward-compatibility within the same version.
-    }
-  } catch (err) {
+      return { sessionsImported, observationsImported };
+    });
+
+    return apply();
+  } finally {
     rl.close();
-    throw err;
   }
-
-  if (header === null) {
-    // No header line was ever seen. We only wipe AFTER validating the header,
-    // so a `replace` against an empty/header-less file leaves the store untouched.
-    throw new Error('invalid export artifact: file is empty or has no header');
-  }
-
-  return { sessionsImported, observationsImported };
 }

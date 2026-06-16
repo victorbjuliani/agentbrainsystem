@@ -40,16 +40,16 @@ import { cleanupBindings, readBinding, type SessionBinding } from './session-bin
 import type { IngestOptions, IngestResult } from './types.js';
 
 /** kv_meta key prefix for the per-file byte-offset cursor. */
-const CURSOR_PREFIX = 'ingest:cursor:';
+export const CURSOR_PREFIX = 'ingest:cursor:';
 
 /** kv_meta cache of a Codex rollout's header `cwd`, keyed by transcript path (W4 resume). */
-const CODEX_CWD_PREFIX = 'codex:cwd:';
+export const CODEX_CWD_PREFIX = 'codex:cwd:';
 
 /** kv_meta cache of a Copilot session's `session.context_changed` cwd, keyed by path (#69 resume). */
-const COPILOT_CWD_PREFIX = 'ingest:copilot-cwd:';
+export const COPILOT_CWD_PREFIX = 'ingest:copilot-cwd:';
 
 /** kv_meta key prefix for the per-Gemini-file last-ingested message id (W-NEW-1 rewind-safe, #68). */
-const GEMINI_LASTID_PREFIX = 'gemini:lastid:';
+export const GEMINI_LASTID_PREFIX = 'gemini:lastid:';
 
 /** Per-run session-cache sentinel marking a session a `skip` binding excludes. */
 const SKIP = -1;
