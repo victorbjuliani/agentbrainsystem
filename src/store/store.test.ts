@@ -1,4 +1,13 @@
-import { copyFileSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import {
+  copyFileSync,
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
@@ -10,6 +19,7 @@ import {
   CorruptStoreError,
   MemoryStore,
   SchemaDowngradeError,
+  writeValidatedBackup,
 } from './memory-store.js';
 import { CURRENT_SCHEMA_VERSION, MIGRATIONS } from './schema.js';
 
@@ -115,6 +125,25 @@ describe('MemoryStore', () => {
       reopened.open();
       expect(reopened.schemaVersion()).toBe(6);
       reopened.close();
+    });
+
+    it('records exactly one row per migration — no double-apply (F1-05)', () => {
+      // The fresh beforeEach db migrated to CURRENT inside one BEGIN IMMEDIATE txn.
+      // The cross-process serialization can't be raced in-process, but the invariant
+      // it protects — each version applied at most once — is directly assertable:
+      // a double-run (the bug) would either dup a version row or collide on the PK.
+      // Re-running migrations on the current db must not add or duplicate any row.
+      store.runMigrations();
+      const raw = new Database(dbPath);
+      try {
+        const rows = raw
+          .prepare('SELECT version, COUNT(*) AS n FROM schema_migrations GROUP BY version')
+          .all() as Array<{ version: number; n: number }>;
+        expect(rows.length).toBe(MIGRATIONS.length);
+        for (const r of rows) expect(r.n).toBe(1);
+      } finally {
+        raw.close();
+      }
     });
   });
 
@@ -1089,6 +1118,49 @@ describe('MemoryStore — corruption resilience (#101)', () => {
     expect(store.quickCheck().ok).toBe(true);
     expect(store.listSessions().length).toBe(1);
     store.close();
+  });
+});
+
+describe('writeValidatedBackup — atomic, validated backup (F1-04)', () => {
+  let dir: string;
+  let src: string;
+  let bak: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'abs-bak-'));
+    src = join(dir, 'memory.db');
+    bak = `${src}.bak`;
+    // A real, integrity-clean source db to copy.
+    new MemoryStore({ dbPath: src, dimensions: DIM }).open().close();
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('copies a valid db, promotes it atomically, leaves no temp behind', () => {
+    expect(writeValidatedBackup(src, bak)).toBe(true);
+    expect(existsSync(bak)).toBe(true);
+    // The promoted backup is a structurally-sound db (recovery path works).
+    const restored = new MemoryStore({ dbPath: bak, dimensions: DIM }).open();
+    expect(restored.quickCheck().ok).toBe(true);
+    restored.close();
+    // No `.tmp-*` scratch file survives.
+    expect(readdirSync(dir).some((f) => f.includes('.bak.tmp-'))).toBe(false);
+  });
+
+  it('does NOT overwrite a good .bak when the copy fails validation (torn-bak guard)', () => {
+    // Mint a known-good backup first, capture its bytes.
+    expect(writeValidatedBackup(src, bak)).toBe(true);
+    const goodBytes = statSync(bak).size;
+    // Now point the source at a garbage "db": the copy validates as corrupt, so the
+    // previous good .bak must survive untouched and no temp may linger.
+    const garbage = join(dir, 'garbage.db');
+    writeFileSync(garbage, 'this is not a sqlite database');
+    expect(writeValidatedBackup(garbage, bak)).toBe(false);
+    expect(existsSync(bak)).toBe(true);
+    expect(statSync(bak).size).toBe(goodBytes); // unchanged — good backup preserved
+    expect(readdirSync(dir).some((f) => f.includes('.bak.tmp-'))).toBe(false);
   });
 });
 

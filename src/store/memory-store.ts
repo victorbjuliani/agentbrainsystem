@@ -18,7 +18,7 @@
  *   - vectors bind into vec0 as a JSON string (`JSON.stringify(arr)`), not a
  *     Float32Array.
  */
-import { copyFileSync, existsSync, mkdirSync, statSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { dirname } from 'node:path';
 import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
@@ -193,6 +193,49 @@ export function backupIsDue(bakMtimeMs: number | null, nowMs: number): boolean {
   return nowMs - bakMtimeMs >= BACKUP_INTERVAL_MS;
 }
 
+/**
+ * Crash-safe backup write (F1-04): copy `srcPath` to a temp sibling, VALIDATE the
+ * copy opened as a structurally-sound db (`quick_check`), then atomically `rename`
+ * it onto `bakPath`. Returns `true` when a fresh, valid backup was promoted.
+ *
+ * Why not `copyFileSync(src, bak)` directly: a copy interrupted mid-write overwrites
+ * the previous GOOD `.bak` with a torn one, destroying the only recovery point. With
+ * temp+rename an interrupt leaves only the temp; the prior `.bak` is untouched. The
+ * post-copy `quick_check` is the "validate before replacing" guard — a torn copy
+ * never replaces a good backup. Best-effort: never throws, always cleans the temp.
+ */
+export function writeValidatedBackup(srcPath: string, bakPath: string): boolean {
+  const tmp = `${bakPath}.tmp-${process.pid}`;
+  // Opening the copy as a WAL db spawns `-wal`/`-shm` sidecars next to `tmp`; clean
+  // the whole set so no scratch file (main or sidecar) ever lingers in the data dir.
+  const cleanup = () => {
+    for (const p of [tmp, `${tmp}-wal`, `${tmp}-shm`, `${tmp}-journal`]) {
+      try {
+        rmSync(p, { force: true });
+      } catch {
+        /* nothing to clean */
+      }
+    }
+  };
+  try {
+    copyFileSync(srcPath, tmp);
+    const probe = new Database(tmp, { readonly: true });
+    try {
+      sqliteVec.load(probe); // mirror open(): the db carries vec0 virtual tables
+      const rows = probe.pragma('quick_check') as Array<{ quick_check: string }>;
+      if (!(rows.length === 1 && rows[0]?.quick_check === 'ok')) return false;
+    } finally {
+      probe.close();
+    }
+    renameSync(tmp, bakPath); // atomic replace of the previous good backup
+    return true;
+  } catch {
+    return false; // torn copy / validation failure → leave the prior good .bak alone
+  } finally {
+    cleanup(); // rename consumed the main temp on success; drop any leftover sidecars
+  }
+}
+
 export class MemoryStore {
   private db: Database.Database | null = null;
   private readonly dbPath: string;
@@ -297,7 +340,12 @@ export class MemoryStore {
       // busy !== 0 → the WAL was not fully flushed into the db file; copying now
       // would capture an incomplete snapshot. Skip and retry on a later open.
       if (result && result.busy !== 0) return;
-      copyFileSync(path, bak);
+      // F1-04: copy → validate → atomic rename, never `copyFileSync` straight onto
+      // the live `.bak`. A direct copy interrupted mid-write (crash/kill) leaves a
+      // TORN `.bak` that has already overwritten the previous good one — the recovery
+      // point is then silently destroyed. Writing a temp and renaming means an
+      // interrupt only ever leaves the temp; the prior good `.bak` stays intact.
+      writeValidatedBackup(path, bak);
     } catch {
       // A failed backup is non-fatal — the store is still usable this session.
     }
@@ -351,39 +399,49 @@ export class MemoryStore {
   /** Apply any pending forward migrations. Idempotent — a no-op on a current DB. */
   runMigrations(): void {
     const db = this.conn();
-    runDdl(
-      db,
-      `CREATE TABLE IF NOT EXISTS schema_migrations (
-        version    INTEGER PRIMARY KEY,
-        name       TEXT NOT NULL,
-        applied_at TEXT NOT NULL
-      );`,
-    );
+    // F1-05: serialize fresh-DB migrations ACROSS PROCESSES. The read (MAX version)
+    // and the apply must be ONE write-locked unit — otherwise two processes opening
+    // the same fresh db both read applied=0, both run migration 1, and collide on the
+    // `schema_migrations` PK (or double-run a non-idempotent `up`). `BEGIN IMMEDIATE`
+    // takes the RESERVED lock up front, so a concurrent opener blocks on the 5s
+    // `busy_timeout`, then re-reads the now-current version INSIDE its own txn and the
+    // loop is a clean no-op. (The schema_migrations DDL moves inside the txn too —
+    // DDL is transactional in SQLite, so the whole check+apply is atomic.)
+    const migrate = db.transaction(() => {
+      runDdl(
+        db,
+        `CREATE TABLE IF NOT EXISTS schema_migrations (
+          version    INTEGER PRIMARY KEY,
+          name       TEXT NOT NULL,
+          applied_at TEXT NOT NULL
+        );`,
+      );
 
-    const appliedRow = db
-      .prepare('SELECT COALESCE(MAX(version), 0) AS v FROM schema_migrations')
-      .get() as { v: number };
-    const applied = appliedRow.v;
+      const applied = (
+        db.prepare('SELECT COALESCE(MAX(version), 0) AS v FROM schema_migrations').get() as {
+          v: number;
+        }
+      ).v;
 
-    // Forward-only guard (#112): a DB stamped by a NEWER abs must NOT be opened by
-    // this (older) code — migrations only go up, so we cannot reconcile a newer
-    // schema and queries could silently misbehave. Refuse with an actionable error.
-    if (applied > CURRENT_SCHEMA_VERSION) {
-      throw new SchemaDowngradeError(this.dbPath, applied, CURRENT_SCHEMA_VERSION);
-    }
+      // Forward-only guard (#112): a DB stamped by a NEWER abs must NOT be opened by
+      // this (older) code — migrations only go up, so we cannot reconcile a newer
+      // schema and queries could silently misbehave. Refuse with an actionable error.
+      if (applied > CURRENT_SCHEMA_VERSION) {
+        throw new SchemaDowngradeError(this.dbPath, applied, CURRENT_SCHEMA_VERSION);
+      }
 
-    const record = db.prepare(
-      'INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)',
-    );
+      const record = db.prepare(
+        'INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)',
+      );
 
-    for (const migration of MIGRATIONS) {
-      if (migration.version <= applied) continue;
-      const tx = db.transaction(() => {
+      for (const migration of MIGRATIONS) {
+        if (migration.version <= applied) continue;
         migration.up(db, this.dimensions);
         record.run(migration.version, migration.name, nowIso());
-      });
-      tx();
-    }
+      }
+    });
+    // .immediate ⇒ BEGIN IMMEDIATE (acquire the write lock at txn start, not first write).
+    migrate.immediate();
   }
 
   /** The highest applied migration version. */

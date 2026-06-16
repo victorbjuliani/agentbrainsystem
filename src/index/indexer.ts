@@ -3,16 +3,17 @@
  * lazily + incrementally from git. Async (tree-sitter parse); call at async hook boundaries
  * BEFORE the sync provider reads. Never throws (best-effort ground truth).
  */
+import { randomUUID } from 'node:crypto';
 import {
-  closeSync,
   existsSync,
-  openSync,
   readFileSync,
   realpathSync,
+  renameSync,
+  rmSync,
   statSync,
   unlinkSync,
   utimesSync,
-  writeSync,
+  writeFileSync,
 } from 'node:fs';
 import { extname, isAbsolute, join } from 'node:path';
 import { diffNames, dirtyFiles, headCommit, lsFiles, repoRoot } from './git.js';
@@ -56,34 +57,57 @@ export interface RefreshResult {
   ready: boolean;
 }
 
+/** Does the refresh lockfile currently carry OUR ownership token? */
+function ownsIndexLock(lockPath: string, token: string): boolean {
+  try {
+    return (JSON.parse(readFileSync(lockPath, 'utf8')) as { token?: string }).token === token;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Single-flight per repo (RC-004): take an exclusive lock keyed on the `<slug>.db` path
  * so two sessions in the same repo never rebuild concurrently. Returns the lock, or `null`
  * when another LIVE refresh holds it (the caller reuses the existing index). A lock whose
  * mtime is older than the TTL belongs to a crashed holder — a live holder heartbeats, so
  * it never goes stale — and is stolen once.
+ *
+ * F1-03: ownership is token-checked and the steal is ATOMIC — a faithful sibling of
+ * `acquireCadenceLock` (#149). The previous version (a) released with an UNCONDITIONAL
+ * `unlinkSync`, so a process that stalled past the TTL would delete a PEER's fresh lock
+ * (double-owner), and (b) stole via `stat`-then-`unlink`, a TOCTOU where two processes
+ * both see "stale" and both unlink+create. Both are fixed by an ownership token and a
+ * rename-then-recreate steal that serializes in the kernel.
  */
-function acquireIndexLock(dbPath: string): IndexLock | null {
+export function acquireIndexLock(dbPath: string): IndexLock | null {
   const lockPath = `${dbPath}.refresh.lock`;
-  const take = (): IndexLock => {
-    const fd = openSync(lockPath, 'wx'); // exclusive create — throws if held
-    writeSync(fd, `${process.pid} ${Date.now()}`);
-    closeSync(fd);
+  // Filesystem-safe separator (Codex review on PR #168): the token is embedded in the
+  // `.dead-${token}` steal-scratch FILENAME, and `:` is invalid on Windows (treated as an
+  // alternate data stream), so a colon would make the steal `rename` fail and leave a
+  // crashed lock in place. pid + randomUUID() (digits/hex/hyphens) are all path-safe.
+  const token = `${process.pid}-${randomUUID()}`;
+  const payload = JSON.stringify({ pid: process.pid, token, startedAt: new Date().toISOString() });
+  const make = (): IndexLock => {
     let lastBeat = Date.now();
     return {
       heartbeat(): void {
         const now = Date.now();
         if (now - lastBeat < LOCK_HEARTBEAT_MS) return; // throttle — avoid per-file fs writes
         try {
-          utimesSync(lockPath, new Date(), new Date()); // bump mtime → "still alive"
-          lastBeat = now;
+          if (ownsIndexLock(lockPath, token)) {
+            utimesSync(lockPath, new Date(), new Date()); // bump mtime → "still alive"
+            lastBeat = now;
+          }
         } catch {
           /* lock vanished (stolen/cleared) — release() will no-op */
         }
       },
       release(): void {
+        // Only remove the lockfile if WE still own it — an unconditional unlink can
+        // delete a peer's lock that legitimately stole ours after a stall.
         try {
-          unlinkSync(lockPath);
+          if (ownsIndexLock(lockPath, token)) unlinkSync(lockPath);
         } catch {
           /* already gone — nothing to release */
         }
@@ -91,15 +115,34 @@ function acquireIndexLock(dbPath: string): IndexLock | null {
     };
   };
   try {
-    return take();
+    writeFileSync(lockPath, payload, { flag: 'wx' }); // atomic exclusive create — EEXIST if held
+    return make();
   } catch {
+    // Held. Steal ONLY if stale (dead holder), and ATOMICALLY: rename(2) over the same
+    // source serializes in the kernel, so only one racer moves the stale inode; the
+    // loser's rename throws (source gone) and stays unacquired. Never a plain unlink.
     try {
       if (Date.now() - statSync(lockPath).mtimeMs > LOCK_TTL_MS) {
-        unlinkSync(lockPath); // not heartbeated within the TTL → crashed holder → steal once
-        return take();
+        const dead = `${lockPath}.dead-${token}`;
+        try {
+          renameSync(lockPath, dead); // only one concurrent steal wins this move
+          writeFileSync(lockPath, payload, { flag: 'wx' }); // recreate exclusively
+        } catch {
+          rmSync(dead, { force: true }); // lost mid-steal → cleanup, stay unacquired
+          return null;
+        }
+        // Past this point the lock is OURS (rename+wx both succeeded). Removing the
+        // dead scratch file is best-effort cleanup that must NEVER discard a real
+        // acquisition — so it is guarded separately, not grouped with the steal above.
+        try {
+          rmSync(dead, { force: true });
+        } catch {
+          /* orphaned scratch — ages out, harmless */
+        }
+        return make();
       }
     } catch {
-      /* lost the steal race, or stat/take failed — treat as held */
+      /* lost the steal race, or stat failed — treat as held */
     }
     return null;
   }

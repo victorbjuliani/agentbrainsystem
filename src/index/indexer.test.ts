@@ -1,9 +1,17 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { refreshIndex } from './indexer.js';
+import { acquireIndexLock, refreshIndex } from './indexer.js';
 import { openSymbolStore } from './symbol-store.js';
 
 function git(root: string, ...a: string[]) {
@@ -156,5 +164,63 @@ describe('refreshIndex', () => {
     } finally {
       rmSync(lockPath, { force: true });
     }
+  });
+});
+
+describe('acquireIndexLock — atomic ownership & steal (F1-03)', () => {
+  let dir: string;
+  let dbPath: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'abs-ixlock-'));
+    dbPath = join(dir, 'repo.db');
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  const lockPath = () => `${dbPath}.refresh.lock`;
+  const foreign = (token: string) =>
+    writeFileSync(lockPath(), JSON.stringify({ pid: 99999, token, startedAt: '' }));
+
+  it('acquires on a free path; release removes the lockfile', () => {
+    const lock = acquireIndexLock(dbPath);
+    expect(lock).not.toBeNull();
+    expect(existsSync(lockPath())).toBe(true);
+    lock?.release();
+    expect(existsSync(lockPath())).toBe(false);
+  });
+
+  it('uses a filesystem-safe token — no colon in the steal scratch name (Windows, PR #168)', () => {
+    const lock = acquireIndexLock(dbPath);
+    expect(lock).not.toBeNull();
+    const { token } = JSON.parse(readFileSync(lockPath(), 'utf8')) as { token: string };
+    // The token is embedded in `.dead-${token}`; `:` is invalid on Windows. pid-uuid only.
+    expect(token).not.toContain(':');
+    expect(token).toMatch(/^\d+-[0-9a-f-]+$/i);
+    lock?.release();
+  });
+
+  it('returns null when a fresh foreign lock is held (no steal of a live holder)', () => {
+    foreign('peer');
+    expect(acquireIndexLock(dbPath)).toBeNull();
+    expect(existsSync(lockPath())).toBe(true); // peer's lock untouched
+  });
+
+  it('release does NOT delete a peer lock that stole our slot after a stall (token-checked)', () => {
+    const lock = acquireIndexLock(dbPath);
+    expect(lock).not.toBeNull();
+    // A peer takes the slot with a DIFFERENT token (as if it stole a stale lock).
+    foreign('peer');
+    lock?.release(); // must no-op — we no longer own the file
+    expect(existsSync(lockPath())).toBe(true); // the peer's lock survives
+  });
+
+  it('atomically steals a STALE lock (dead holder past the TTL), no .dead residue', () => {
+    foreign('dead');
+    const old = (Date.now() - 60_000) / 1000; // well past LOCK_TTL_MS (30s)
+    utimesSync(lockPath(), old, old);
+    const lock = acquireIndexLock(dbPath);
+    expect(lock).not.toBeNull(); // stale → stolen
+    lock?.release(); // the stolen lock is now ours → release removes it
+    expect(existsSync(lockPath())).toBe(false);
+    expect(readdirSync(dir).some((f) => f.includes('.dead-'))).toBe(false);
   });
 });
