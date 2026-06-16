@@ -11,8 +11,9 @@
   "prConcurrentLimit": 5,
   "packageRules": [
     {
-      "description": "Batch GitHub Actions bumps (incl. SHA digests) and automerge — low risk, keeps pins fresh",
+      "description": "Batch GitHub Actions bumps; automerge only non-major (minor/patch/pin/digest) so SHA pins stay fresh, while a breaking major (e.g. tauri-action v0->v1) still gets a normal review PR",
       "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
       "groupName": "github-actions",
       "automerge": true
     },
