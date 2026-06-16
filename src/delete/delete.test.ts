@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { EmbeddingProvider } from '../embedding/index.js';
-import { OPTIMIZE_CURSOR_KEY } from '../hooks/staleness.js';
+import { optimizeCursorKey } from '../hooks/staleness.js';
 import { Indexer } from '../indexer/index.js';
 import type { Memory } from '../memory.js';
 import { Recall } from '../recall/index.js';
@@ -332,14 +332,19 @@ describe('executeIds — CLI in-process path (no cache)', () => {
 });
 
 describe('no-cursor-clamp staleness correctness (C1)', () => {
+  // The per-kind/project optimize cursors (#138/#148) — delete must never clamp them.
+  const LESSON_CURSOR = optimizeCursorKey('lesson', 'p');
+  const DECISION_CURSOR = optimizeCursorKey('decision', 'p');
+
   it('deleting ids ABOVE the cursor lowers pending by that many', async () => {
     const memory = newMemory();
-    const s = memory.store.createSession({ externalId: 's1' });
+    const s = memory.store.createSession({ externalId: 's1', project: 'p' });
     const a = await seedObs(memory, s, 'below-1');
     await seedObs(memory, s, 'below-2');
     // cursor at `a`-... set cursor to the current max so everything after is "pending".
     const cursor = a; // ids > a are pending
-    memory.store.setMeta(OPTIMIZE_CURSOR_KEY, String(cursor));
+    memory.store.setMeta(LESSON_CURSOR, String(cursor));
+    memory.store.setMeta(DECISION_CURSOR, String(cursor));
 
     const above1 = await seedObs(memory, s, 'above-1');
     const above2 = await seedObs(memory, s, 'above-2');
@@ -347,39 +352,40 @@ describe('no-cursor-clamp staleness correctness (C1)', () => {
 
     executeIds(memory, [above1, above2]);
     expect(memory.store.countObservationsSince(cursor)).toBe(1); // dropped by 2
-    // cursor untouched.
-    expect(memory.store.getMeta(OPTIMIZE_CURSOR_KEY)).toBe(String(cursor));
+    // each per-kind/project cursor untouched.
+    expect(memory.store.getMeta(LESSON_CURSOR)).toBe(String(cursor));
+    expect(memory.store.getMeta(DECISION_CURSOR)).toBe(String(cursor));
     memory.close();
   });
 
   it('deleting ids BELOW the cursor leaves pending unchanged', async () => {
     const memory = newMemory();
-    const s = memory.store.createSession({ externalId: 's1' });
+    const s = memory.store.createSession({ externalId: 's1', project: 'p' });
     const below1 = await seedObs(memory, s, 'below-1');
     const below2 = await seedObs(memory, s, 'below-2');
     const cursor = below2; // ids > below2 are pending
-    memory.store.setMeta(OPTIMIZE_CURSOR_KEY, String(cursor));
+    memory.store.setMeta(LESSON_CURSOR, String(cursor));
     await seedObs(memory, s, 'above-1');
     expect(memory.store.countObservationsSince(cursor)).toBe(1);
 
     executeIds(memory, [below1]);
     expect(memory.store.countObservationsSince(cursor)).toBe(1); // unchanged
-    expect(memory.store.getMeta(OPTIMIZE_CURSOR_KEY)).toBe(String(cursor));
+    expect(memory.store.getMeta(LESSON_CURSOR)).toBe(String(cursor));
     memory.close();
   });
 
   it('deleting ALL observations → pending 0, cursor untouched', async () => {
     const memory = newMemory();
-    const s = memory.store.createSession({ externalId: 's1' });
+    const s = memory.store.createSession({ externalId: 's1', project: 'p' });
     const a = await seedObs(memory, s, 'one');
     const b = await seedObs(memory, s, 'two');
     const cursor = 0;
-    memory.store.setMeta(OPTIMIZE_CURSOR_KEY, String(cursor));
+    memory.store.setMeta(LESSON_CURSOR, String(cursor));
     expect(memory.store.countObservationsSince(cursor)).toBe(2);
 
     executeIds(memory, [a, b]);
     expect(memory.store.countObservationsSince(cursor)).toBe(0);
-    expect(memory.store.getMeta(OPTIMIZE_CURSOR_KEY)).toBe(String(cursor));
+    expect(memory.store.getMeta(LESSON_CURSOR)).toBe(String(cursor));
     memory.close();
   });
 });

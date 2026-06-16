@@ -92,6 +92,13 @@ Three steps, zero effort once installed:
 | **2 · Store** | Local embeddings in an embedded SQLite + `sqlite-vec` + FTS5 store, on your machine. | `offline` |
 | **3 · Recall** | Hybrid semantic + keyword search surfaces relevant memory — at session start **and on every prompt**. | `per-prompt · MCP` |
 
+**Distillation is automatic by default once you configure an LLM.** When a substantial
+session ends, a background cadence distills it into durable lessons and promotes them to the
+project's auto-memory (loaded into Claude Code's native context) — **no manual step**. It
+never touches your git-tracked `CLAUDE.md` (decisions wait for a manual `abs optimize`), runs
+detached so it never blocks session close, and announces itself once with its per-session
+cost. Opt out any time with `ABS_AUTO_DISTILL=0`.
+
 ## What makes it different
 
 Not another write-only memory bucket. The parts most tools skip:
@@ -204,6 +211,7 @@ abs import <path>         # load an artifact (merge | replace)
 abs ui [--port N]         # serve the interactive memory graph
 abs consolidate [...]     # distill a session into durable lessons (opt-in, needs an LLM)
 abs optimize [...]        # turn distilled memory into gated CLAUDE.md / auto-memory edits (curated; index-visible in MEMORY.md)
+abs maintain --auto       # internal auto-distill cadence (consolidate → auto-memory); runs detached after SessionEnd
 abs forget [...]          # selectively hard-delete memories — IRREVERSIBLE, export first
 abs install-hooks [--harness <id>]  # register the memory hooks for a harness (idempotent, backup-first)
 ```
@@ -234,6 +242,8 @@ guarantee is unaffected.
 | `ABS_RECALL_SCOPE` | `project` | recall isolation: `project` \| `global` |
 | `ABS_GUARD_MODE` | `warn` | PreToolUse guard: `warn` \| `block` |
 | `ABS_LLM_BASE_URL` / `ABS_LLM_MODEL` | _(unset → consolidation off)_ | OpenAI-compatible endpoint for `abs consolidate` |
+| `ABS_AUTO_DISTILL` | `on` | auto-distill cadence after SessionEnd (needs an LLM): `on` \| `off`. `0` opts out |
+| `DISTILL_MIN_OBS` | `25` | min observations in a just-ended session for it to be cadence-due |
 
 Out of scope (for now): multi-user/team sharing, image/vision embeddings, heavyweight consolidation tiers.
 

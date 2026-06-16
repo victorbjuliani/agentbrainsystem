@@ -25,10 +25,14 @@ export { generateCandidates } from './candidate-gen.js';
 export { curateObservations, scoreDurability } from './curate.js';
 export { judgeObservations } from './llm-judge.js';
 export {
+  advanceOptimizeCursorForKind,
+  advanceOptimizeCursorsAfterApply,
   applyApprovedCandidate,
   applyCandidate,
+  type ConsolidatedPartition,
   generateOptimizations,
   optimize,
+  partitionConsolidated,
 } from './run.js';
 export {
   autoMemoryDir,

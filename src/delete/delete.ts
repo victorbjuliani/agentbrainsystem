@@ -17,10 +17,11 @@
  *     `executeIds` deletes a caller-pinned id list directly — the whole
  *     preview→confirm→delete loop lives in one process, so no cache is needed.
  *
- * C1 (no cursor clamp): we deliberately do NOT touch `optimize:cursorObsId`. The
- * staleness flag computes `pending = COUNT(id > cursor)`, so deleting rows above
- * the cursor lowers `pending` on its own and deleting rows below leaves it
- * unchanged — the heuristic self-corrects without us mutating the cursor.
+ * C1 (no cursor clamp): we deliberately do NOT touch the per-kind/project optimize
+ * cursors (`optimize:<kind>:<slug>`, #138/#148). The staleness flag computes
+ * `pending = COUNT(id > cursor)`, so deleting rows above the cursor lowers `pending`
+ * on its own and deleting rows below leaves it unchanged — the heuristic
+ * self-corrects without us mutating the cursor.
  */
 import { randomUUID } from 'node:crypto';
 import type { Memory } from '../memory.js';

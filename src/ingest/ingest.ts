@@ -255,6 +255,13 @@ interface WriteTally {
   skipped: number;
   /** Anchors created — edit-seeded PLUS turn-scoped file anchors propagated onto sibling prose obs (#90). Informational count; nothing branches on it meaning "edit anchors only". */
   seeded: number;
+  /**
+   * The last store session id this file-ingest resolved (#138/W2), surfaced onto
+   * `IngestResult.sessionId` for the cadence-due gate. `null` when no line wrote a
+   * session (empty file, or every session `skip`-bound). One transcript = one session
+   * on the SessionEnd path, so this IS that session; defensively the last non-null id.
+   */
+  sessionId: number | null;
 }
 
 /**
@@ -285,10 +292,15 @@ async function writeEntry(
   );
   // A `skip` binding excludes this session: write nothing — no session, no
   // observation, no anchors (#50). The cursor was already advanced by the caller.
+  // Leave `tally.sessionId` untouched so a skip never reports a session id to the
+  // cadence-due gate (the test asserts a skip yields a nullish id).
   if (sessionId === null) {
     tally.skipped++;
     return;
   }
+  // Record the resolved id (#138/W2): the last non-null wins, which on the
+  // one-transcript-one-session SessionEnd path IS this session.
+  tally.sessionId = sessionId;
   // Prose turn → store the text under its role. Edit-only turn (no prose) →
   // store a compact 'tool_edit' summary so the seeded anchor has a home.
   const hasText = entry.text.length > 0;
@@ -349,7 +361,7 @@ async function ingestFile(
 ): Promise<void> {
   const sessionCache = new Map<string, number>();
   const bindingCache = new Map<string, SessionBinding | null>();
-  const tally: WriteTally = { added: 0, skipped: 0, seeded: 0 };
+  const tally: WriteTally = { added: 0, skipped: 0, seeded: 0, sessionId: null };
   // Turn-scoped buffer (#90): turnKey → its prose obs id, for back-propagating a
   // sibling edit's file anchors onto the anchorless narrative obs. Per file-ingest
   // run — never crosses files or sessions.
@@ -403,6 +415,7 @@ async function ingestFile(
     result.observationsAdded += tally.added;
     result.observationsSkipped += tally.skipped;
     result.anchorsSeeded += tally.seeded;
+    if (tally.sessionId !== null) result.sessionId = tally.sessionId;
     return;
   }
 
@@ -510,6 +523,7 @@ async function ingestFile(
   result.observationsAdded += tally.added;
   result.observationsSkipped += tally.skipped;
   result.anchorsSeeded += tally.seeded;
+  if (tally.sessionId !== null) result.sessionId = tally.sessionId;
 }
 
 /** A fresh zeroed tally. */

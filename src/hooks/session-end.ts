@@ -17,6 +17,8 @@
  * drifted index self-heals, then always close the store.
  */
 
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { loadConfig } from '../config.js';
 import { EmbeddingLoadTimeoutError } from '../embedding/index.js';
 import type { GroundTruthProvider } from '../ground-truth/index.js';
@@ -29,6 +31,40 @@ import type { HookPayload } from './payload.js';
 /** Bound the first-run model load on the hook path, well under the 8s runner budget (#111). */
 const HOOK_EMBED_BUDGET_MS = 6_000;
 
+/**
+ * Absolute path to the built CLI entry (`dist/cli/cli.js`), resolved from this module
+ * (`dist/hooks/session-end.js`) via `import.meta.url` — NOT `process.cwd()`, which on
+ * the hook path is the user's project, not the install. `process.execPath <cliPath>
+ * maintain --auto` is what the detached cadence spawns.
+ */
+function resolveCliPath(): string {
+  return fileURLToPath(new URL('../cli/cli.js', import.meta.url));
+}
+
+/**
+ * Spawn the auto-distill cadence runner DETACHED (#138, copies the `openBrowser`
+ * pattern in cli.ts): `process.execPath <cliPath> maintain --auto` with stdio ignored,
+ * its own process group (`detached`), and `unref()` so SessionEnd returns immediately
+ * and the child outlives the hook. A spawn failure is swallowed (ADR-0004 fail-open) —
+ * the cadence is a background nicety, never a blocker on session close.
+ *
+ * `cwd` is passed EXPLICITLY (the session's project dir) rather than relying on the
+ * child inheriting the hook's cwd: the runner scopes its optimize pass + cursor keys to
+ * `projectSlug(process.cwd())`, and the banner reads those keys under the session's
+ * `project` slug — pinning the child's cwd to the session dir keeps writer and reader
+ * on the same slug (closes the implicit-coupling footgun the integration check flagged).
+ */
+function spawnCadence(cliPath: string, cwd: string): void {
+  const child = spawn(process.execPath, [cliPath, 'maintain', '--auto'], {
+    cwd,
+    stdio: 'ignore',
+    detached: true,
+    shell: false,
+  });
+  child.on('error', () => {}); // swallow ENOENT etc. — the cadence is best-effort
+  child.unref();
+}
+
 export interface SessionEndDeps {
   /** Injection seam for tests — defaults to the real openMemory + ingest. */
   ingest?: (transcriptPath: string) => Promise<void>;
@@ -40,6 +76,12 @@ export interface SessionEndDeps {
    * the first run, so the first-run timeout (#111) can only be exercised via a mock.
    */
   embedReady?: (opts: { budgetMs?: number }) => Promise<void>;
+  /**
+   * Injection seam for tests — the detached cadence spawn (#138). Defaults to the real
+   * `spawnCadence` (detached `abs maintain --auto`); unit tests pass a spy so no real
+   * subprocess is launched. Receives the resolved CLI entry path.
+   */
+  spawnCadence?: (cliPath: string, cwd: string) => void;
 }
 
 /**
@@ -115,7 +157,9 @@ export async function handleSessionEnd(
       }
     }
 
-    await ingestSingleSession(memory, transcriptPath);
+    // Capture the resolved session id (#138/W2) so the cadence-due gate below can scope
+    // a per-session obs count. One transcript = one session on this path.
+    const { sessionId } = await ingestSingleSession(memory, transcriptPath);
 
     // #26/#107 integration: promote the just-seeded `claimed` anchors against ground
     // truth, OUT of the interactive hot path. Shared with the OpenCode capture path so
@@ -126,6 +170,24 @@ export async function handleSessionEnd(
       cwd,
       deps.groundTruth ? { groundTruth: deps.groundTruth } : {},
     );
+
+    // Cadence-due eval + detached spawn (#138). This lives on the REAL-ingest branch
+    // ONLY — it is unreachable from the `deps.ingest` short-circuit, the rebuild-lock
+    // defer, and the embed-timeout defer (all three early-return above). Due when an LLM
+    // is configured (consolidate cannot run without it), auto-distill is not opted out,
+    // and the just-ended session is substantial (>= distillMinObs). If due, spawn the
+    // runner DETACHED and return immediately — NO LLM/network call on the hook path. The
+    // spawn is fail-open (ADR-0004): a throw is swallowed so close is never blocked.
+    const cfg = loadConfig();
+    const obsCount = sessionId != null ? memory.store.countObservationsBySession(sessionId) : 0;
+    const due = cfg.llm !== undefined && cfg.autoDistill && obsCount >= cfg.distillMinObs;
+    if (due) {
+      try {
+        (deps.spawnCadence ?? spawnCadence)(resolveCliPath(), cwd);
+      } catch {
+        // best-effort — a spawn failure must never undo the session close (ADR-0004)
+      }
+    }
   } finally {
     memory.close();
   }

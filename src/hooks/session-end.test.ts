@@ -180,3 +180,130 @@ describe('SessionEnd defers ingest when the first-run model load times out (#111
     );
   });
 });
+
+/**
+ * Cadence-due eval + detached spawn (#138, Phase 6). These tests drive the REAL ingest
+ * path (round-2 W: NO `deps.ingest`, which short-circuits BEFORE the eval), seeding a
+ * transcript whose obs count crosses `DISTILL_MIN_OBS`, and observe the `spawnCadence`
+ * spy. `embedReady` is a no-op (no model download) and `groundTruth` is a stub so the
+ * sweep never touches the dev's real graph.
+ */
+describe('SessionEnd cadence-due eval + detached spawn (#138)', () => {
+  let dir: string;
+  /** Build a Claude Code transcript line (one user turn = one observation). */
+  function userLine(n: number): string {
+    return JSON.stringify({
+      type: 'user',
+      sessionId: 'cad-sess',
+      cwd: dir,
+      uuid: `u${n}`,
+      timestamp: '2026-06-15T10:00:00.000Z',
+      message: { role: 'user', content: `turn number ${n} with some prose` },
+    });
+  }
+  /** Write a transcript with `n` user turns (→ `n` observations on ingest). */
+  function seedTranscript(n: number): string {
+    const t = join(dir, 'cad.jsonl');
+    const lines = Array.from({ length: n }, (_, i) => userLine(i + 1));
+    writeFileSync(t, `${lines.join('\n')}\n`);
+    return t;
+  }
+  const noopEmbed = vi.fn(async () => {});
+  const stubGroundTruth: GroundTruthProvider = {
+    isAvailable: () => false,
+    currentBranch: () => 'main',
+    resolveSymbol: () => null,
+    resolveFile: () => null,
+    close: () => {},
+  };
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'abs-se-cadence-'));
+    process.env.ABS_HOME = dir;
+    // LLM configured (consolidate can run) + a small threshold so a tiny fixture is "due".
+    process.env.ABS_LLM_BASE_URL = 'http://localhost:9/v1';
+    process.env.ABS_LLM_MODEL = 'fake-model';
+    process.env.DISTILL_MIN_OBS = '3';
+    delete process.env.ABS_AUTO_DISTILL; // default ON
+  });
+  afterEach(() => {
+    delete process.env.ABS_HOME;
+    delete process.env.ABS_LLM_BASE_URL;
+    delete process.env.ABS_LLM_MODEL;
+    delete process.env.DISTILL_MIN_OBS;
+    delete process.env.ABS_AUTO_DISTILL;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('spawns the cadence exactly once when due and resolves immediately', async () => {
+    const t = seedTranscript(4); // 4 obs >= DISTILL_MIN_OBS (3)
+    const spawnCadence = vi.fn();
+    const result = await handleSessionEnd(
+      { transcriptPath: t, cwd: dir },
+      { embedReady: noopEmbed, groundTruth: stubGroundTruth, spawnCadence },
+    );
+    expect(result).toBeUndefined();
+    expect(spawnCadence).toHaveBeenCalledOnce();
+  });
+
+  it('does NOT spawn when auto-distill is opted out (ABS_AUTO_DISTILL=0)', async () => {
+    process.env.ABS_AUTO_DISTILL = '0';
+    const t = seedTranscript(4);
+    const spawnCadence = vi.fn();
+    await handleSessionEnd(
+      { transcriptPath: t, cwd: dir },
+      { embedReady: noopEmbed, groundTruth: stubGroundTruth, spawnCadence },
+    );
+    expect(spawnCadence).not.toHaveBeenCalled();
+  });
+
+  it('does NOT spawn when no LLM is configured (consolidate cannot run)', async () => {
+    delete process.env.ABS_LLM_BASE_URL;
+    delete process.env.ABS_LLM_MODEL;
+    const t = seedTranscript(4);
+    const spawnCadence = vi.fn();
+    await handleSessionEnd(
+      { transcriptPath: t, cwd: dir },
+      { embedReady: noopEmbed, groundTruth: stubGroundTruth, spawnCadence },
+    );
+    expect(spawnCadence).not.toHaveBeenCalled();
+  });
+
+  it('does NOT spawn when the session is below DISTILL_MIN_OBS', async () => {
+    const t = seedTranscript(2); // 2 obs < DISTILL_MIN_OBS (3)
+    const spawnCadence = vi.fn();
+    await handleSessionEnd(
+      { transcriptPath: t, cwd: dir },
+      { embedReady: noopEmbed, groundTruth: stubGroundTruth, spawnCadence },
+    );
+    expect(spawnCadence).not.toHaveBeenCalled();
+  });
+
+  it('swallows a spawn throw and still resolves undefined (ADR-0004 fail-open)', async () => {
+    const t = seedTranscript(4);
+    const spawnCadence = vi.fn(() => {
+      throw new Error('spawn blew up');
+    });
+    const result = await handleSessionEnd(
+      { transcriptPath: t, cwd: dir },
+      { embedReady: noopEmbed, groundTruth: stubGroundTruth, spawnCadence },
+    );
+    expect(result).toBeUndefined();
+    expect(spawnCadence).toHaveBeenCalledOnce();
+  });
+
+  it('does NOT spawn while a rebuild holds the write lock (defer path returns first)', async () => {
+    const cfg = loadConfig();
+    (await openMemory(undefined, { ensure: false })).close();
+    const lock = acquireRebuildLock(cfg.dbPath);
+    const t = seedTranscript(4);
+    const spawnCadence = vi.fn();
+    const result = await handleSessionEnd(
+      { transcriptPath: t, cwd: dir },
+      { embedReady: noopEmbed, groundTruth: stubGroundTruth, spawnCadence },
+    );
+    expect(result).toBeUndefined();
+    expect(spawnCadence).not.toHaveBeenCalled(); // rebuild-deferred early return is BEFORE the eval
+    lock.release();
+  });
+});

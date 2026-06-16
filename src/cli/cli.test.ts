@@ -18,7 +18,9 @@ import { getOrCreateGlobalSession } from '../global.js';
 import type { GroundTruthProvider, ResolvedSymbol } from '../ground-truth/index.js';
 import { buildOpencodeDb } from '../harness/capabilities/__fixtures__/opencode-db.js';
 import type { HarnessAdapter } from '../harness/index.js';
+import { optimizeCursorKey } from '../hooks/staleness.js';
 import { type Memory, openMemory } from '../memory.js';
+import { projectSlug } from '../optimize/targets.js';
 import { EMBED_DEGRADED_KEY } from '../store/index.js';
 import {
   cmdDoctor,
@@ -26,6 +28,7 @@ import {
   cmdIngest,
   cmdOpencodeCapture,
   cmdOpencodeRecall,
+  cmdOptimize,
   cmdProject,
   cmdPromote,
   cmdRemember,
@@ -37,6 +40,21 @@ import {
   resolveHarnesses,
   resolveSessionId,
 } from './cli.js';
+
+/**
+ * Interactive-apply readline seam for the cmdOptimize tests. `cmdOptimize` builds a
+ * `createInterface(...).question(prompt)` per candidate unless `--yes`; this mock makes
+ * the answer deterministic via `readlineState.answer(prompt)`, which can inspect the
+ * prompt text (it carries the target path, so a test can answer 'y' for the auto-memory
+ * lesson and 'n' for the CLAUDE.md decision). Default declines everything (no writes).
+ */
+const readlineState = vi.hoisted(() => ({ answer: (_prompt: string): string => 'n' }));
+vi.mock('node:readline/promises', () => ({
+  createInterface: () => ({
+    question: async (prompt: string) => readlineState.answer(prompt),
+    close: () => {},
+  }),
+}));
 
 describe('parseIds — --ids validation', () => {
   it('parses a comma list into positive ids', () => {
@@ -1194,5 +1212,141 @@ describe('cmdDoctor — health check (#101, hermetic, tmp ABS_HOME)', () => {
     expect(report.version.latest).toBeNull();
     expect(report.version.updateAvailable).toBe(false);
     expect(errLines.join('')).not.toMatch(/update available/i);
+  });
+});
+
+describe('cmdOptimize — run-level cursor advance after the apply loop (#138/#148 §4)', () => {
+  let dir: string;
+  let home: string;
+  let projectRoot: string;
+  let slug: string;
+
+  /** Seed consolidate obs (no embedding — candidate-gen reads the store directly). */
+  async function seed(opts: { lessons?: string[]; decisions?: string[] }): Promise<void> {
+    const mem: Memory = await openMemory(loadConfig(), { ensure: false });
+    const s = mem.store.createSession({ externalId: 's-opt', project: slug });
+    for (const content of opts.lessons ?? []) {
+      mem.store.createObservation({ sessionId: s, kind: 'lesson', content, source: 'consolidate' });
+    }
+    for (const content of opts.decisions ?? []) {
+      mem.store.createObservation({
+        sessionId: s,
+        kind: 'decision',
+        content,
+        source: 'consolidate',
+      });
+    }
+    mem.close();
+  }
+
+  /** Read a kind's project-scoped optimize cursor (null when unset). */
+  async function cursor(kind: 'lesson' | 'decision'): Promise<string | null> {
+    const mem = await openMemory(loadConfig(), { ensure: false });
+    const v = mem.store.getMeta(optimizeCursorKey(kind, slug));
+    mem.close();
+    return v;
+  }
+
+  /** maxConsolidatedId for a kind in the seeded project. */
+  async function maxConsolidated(kind: 'lesson' | 'decision'): Promise<number> {
+    const mem = await openMemory(loadConfig(), { ensure: false });
+    const v = mem.store.maxConsolidatedId(slug, kind);
+    mem.close();
+    return v;
+  }
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'abs-cli-optimize-'));
+    home = mkdtempSync(join(tmpdir(), 'abs-cli-optimize-home-'));
+    process.env.ABS_HOME = dir;
+    process.env.ABS_EMBED_DIM = '8';
+    // Redirect the auto-memory write target (defaultClaudeProjectsDir → homedir) into a
+    // tmp HOME so applying a lesson candidate never touches the real ~/.claude/projects.
+    process.env.HOME = home;
+    projectRoot = join(dir, 'project');
+    mkdirSync(projectRoot, { recursive: true });
+    slug = projectSlug(projectRoot);
+    readlineState.answer = () => 'n';
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete process.env.ABS_HOME;
+    delete process.env.ABS_EMBED_DIM;
+    delete process.env.HOME;
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it('bare preview (no --apply) advances NOTHING (no false all-caught-up, C2)', async () => {
+    await seed({
+      lessons: ['Use bound parameters in every SQL query'],
+      decisions: ['Chose SQLite + sqlite-vec over a separate vector DB'],
+    });
+    await cmdOptimize(['--project', projectRoot]);
+    expect(await cursor('lesson')).toBeNull();
+    expect(await cursor('decision')).toBeNull();
+  });
+
+  it('--apply --yes with all candidates applied advances BOTH kinds', async () => {
+    await seed({
+      lessons: ['Use bound parameters in every SQL query'],
+      decisions: ['Chose SQLite + sqlite-vec over a separate vector DB'],
+    });
+    await cmdOptimize(['--project', projectRoot, '--apply', '--yes']);
+    expect(await cursor('lesson')).toBe(String(await maxConsolidated('lesson')));
+    expect(await cursor('decision')).toBe(String(await maxConsolidated('decision')));
+  });
+
+  it('--apply with the user declining ALL advances NOTHING (pending-valid non-empty)', async () => {
+    await seed({
+      lessons: ['Use bound parameters in every SQL query'],
+      decisions: ['Chose SQLite + sqlite-vec over a separate vector DB'],
+    });
+    readlineState.answer = () => 'n'; // decline every prompt
+    await cmdOptimize(['--project', projectRoot, '--apply']);
+    expect(await cursor('lesson')).toBeNull();
+    expect(await cursor('decision')).toBeNull();
+  });
+
+  it('--apply mixed (applies lessons, declines decisions) advances ONLY the lesson cursor', async () => {
+    await seed({
+      lessons: ['Use bound parameters in every SQL query'],
+      decisions: ['Chose SQLite + sqlite-vec over a separate vector DB'],
+    });
+    // The prompt text carries the target path: decisions resolve to CLAUDE.md, lessons
+    // to the auto-memory file. Apply the lesson (y), decline the decision (n).
+    readlineState.answer = (prompt) => (prompt.toLowerCase().includes('claude.md') ? 'n' : 'y');
+    await cmdOptimize(['--project', projectRoot, '--apply']);
+    expect(await cursor('lesson')).toBe(String(await maxConsolidated('lesson')));
+    expect(await cursor('decision')).toBeNull();
+  });
+
+  it('all-curated-out (zero candidates) with --apply STILL advances the kind whose S_kind is non-empty', async () => {
+    // A bare CPU-arch token is the high-confidence trivia signal the heuristic drops,
+    // so curation yields zero candidates yet S_kind (the consolidate lesson) is non-empty.
+    await seed({ lessons: ['aarch64'] });
+    await cmdOptimize(['--project', projectRoot, '--apply', '--yes']);
+    // Empty keep-set ⇒ survivors empty ⇒ pending-valid empty ⇒ #148 advance.
+    expect(await cursor('lesson')).toBe(String(await maxConsolidated('lesson')));
+  });
+
+  it('--apply --yes --limit 1 does NOT advance the SLICED-OFF kind cursor (round-2 keep-set guard)', async () => {
+    // Both survive curation, so survivingIds carries both ids. Decisions sort first
+    // (priority high); --limit 1 keeps ONLY the decision candidate → the lesson
+    // candidate is sliced off. The lesson survivor is pending-valid (in keep, absent
+    // from any returned candidate), so its cursor must NOT advance.
+    await seed({
+      lessons: ['Use bound parameters in every SQL query'],
+      decisions: ['Chose SQLite + sqlite-vec over a separate vector DB'],
+    });
+    await cmdOptimize(['--project', projectRoot, '--apply', '--yes', '--limit', '1']);
+    // The applied decision advances its cursor…
+    expect(await cursor('decision')).toBe(String(await maxConsolidated('decision')));
+    // …but the sliced-off lesson stays pinned (the old S_kind − candidateCovered model
+    // would have wrongly advanced it).
+    expect(await cursor('lesson')).toBeNull();
   });
 });

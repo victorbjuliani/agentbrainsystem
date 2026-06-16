@@ -206,6 +206,14 @@ export interface GenerateCandidatesResult {
   candidates: OptimizeCandidate[];
   /** Cost/usage of the optional LLM-phrasing pass. */
   estimate: OptimizeEstimate;
+  /**
+   * The curation keep-set as a stable id array (#138/#148): the consolidate obs
+   * ids that survived the $0 heuristic + LLM judge, BEFORE the `.slice(0, limit)`
+   * caps the candidate LIST. The run-level cursor advance partitions against THIS
+   * (not the post-slice candidates), so a `--limit`-sliced survivor is classified
+   * `pending-valid` (no advance), never mis-classified as curated-out.
+   */
+  survivingIds: number[];
 }
 
 /** Why an apply attempt was refused or skipped without being a write failure. */

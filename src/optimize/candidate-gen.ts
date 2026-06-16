@@ -28,6 +28,7 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { optimizeCursorKey, parseCursor } from '../hooks/staleness.js';
 import type { Memory } from '../memory.js';
 import type { Observation } from '../store/index.js';
 import { curateObservations } from './curate.js';
@@ -82,6 +83,16 @@ async function readTargetContent(absPath: string): Promise<string> {
  * Pull the consolidated lessons/decisions from the store, newest first, and split
  * them into a decisions cluster and a lessons cluster. Decisions are prioritised
  * (they shape future behaviour) — reflected in the returned order.
+ *
+ * CURSOR FILTER (#138 FIX1 — idempotency): each kind is bounded BELOW by its own
+ * per-kind/project optimize cursor (`optimize:<kind>:<slug>`). Once a kind's cursor
+ * advances past promoted obs (via `advanceOptimizeCursorsAfterApply`), those obs are
+ * `id ≤ cursor` and are never re-clustered — so the cadence cannot re-append a
+ * lesson the append applier already wrote into `consolidated-lessons.md`. Without
+ * this floor every cadence re-emitted ALL consolidate obs and the append applier
+ * (`current + proposedText`) duplicated each bullet. The keep-set partition is
+ * unaffected: `S_kind = consolidatedIdsSince(cursor)` is exactly this id>cursor set,
+ * so `survivors = keep ∩ S_kind = keep`.
  */
 function clusterConsolidated(memory: Memory, project: string): Cluster[] {
   // listObservations has no `source` filter, so filter in code. Newest first so a
@@ -93,8 +104,12 @@ function clusterConsolidated(memory: Memory, project: string): Cluster[] {
     .listObservations({ project, order: 'desc' })
     .filter((o) => o.source === CONSOLIDATE_SOURCE);
 
-  const decisions = all.filter((o) => o.kind === 'decision');
-  const lessons = all.filter((o) => o.kind === 'lesson');
+  const aboveCursor = (kind: 'lesson' | 'decision'): Observation[] => {
+    const cursor = parseCursor(memory.store.getMeta(optimizeCursorKey(kind, project)));
+    return all.filter((o) => o.kind === kind && o.id > cursor);
+  };
+  const decisions = aboveCursor('decision');
+  const lessons = aboveCursor('lesson');
 
   const clusters: Cluster[] = [];
   if (decisions.length > 0) clusters.push({ kind: 'decision', observations: decisions });
@@ -238,7 +253,11 @@ function titleFor(cluster: Cluster): string {
 export async function generateCandidates(
   memory: Memory,
   options: GenerateCandidatesOptions = {},
-): Promise<{ candidates: OptimizeCandidate[]; curation: CurationEstimate }> {
+): Promise<{
+  candidates: OptimizeCandidate[];
+  curation: CurationEstimate;
+  survivingIds: number[];
+}> {
   const projectRoot = options.projectRoot ?? process.cwd();
   const projectsDir = options.projectsDir ?? defaultProjectsDir();
   const limit = options.limit ?? DEFAULT_LIMIT;
@@ -299,7 +318,10 @@ export async function generateCandidates(
   // High priority first (decisions before lessons), then stable by id.
   const rank: Record<OptimizePriority, number> = { high: 0, medium: 1, low: 2 };
   candidates.sort((a, b) => rank[a.priority] - rank[b.priority]);
-  return { candidates: candidates.slice(0, limit), curation };
+  // `survivingIds` is the UN-sliced keep-set; the slice caps only the candidate
+  // LIST. That asymmetry is the #138 fix — the cursor advance partitions against
+  // the keep-set, so a sliced-off survivor is never mistaken for curated-out.
+  return { candidates: candidates.slice(0, limit), curation, survivingIds: [...keep] };
 }
 
 /** Thin adapter: run curation with the run's LLM/options and return keep-set + estimate. */

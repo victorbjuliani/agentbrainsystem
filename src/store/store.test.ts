@@ -94,6 +94,28 @@ describe('MemoryStore', () => {
       // left dangling for a fail-open caller).
       expect(() => reopened.schemaVersion()).toThrow(/not open/);
     });
+
+    it('migration v6 — adds the composite (session_id, source) index (#138)', () => {
+      expect(CURRENT_SCHEMA_VERSION).toBe(6);
+      const raw = new Database(dbPath);
+      try {
+        const idx = raw
+          .prepare(
+            `SELECT name FROM sqlite_master
+             WHERE type = 'index' AND name = 'idx_observations_session_source'`,
+          )
+          .get() as { name: string } | undefined;
+        expect(idx?.name).toBe('idx_observations_session_source');
+      } finally {
+        raw.close();
+      }
+      // Re-open is a no-op (idempotent) — version stays at 6, no error.
+      store.close();
+      const reopened = new MemoryStore({ dbPath, dimensions: DIM });
+      reopened.open();
+      expect(reopened.schemaVersion()).toBe(6);
+      reopened.close();
+    });
   });
 
   describe('session CRUD', () => {
@@ -460,6 +482,208 @@ describe('MemoryStore', () => {
     });
   });
 
+  describe('countUnconsolidatedRawTurns — session-level anti-join (C1)', () => {
+    it('counts raw turns of a session with no consolidate row', () => {
+      const a = store.createSession({ externalId: 'A', project: 'p' });
+      store.createObservation({ sessionId: a, kind: 'user', content: 'a1' });
+      store.createObservation({ sessionId: a, kind: 'assistant', content: 'a2' });
+      store.createObservation({ sessionId: a, kind: 'user', content: 'a3' });
+      expect(store.countUnconsolidatedRawTurns()).toBe(3);
+    });
+
+    it('a consolidate row on the session drops its raw count to 0 (whole-session fact)', () => {
+      const a = store.createSession({ externalId: 'A', project: 'p' });
+      store.createObservation({ sessionId: a, kind: 'user', content: 'a1' });
+      store.createObservation({ sessionId: a, kind: 'assistant', content: 'a2' });
+      store.createObservation({
+        sessionId: a,
+        kind: 'lesson',
+        content: 'distilled',
+        source: 'consolidate',
+      });
+      expect(store.countUnconsolidatedRawTurns()).toBe(0);
+    });
+
+    it('still counts a lower-id session below an already-consolidated one (no stranding)', () => {
+      // Session B's raw turns come FIRST (lower ids) and stay unconsolidated.
+      const b = store.createSession({ externalId: 'B', project: 'p' });
+      store.createObservation({ sessionId: b, kind: 'user', content: 'b1' });
+      store.createObservation({ sessionId: b, kind: 'user', content: 'b2' });
+      // Session A then gets raw turns AND a consolidate row (higher ids).
+      const a = store.createSession({ externalId: 'A', project: 'p' });
+      store.createObservation({ sessionId: a, kind: 'user', content: 'a1' });
+      store.createObservation({
+        sessionId: a,
+        kind: 'lesson',
+        content: 'd',
+        source: 'consolidate',
+      });
+      // A global high-water cursor would strand B below A's consolidate id; the
+      // anti-join counts B's 2 turns correctly.
+      expect(store.countUnconsolidatedRawTurns()).toBe(2);
+    });
+
+    it('never counts consolidate rows as raw; empty store → 0', () => {
+      expect(store.countUnconsolidatedRawTurns()).toBe(0);
+      const a = store.createSession({ externalId: 'A', project: 'p' });
+      store.createObservation({
+        sessionId: a,
+        kind: 'lesson',
+        content: 'd',
+        source: 'consolidate',
+      });
+      expect(store.countUnconsolidatedRawTurns()).toBe(0);
+    });
+  });
+
+  describe('countUnconsolidatedSessions — distinct sessions needing consolidate', () => {
+    it('counts only sessions with raw turns and no consolidate row', () => {
+      const b = store.createSession({ externalId: 'B', project: 'p' });
+      store.createObservation({ sessionId: b, kind: 'user', content: 'b1' });
+      store.createObservation({ sessionId: b, kind: 'user', content: 'b2' });
+      const a = store.createSession({ externalId: 'A', project: 'p' });
+      store.createObservation({ sessionId: a, kind: 'user', content: 'a1' });
+      store.createObservation({
+        sessionId: a,
+        kind: 'lesson',
+        content: 'd',
+        source: 'consolidate',
+      });
+      // Only B needs consolidate.
+      expect(store.countUnconsolidatedSessions()).toBe(1);
+
+      // Consolidate B → 0.
+      store.createObservation({
+        sessionId: b,
+        kind: 'lesson',
+        content: 'd2',
+        source: 'consolidate',
+      });
+      expect(store.countUnconsolidatedSessions()).toBe(0);
+    });
+  });
+
+  describe('countConsolidatedSince — kind + project + cursor filtered (C1/W1)', () => {
+    it('filters by kind, project, source=consolidate and the cursor', () => {
+      const sp = store.createSession({ externalId: 'sp', project: 'P' });
+      const l1 = store.createObservation({
+        sessionId: sp,
+        kind: 'lesson',
+        content: 'l1',
+        source: 'consolidate',
+      });
+      store.createObservation({
+        sessionId: sp,
+        kind: 'lesson',
+        content: 'l2',
+        source: 'consolidate',
+      });
+      store.createObservation({
+        sessionId: sp,
+        kind: 'decision',
+        content: 'd1',
+        source: 'consolidate',
+      });
+      // Interleave raw turns with HIGHER ids — must NOT be counted.
+      store.createObservation({ sessionId: sp, kind: 'user', content: 'raw' });
+
+      // Other project Q's consolidate lesson — must NOT count for P.
+      const sq = store.createSession({ externalId: 'sq', project: 'Q' });
+      store.createObservation({
+        sessionId: sq,
+        kind: 'lesson',
+        content: 'q-lesson',
+        source: 'consolidate',
+      });
+
+      expect(store.countConsolidatedSince('P', 'lesson', 0)).toBe(2);
+      expect(store.countConsolidatedSince('P', 'decision', 0)).toBe(1);
+      // Cursor at the max lesson id for P → 0.
+      const maxLesson = store.maxConsolidatedId('P', 'lesson');
+      expect(store.countConsolidatedSince('P', 'lesson', maxLesson)).toBe(0);
+      // Cursor at the first lesson id → only the second lesson remains.
+      expect(store.countConsolidatedSince('P', 'lesson', l1)).toBe(1);
+    });
+  });
+
+  describe('maxConsolidatedId — kind + project filtered', () => {
+    it('returns the highest consolidate id for the kind/project, never raw/other-project', () => {
+      const sp = store.createSession({ externalId: 'sp', project: 'P' });
+      store.createObservation({
+        sessionId: sp,
+        kind: 'lesson',
+        content: 'l1',
+        source: 'consolidate',
+      });
+      const l2 = store.createObservation({
+        sessionId: sp,
+        kind: 'lesson',
+        content: 'l2',
+        source: 'consolidate',
+      });
+      // Higher raw-turn id — must NOT be the max.
+      store.createObservation({ sessionId: sp, kind: 'user', content: 'raw' });
+      // Other project's higher consolidate lesson — must NOT be the max for P.
+      const sq = store.createSession({ externalId: 'sq', project: 'Q' });
+      store.createObservation({
+        sessionId: sq,
+        kind: 'lesson',
+        content: 'q',
+        source: 'consolidate',
+      });
+
+      expect(store.maxConsolidatedId('P', 'lesson')).toBe(l2);
+      // No decisions yet → 0.
+      expect(store.maxConsolidatedId('P', 'decision')).toBe(0);
+    });
+  });
+
+  describe('consolidatedIdsSince — kind + project + cursor id list (#138 partition)', () => {
+    it('returns the ascending id list above the cursor, filtered to kind/project', () => {
+      const sp = store.createSession({ externalId: 'sp', project: 'P' });
+      const l1 = store.createObservation({
+        sessionId: sp,
+        kind: 'lesson',
+        content: 'l1',
+        source: 'consolidate',
+      });
+      const l2 = store.createObservation({
+        sessionId: sp,
+        kind: 'lesson',
+        content: 'l2',
+        source: 'consolidate',
+      });
+      store.createObservation({
+        sessionId: sp,
+        kind: 'decision',
+        content: 'd',
+        source: 'consolidate',
+      });
+      store.createObservation({ sessionId: sp, kind: 'user', content: 'raw' });
+
+      expect(store.consolidatedIdsSince('P', 'lesson', 0)).toEqual([l1, l2]);
+      expect(store.consolidatedIdsSince('P', 'lesson', l1)).toEqual([l2]);
+      expect(store.consolidatedIdsSince('P', 'lesson', l2)).toEqual([]);
+    });
+  });
+
+  describe('countObservationsBySession (W2)', () => {
+    it('counts all observations of a session; unknown id → 0', () => {
+      const a = store.createSession({ externalId: 'A', project: 'p' });
+      store.createObservation({ sessionId: a, kind: 'user', content: '1' });
+      store.createObservation({ sessionId: a, kind: 'assistant', content: '2' });
+      store.createObservation({ sessionId: a, kind: 'user', content: '3' });
+      store.createObservation({
+        sessionId: a,
+        kind: 'lesson',
+        content: '4',
+        source: 'consolidate',
+      });
+      expect(store.countObservationsBySession(a)).toBe(4);
+      expect(store.countObservationsBySession(999999)).toBe(0);
+    });
+  });
+
   describe('delete cascades', () => {
     it('deleting an observation removes its vector and fts entries', () => {
       const sessionId = store.createSession({ externalId: 'sess', project: 'p' });
@@ -680,6 +904,30 @@ describe('MemoryStore', () => {
       store.setMeta('a', '1');
       store.setMeta('b', '2');
       expect(store.listMetaKeys('')).toEqual(['a', 'b']);
+    });
+  });
+
+  describe('incrMeta — atomic counter UPSERT (#138 RC-004)', () => {
+    it('creates the key at delta when absent and returns the new value', () => {
+      expect(store.incrMeta('autoDistill:runs', 1)).toBe(1);
+      expect(store.getMeta('autoDistill:runs')).toBe('1');
+    });
+
+    it('accumulates across calls (the lost-update-proof path)', () => {
+      store.incrMeta('autoDistill:tokens', 100);
+      store.incrMeta('autoDistill:tokens', 250);
+      expect(store.incrMeta('autoDistill:tokens', 0)).toBe(350);
+    });
+
+    it('treats a non-integer stored value as 0 before adding (defensive CAST)', () => {
+      store.setMeta('counter', 'garbage');
+      expect(store.incrMeta('counter', 5)).toBe(5);
+    });
+
+    it('does not disturb an unrelated key', () => {
+      store.setMeta('other', 'keep');
+      store.incrMeta('counter', 1);
+      expect(store.getMeta('other')).toBe('keep');
     });
   });
 

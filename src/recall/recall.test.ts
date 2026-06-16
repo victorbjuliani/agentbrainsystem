@@ -16,6 +16,8 @@ function config(): AppConfig {
     dbPath: join(dir, 'memory.db'),
     embedding: { provider: 'local', model: 'Xenova/all-MiniLM-L6-v2', dimensions: 384 },
     recallScope: 'global',
+    autoDistill: true,
+    distillMinObs: 25,
   };
 }
 

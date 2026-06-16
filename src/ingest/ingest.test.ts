@@ -679,6 +679,49 @@ describe('Codex ingest (per-format seam, W4/C1, #67)', () => {
   });
 });
 
+describe('ingestSingleSession returns the resolved session id (W2, #138)', () => {
+  it('returns the store id of the session it ingested', async () => {
+    const aDir = join(projectsDir, '-Users-me-A');
+    mkdirSync(aDir, { recursive: true });
+    const aFile = join(aDir, 'sa.jsonl');
+    writeFileSync(aFile, `${userLine('sa', '/Users/me/A', 'alpha question', 'ua')}\n`);
+    const memory = newMemory();
+
+    const result = await ingestSingleSession(memory, aFile);
+
+    const session = memory.store.getSessionByExternalId('sa');
+    expect(session).not.toBeNull();
+    // The cadence-due gate scopes a per-session count to THIS id.
+    expect(result.sessionId).toBe(session?.id);
+    // Existing tally assertions stay green (additive field).
+    expect(result.observationsAdded).toBe(1);
+    memory.close();
+  });
+
+  it('returns a nullish sessionId for a missing-file no-op', async () => {
+    const memory = newMemory();
+    const result = await ingestSingleSession(memory, join(projectsDir, 'gone', 'nope.jsonl'));
+    expect(result.sessionId == null).toBe(true);
+    expect(result.observationsAdded).toBe(0);
+    memory.close();
+  });
+
+  it('returns a nullish sessionId when the session is bound skip (nothing written)', async () => {
+    const aDir = join(projectsDir, '-Users-me-A');
+    mkdirSync(aDir, { recursive: true });
+    const aFile = join(aDir, 'sa.jsonl');
+    writeFileSync(aFile, `${userLine('sa', '/Users/me/A', 'alpha question', 'ua')}\n`);
+    const memory = newMemory();
+    writeBinding(memory.store, 'sa', { action: 'skip' });
+
+    const result = await ingestSingleSession(memory, aFile);
+
+    expect(result.sessionId == null).toBe(true); // skip writes no session
+    expect(memory.store.getSessionByExternalId('sa')).toBeNull();
+    memory.close();
+  });
+});
+
 describe('Gemini ingest (whole-file JSON, id-watermark + .project_root, #68)', () => {
   const GEM_UUID = '78432a44-385f-41f6-8a71-646d51996f8a';
   const REAL_CWD = '/Users/me/Devs/agentbrainsystem';

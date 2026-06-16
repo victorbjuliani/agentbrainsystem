@@ -85,10 +85,13 @@ export interface RunResult {
  */
 export function abs(
   args: string[],
-  opts: { env: NodeJS.ProcessEnv; input?: string; timeoutMs?: number },
+  opts: { env: NodeJS.ProcessEnv; input?: string; timeoutMs?: number; cwd?: string },
 ): Promise<RunResult> {
   return new Promise((resolveRun, reject) => {
-    const child = spawn('node', [CLI, ...args], { env: opts.env });
+    const child = spawn('node', [CLI, ...args], {
+      env: opts.env,
+      ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
+    });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (d) => {

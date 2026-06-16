@@ -6,6 +6,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppConfig } from '../config.js';
 import { __clearDeleteCacheForTests } from '../delete/delete.js';
+import { optimizeCursorKey } from '../hooks/staleness.js';
 import type { EnsureResult } from '../indexer/index.js';
 import { readBinding } from '../ingest/index.js';
 import { type Memory, openMemory } from '../memory.js';
@@ -22,6 +23,8 @@ function config(): AppConfig {
     dbPath: join(dir, 'memory.db'),
     embedding: { provider: 'local', model: 'Xenova/all-MiniLM-L6-v2', dimensions: 384 },
     recallScope: 'global',
+    autoDistill: true,
+    distillMinObs: 25,
   };
 }
 
@@ -305,6 +308,46 @@ describe('MCP server', () => {
     expect(existsSync(join(projectRoot, 'CLAUDE.md'))).toBe(true);
   });
 
+  it('apply advances the per-kind/project optimize cursor (lesson path) — and not before (#138 FIX2)', async () => {
+    const projectRoot = join(dir, 'proj');
+    const slug = projectSlug(projectRoot);
+    // Seed a consolidate LESSON under the optimized project's slug (auto-memory path).
+    const sessionId = mem.store.createSession({ externalId: 'sL', project: slug });
+    const lessonId = await mem.indexer.write({
+      sessionId,
+      kind: 'lesson',
+      content: 'Keep local embeddings the offline default after the first model cache.',
+      source: 'consolidate',
+      metadata: { sourceSession: sessionId },
+    });
+
+    const lessonCursorKey = optimizeCursorKey('lesson', slug);
+    expect(mem.store.getMeta(lessonCursorKey)).toBeNull(); // unset to start
+
+    const client = await connectedClient();
+    const gen = parse(
+      await client.callTool({ name: 'optimize', arguments: { project: projectRoot } }),
+    ) as { candidates: Array<{ id: string; target: { kind: string } }> };
+    const lessonCand = gen.candidates.find((c) => c.target.kind === 'auto-memory');
+    expect(lessonCand).toBeDefined();
+    if (!lessonCand) return;
+
+    // optimize alone must NOT advance the cursor — only a successful apply does.
+    expect(mem.store.getMeta(lessonCursorKey)).toBeNull();
+
+    const applied = parse(
+      await client.callTool({ name: 'apply', arguments: { candidateId: lessonCand.id } }),
+    ) as { applied: boolean };
+    expect(applied.applied).toBe(true);
+
+    // After applying the only surviving lesson candidate, its kind's cursor advances to
+    // the project+kind max (idempotent — converges as candidates are applied one-by-one).
+    expect(mem.store.getMeta(lessonCursorKey)).toBe(
+      String(mem.store.maxConsolidatedId(slug, 'lesson')),
+    );
+    expect(mem.store.getMeta(lessonCursorKey)).toBe(String(lessonId));
+  });
+
   it('apply on a fresh server (empty cache) explains both causes, not just restart (#114)', async () => {
     // No `optimize` ran on THIS server → the in-memory candidate cache is empty.
     // That has two innocent causes (a zero-candidate optimize OR a restart), so the
@@ -331,6 +374,40 @@ describe('MCP server', () => {
       stale: boolean;
     };
     expect(status).toMatchObject({ observations: 2, vectors: 2, fts: 2, stale: false });
+  });
+
+  it('memory_status spreads an autoDistill rollup WITHOUT dropping the pre-existing fields (W3/P4)', async () => {
+    // Seed the observability rollup keys the cadence runner writes (#138 Phase 4).
+    mem.store.setMeta('autoDistill:runs', '3');
+    mem.store.setMeta('autoDistill:tokens', '12000');
+    mem.store.setMeta('autoDistill:lastRunAt', '2026-06-15T10:00:00.000Z');
+    const client = await connectedClient();
+    await client.callTool({ name: 'remember', arguments: { content: 'one' } });
+
+    const status = parse(await client.callTool({ name: 'memory_status', arguments: {} })) as {
+      observations: number;
+      vectors: number;
+      fts: number;
+      stale: boolean;
+      autoDistill: { runs: number; tokens: number; lastRunAt: string | null };
+    };
+    // The new additive block.
+    expect(status.autoDistill).toEqual({
+      runs: 3,
+      tokens: 12000,
+      lastRunAt: '2026-06-15T10:00:00.000Z',
+    });
+    // The pre-existing top-level fields are STILL present (additive spread).
+    expect(status).toMatchObject({ observations: 1, vectors: 1, fts: 1, stale: false });
+  });
+
+  it('memory_status autoDistill defaults to zeros/null when the rollup keys are absent', async () => {
+    const client = await connectedClient();
+    await client.callTool({ name: 'remember', arguments: { content: 'one' } });
+    const status = parse(await client.callTool({ name: 'memory_status', arguments: {} })) as {
+      autoDistill: { runs: number; tokens: number; lastRunAt: string | null };
+    };
+    expect(status.autoDistill).toEqual({ runs: 0, tokens: 0, lastRunAt: null });
   });
 });
 
