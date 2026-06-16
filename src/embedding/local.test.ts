@@ -104,4 +104,26 @@ describe('LocalEmbeddingProvider first-run load handling (#111)', () => {
     await provider.ensureReady();
     expect(onSlowLoad).not.toHaveBeenCalled();
   });
+
+  it('does NOT memoize a FAILED load — a later call retries and can succeed (F5-06)', async () => {
+    let attempt = 0;
+    const loadExtractor = vi.fn(async () => {
+      attempt += 1;
+      if (attempt === 1) throw new Error('transient model-load failure');
+      return fakeExtractor;
+    });
+    const provider = new LocalEmbeddingProvider({
+      model: 'test-model-retry',
+      loadExtractor,
+      slowLoadAfterMs: 10_000,
+    });
+
+    // First load fails (a transient download/timeout failure).
+    await expect(provider.ensureReady()).rejects.toThrow(/transient model-load failure/);
+    expect(loadExtractor).toHaveBeenCalledTimes(1);
+
+    // The failure must NOT be cached forever: a retry re-invokes the loader and succeeds.
+    await expect(provider.ensureReady()).resolves.toBeUndefined();
+    expect(loadExtractor).toHaveBeenCalledTimes(2);
+  });
 });

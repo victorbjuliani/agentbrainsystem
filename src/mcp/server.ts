@@ -652,12 +652,25 @@ export async function backgroundEnsure(
     const result = await indexer.ensureIndex();
     // A clean ensure clears any stale degraded flag from a PRIOR failed rebuild, so
     // the SessionStart degraded note doesn't stick forever after one transient error.
-    ctx?.store.deleteMeta(REBUILD_FAILED_KEY);
+    // F8-01: contain the metadata write — a throwing store must NOT break this
+    // function's non-rejecting contract (that would surface as an unhandledRejection
+    // and crash the long-lived MCP server).
+    try {
+      ctx?.store.deleteMeta(REBUILD_FAILED_KEY);
+    } catch (metaErr) {
+      process.stderr.write(`[abs] could not clear degraded flag: ${String(metaErr)}\n`);
+    }
     return result;
   } catch (err) {
     // Degraded: record a DURABLE signal (not just stderr) so a later SessionStart
     // can tell the user recall is degraded — a swallowed error used to be invisible.
-    ctx?.store.setMeta(REBUILD_FAILED_KEY, new Date().toISOString());
+    // F8-01: the same containment — a setMeta failure here used to bubble out of the
+    // catch as an unhandledRejection that could kill the server.
+    try {
+      ctx?.store.setMeta(REBUILD_FAILED_KEY, new Date().toISOString());
+    } catch (metaErr) {
+      process.stderr.write(`[abs] could not record degraded flag: ${String(metaErr)}\n`);
+    }
     process.stderr.write(`[abs] background index rebuild failed: ${String(err)}\n`);
   } finally {
     if (heartbeat) clearInterval(heartbeat);

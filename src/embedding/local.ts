@@ -54,6 +54,14 @@ function loadExtractorOnce(model: string, loader: ExtractorLoader): Promise<Extr
   let pending = extractorCache.get(model);
   if (pending === undefined) {
     pending = loader(model);
+    // F5-06: never memoize a FAILED load forever. A transient model-load failure
+    // (download timeout, network blip) would otherwise stay cached as a rejected
+    // promise and permanently disable embeddings with no retry. On rejection, evict
+    // THIS entry so the next call re-attempts the load. The identity guard avoids
+    // deleting a newer (possibly successful) promise that already replaced ours.
+    pending.catch(() => {
+      if (extractorCache.get(model) === pending) extractorCache.delete(model);
+    });
     extractorCache.set(model, pending);
   }
   return pending;
