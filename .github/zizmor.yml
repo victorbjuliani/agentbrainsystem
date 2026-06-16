@@ -1,0 +1,10 @@
+# zizmor configuration — https://docs.zizmor.sh/configuration/
+# Auto-discovered by both the local CLI and the zizmor.yml CI workflow.
+rules:
+  cache-poisoning:
+    ignore:
+      # release.yml is tag-triggered and maintainer-only, and the src-tauri cargo
+      # cache key is written by no other workflow (ci.yml is Node-only), so there
+      # is no untrusted writer that could poison it. Caching stays on to keep the
+      # 3-OS Rust release build fast; the audit is a false positive for this repo.
+      - release.yml
