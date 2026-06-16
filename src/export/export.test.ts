@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -241,6 +241,138 @@ describe('export / import round-trip', () => {
       const target = new MemoryStore({ dbPath: join(dir, 'target.db'), dimensions: DIM });
       target.open();
       await expect(importStore(target, empty, { mode: 'replace' })).rejects.toThrow();
+      target.close();
+    });
+  });
+
+  describe('integrity — issue #157', () => {
+    // F3-03: a mid-write crash must not leave outPath truncated/empty. We force a
+    // write failure after the header line, then assert the destination is untouched.
+    it('F3-03: a failed export leaves outPath absent (atomic via temp + rename)', async () => {
+      const existing = join(dir, 'preexisting.jsonl');
+      writeArtifact(existing, ['original-content']);
+
+      // A store whose iterateObservations throws partway proves the destination
+      // is only published on full success — a partial write must not surface.
+      const boom = new MemoryStore({ dbPath: join(dir, 'boom.db'), dimensions: DIM });
+      boom.open();
+      boom.createSession({ externalId: 'boom-sess' });
+      boom.iterateObservations = (() => {
+        throw new Error('simulated mid-export failure');
+      }) as typeof boom.iterateObservations;
+
+      await expect(exportStore(boom, existing)).rejects.toThrow(/simulated mid-export/);
+
+      // The pre-existing file must be untouched — no truncation, no partial header.
+      expect(readFileSync(existing, 'utf8')).toBe('original-content\n');
+      // And no leftover temp artifact.
+      expect(existsSync(`${existing}.tmp`)).toBe(false);
+      boom.close();
+    });
+
+    // F3-01: a mid-import error under `replace` must NOT leave the store wiped.
+    // We corrupt a data line so the import throws after the header (which is where
+    // the old code wiped) and assert pre-existing data survives.
+    it('F3-01: a failed replace import leaves the store at its pre-import state', async () => {
+      await exportStore(source, outPath);
+      // Append a corrupt observation line so the import throws mid-stream.
+      const good = readFileSync(outPath, 'utf8');
+      const corrupt = join(dir, 'corrupt.jsonl');
+      writeFileSync(corrupt, `${good}not-valid-json\n`, 'utf8');
+
+      const target = new MemoryStore({ dbPath: join(dir, 'target.db'), dimensions: DIM });
+      target.open();
+      const keepSession = target.createSession({ externalId: 'keeper-sess', project: 'pre' });
+      const keepObs = target.createObservation({
+        sessionId: keepSession,
+        kind: 'note',
+        content: 'must survive a failed replace',
+      });
+      target.indexFts(keepObs, 'must survive a failed replace');
+      const before = target.counts();
+
+      await expect(importStore(target, corrupt, { mode: 'replace' })).rejects.toThrow();
+
+      // The store must be exactly as it was before the failed import — NOT wiped.
+      expect(target.counts()).toEqual(before);
+      expect(target.getSessionByExternalId('keeper-sess')).not.toBeNull();
+      expect(ftsContents(target, 'survive')).toEqual(['must survive a failed replace']);
+      target.close();
+    });
+
+    // F3-02: a truncated artifact (header declares more rows than are present)
+    // must be rejected, not silently imported as a partial success.
+    it('F3-02: import rejects a truncated artifact (header count > rows present)', async () => {
+      await exportStore(source, outPath);
+      const lines = readFileSync(outPath, 'utf8').trim().split('\n');
+      // Drop the last observation line — header still declares 3 observations.
+      const truncated = join(dir, 'truncated.jsonl');
+      writeFileSync(truncated, `${lines.slice(0, -1).join('\n')}\n`, 'utf8');
+
+      const target = new MemoryStore({ dbPath: join(dir, 'target.db'), dimensions: DIM });
+      target.open();
+      await expect(importStore(target, truncated, { mode: 'replace' })).rejects.toThrow(
+        /truncated|mismatch|count/i,
+      );
+      target.close();
+    });
+
+    // F3-02 (export side): if observed rows disagree with the header counts taken
+    // pre-iteration, export must throw rather than finalize a lying artifact.
+    it('F3-02: export throws when observed rows disagree with header counts', async () => {
+      const drift = new MemoryStore({ dbPath: join(dir, 'drift.db'), dimensions: DIM });
+      drift.open();
+      const s = drift.createSession({ externalId: 'drift-sess' });
+      drift.createObservation({ sessionId: s, kind: 'note', content: 'one' });
+      drift.createObservation({ sessionId: s, kind: 'note', content: 'two' });
+
+      // counts() reports 2 observations, but iterateObservations yields only 1 →
+      // a real-world truncation/inconsistency the finalize assertion must catch.
+      const original = drift.iterateObservations.bind(drift);
+      drift.iterateObservations = function* (...args: Parameters<typeof original>) {
+        let n = 0;
+        for (const o of original(...args)) {
+          if (n++ >= 1) break;
+          yield o;
+        }
+      } as typeof drift.iterateObservations;
+
+      const driftOut = join(dir, 'drift.jsonl');
+      await expect(exportStore(drift, driftOut)).rejects.toThrow(/mismatch|count|truncat/i);
+      drift.close();
+    });
+
+    // F3-04: a `replace` is a FULL reset — ingest cursors and degraded/rebuild
+    // flags must be cleared, so the next ingest does not resume from stale state.
+    // `session-project:*` bindings (explicit user decisions) must be PRESERVED.
+    it('F3-04: replace clears ingest state meta but preserves session-project bindings', async () => {
+      await exportStore(source, outPath);
+
+      const target = new MemoryStore({ dbPath: join(dir, 'target.db'), dimensions: DIM });
+      target.open();
+      // Stale ingest state that a "full reset" must not leave behind.
+      target.setMeta('ingest:cursor:/some/transcript.jsonl', '4096');
+      target.setMeta('codex:cwd:/some/rollout.jsonl', '/repo');
+      target.setMeta('ingest:copilot-cwd:/some/copilot.json', '/repo');
+      target.setMeta('gemini:lastid:/some/gemini.json', 'msg-42');
+      target.setMeta('index:rebuild_failed_at', '2026-01-01T00:00:00Z');
+      target.setMeta('ingest:deferred_at', '2026-01-01T00:00:00Z');
+      target.setMeta('embed:model_load_timeout_at', '2026-01-01T00:00:00Z');
+      // Explicit user project binding — must SURVIVE the reset.
+      target.setMeta('session-project:codex:keepme', '{"project":"chosen"}');
+
+      await importStore(target, outPath, { mode: 'replace' });
+
+      // Ingest state cleared.
+      expect(target.getMeta('ingest:cursor:/some/transcript.jsonl')).toBeNull();
+      expect(target.getMeta('codex:cwd:/some/rollout.jsonl')).toBeNull();
+      expect(target.getMeta('ingest:copilot-cwd:/some/copilot.json')).toBeNull();
+      expect(target.getMeta('gemini:lastid:/some/gemini.json')).toBeNull();
+      expect(target.getMeta('index:rebuild_failed_at')).toBeNull();
+      expect(target.getMeta('ingest:deferred_at')).toBeNull();
+      expect(target.getMeta('embed:model_load_timeout_at')).toBeNull();
+      // Project binding preserved.
+      expect(target.getMeta('session-project:codex:keepme')).toBe('{"project":"chosen"}');
       target.close();
     });
   });
