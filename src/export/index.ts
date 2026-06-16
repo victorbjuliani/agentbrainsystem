@@ -17,6 +17,7 @@
 import { createReadStream, createWriteStream, renameSync, rmSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { loadConfig } from '../config.js';
+import { OPENCODE_CURSOR_PREFIX } from '../harness/capabilities/sqlite-transcript-source.js';
 import {
   CODEX_CWD_PREFIX,
   COPILOT_CWD_PREFIX,
@@ -83,6 +84,19 @@ export async function exportStore(store: MemoryStore, outPath: string): Promise<
   const externalIdById = new Map<number, string>();
   for (const s of sessions) externalIdById.set(s.id, s.externalId);
 
+  // Pre-count the observations that will actually be WRITTEN — those whose session
+  // resolves to an exported session. The header must declare THIS, not the raw total:
+  // an orphan row (corrupt store; FK CASCADE normally prevents one) is skipped below,
+  // so a header claiming the full `counts.observations` would over-declare and THIS
+  // build's importer rejects the artifact as truncated (`observationLines.length <
+  // header.counts.observations`) — i.e. an export this build cannot reimport (Codex
+  // review on PR #165). The pre-pass is cheap: `iterateObservations` yields no vectors
+  // (those load per-row only in the write loop below).
+  let writableObservations = 0;
+  for (const obs of store.iterateObservations()) {
+    if (externalIdById.has(obs.sessionId)) writableObservations += 1;
+  }
+
   // Write to a sibling temp path and only `rename` it over `outPath` after the
   // stream closes cleanly (F3-03). `createWriteStream` truncates its target up
   // front, so writing straight to `outPath` would leave it empty/partial on a
@@ -105,7 +119,7 @@ export async function exportStore(store: MemoryStore, outPath: string): Promise<
         model: config.embedding.model,
         dimensions,
       },
-      counts: { sessions: counts.sessions, observations: counts.observations },
+      counts: { sessions: counts.sessions, observations: writableObservations },
     };
     await writeLine(stream, header);
 
@@ -149,15 +163,22 @@ export async function exportStore(store: MemoryStore, outPath: string): Promise<
     stream.end();
     await closed;
 
-    // Reconcile what we actually walked against the header counts taken before the
-    // iteration (F3-02). The header declares `counts.observations` rows; every one
-    // must have been either written or intentionally skipped as dangling. A
-    // shortfall means rows vanished mid-walk (a truncation/inconsistency) and
-    // finalizing would publish a lying artifact that imports as a silent partial.
+    // Reconcile what we actually walked against the counts taken before the iteration
+    // (F3-02). Two invariants: (1) we wrote EXACTLY the writable count the header
+    // declares — so the artifact is self-consistent and reimports cleanly; (2) every
+    // row `counts()` promised was seen (written or skipped-dangling) — a shortfall
+    // means rows vanished mid-walk (a truncation/inconsistency) and finalizing would
+    // publish a lying artifact that imports as a silent partial.
     const observationsSeen = observations + danglingSkipped;
-    if (sessions.length !== counts.sessions || observationsSeen !== counts.observations) {
+    if (
+      sessions.length !== counts.sessions ||
+      observations !== writableObservations ||
+      observationsSeen !== counts.observations
+    ) {
       throw new Error(
-        `export count mismatch: header declares ${counts.sessions} sessions / ${counts.observations} observations, walked ${sessions.length} sessions / ${observationsSeen} observations`,
+        `export count mismatch: expected ${counts.sessions} sessions / ${writableObservations} writable observations; ` +
+          `wrote ${sessions.length} sessions / ${observations} observations ` +
+          `(+${danglingSkipped} dangling, ${observationsSeen} of ${counts.observations} total seen)`,
       );
     }
 
@@ -239,6 +260,7 @@ const INGEST_STATE_META_PREFIXES = [
   CODEX_CWD_PREFIX, // codex:cwd:*
   COPILOT_CWD_PREFIX, // ingest:copilot-cwd:*
   GEMINI_LASTID_PREFIX, // gemini:lastid:*
+  OPENCODE_CURSOR_PREFIX, // opencode:cursor:* (Codex review on PR #165)
 ];
 
 /** Single-key ingest-state kv_meta flags cleared on a full reset (F3-04). */
@@ -332,10 +354,7 @@ export async function importStore(
         const s = record as SessionLine;
         declaredSessionIds.add(s.externalId);
         sessionLines.push(s);
-        continue;
-      }
-
-      if (record.t === 'obs') {
+      } else if (record.t === 'obs') {
         const o = record as ObservationLine;
         if (!declaredSessionIds.has(o.sessionExternalId)) {
           throw new Error(
@@ -343,9 +362,7 @@ export async function importStore(
           );
         }
         observationLines.push(o);
-        continue;
       }
-
       // Unknown line type: ignore for forward-compatibility within the same version.
     }
 

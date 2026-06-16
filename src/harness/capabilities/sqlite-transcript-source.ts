@@ -35,8 +35,13 @@ import type { IngestResult } from '../../ingest/types.js';
 import type { Memory } from '../../memory.js';
 import { projectSlug } from '../../optimize/targets.js';
 
-/** kv_meta key prefix for the per-session id watermark (last-ingested part.id). */
-const CURSOR_PREFIX = 'opencode:cursor:';
+/**
+ * kv_meta key prefix for the per-session id watermark (last-ingested part.id). Exported
+ * so a full-reset `import --mode replace` can clear it alongside the other ingest cursors
+ * (F3-04) — otherwise the watermark survives the wipe and the next `opencode-capture`
+ * skips every part before the stale id instead of re-reading from zero.
+ */
+export const OPENCODE_CURSOR_PREFIX = 'opencode:cursor:';
 
 export interface SqliteTranscriptSourceOptions {
   /** Override the opencode.db path (defaults to the live store). Mainly for tests. */
@@ -150,7 +155,7 @@ export function sqliteTranscriptSource(
 
         // Watermark: start AFTER the last-ingested part.id; if it is gone (rewound),
         // re-sync from index 0 (at-least-once dup, NEVER a silent drop — same as Gemini).
-        const cursorKey = `${CURSOR_PREFIX}${sessionId}`;
+        const cursorKey = `${OPENCODE_CURSOR_PREFIX}${sessionId}`;
         const lastId = memory.store.getMeta(cursorKey);
         let start = 0;
         if (lastId !== null) {

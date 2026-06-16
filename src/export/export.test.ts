@@ -342,6 +342,40 @@ describe('export / import round-trip', () => {
       drift.close();
     });
 
+    // F3-02 (PR #165): a dangling observation (orphan row a corrupt store could hold;
+    // FK CASCADE normally prevents one) is skipped, and the header must declare only the
+    // WRITTEN rows — otherwise it over-declares and THIS build's importer rejects the
+    // artifact as truncated, i.e. an export this build cannot reimport.
+    it('F3-02: a dangling observation is skipped; header matches written rows (reimportable)', async () => {
+      // Inject an orphan by bypassing the FK CASCADE on a raw connection.
+      const Database = (await import('better-sqlite3')).default;
+      const raw = new Database(join(dir, 'source.db'));
+      raw.pragma('foreign_keys = OFF');
+      raw
+        .prepare(
+          'INSERT INTO observations (session_id, kind, content, created_at) VALUES (?,?,?,?)',
+        )
+        .run(99999, 'note', 'orphan with no session', new Date().toISOString());
+      raw.close();
+
+      // Source now holds 3 valid + 1 orphan; only the 3 valid rows are writable.
+      const res = await exportStore(source, outPath);
+      expect(res.observations).toBe(3); // orphan skipped, not written
+
+      const header = JSON.parse(readFileSync(outPath, 'utf8').split('\n')[0] ?? '') as {
+        counts: { observations: number };
+      };
+      expect(header.counts.observations).toBe(3); // matches written rows, not the raw total
+
+      // The artifact reimports cleanly — before the fix the header declared 4 and import
+      // rejected it as truncated (3 lines < 4 declared).
+      const target = new MemoryStore({ dbPath: join(dir, 'target.db'), dimensions: DIM });
+      target.open();
+      const imp = await importStore(target, outPath, { mode: 'replace' });
+      expect(imp.observationsImported).toBe(3);
+      target.close();
+    });
+
     // F3-04: a `replace` is a FULL reset — ingest cursors and degraded/rebuild
     // flags must be cleared, so the next ingest does not resume from stale state.
     // `session-project:*` bindings (explicit user decisions) must be PRESERVED.
@@ -355,6 +389,7 @@ describe('export / import round-trip', () => {
       target.setMeta('codex:cwd:/some/rollout.jsonl', '/repo');
       target.setMeta('ingest:copilot-cwd:/some/copilot.json', '/repo');
       target.setMeta('gemini:lastid:/some/gemini.json', 'msg-42');
+      target.setMeta('opencode:cursor:ses_abc123', 'prt_999'); // PR #165: must also clear
       target.setMeta('index:rebuild_failed_at', '2026-01-01T00:00:00Z');
       target.setMeta('ingest:deferred_at', '2026-01-01T00:00:00Z');
       target.setMeta('embed:model_load_timeout_at', '2026-01-01T00:00:00Z');
@@ -368,6 +403,7 @@ describe('export / import round-trip', () => {
       expect(target.getMeta('codex:cwd:/some/rollout.jsonl')).toBeNull();
       expect(target.getMeta('ingest:copilot-cwd:/some/copilot.json')).toBeNull();
       expect(target.getMeta('gemini:lastid:/some/gemini.json')).toBeNull();
+      expect(target.getMeta('opencode:cursor:ses_abc123')).toBeNull(); // PR #165
       expect(target.getMeta('index:rebuild_failed_at')).toBeNull();
       expect(target.getMeta('ingest:deferred_at')).toBeNull();
       expect(target.getMeta('embed:model_load_timeout_at')).toBeNull();
