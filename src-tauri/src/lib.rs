@@ -45,14 +45,34 @@ struct AppState {
     last_max_obs_id: Mutex<i64>,
 }
 
+/// Terminate a spawned sidecar AND any process it spawned, then reap it. On Windows the
+/// global `abs` is an `abs.cmd` shim, so the stored `Child` is the cmd WRAPPER, not the
+/// Node server — `child.kill()` would terminate only the wrapper and leave the Node
+/// process (and its bound UI port) alive after quit (Codex review on PR #171). `taskkill
+/// /T` kills the whole process tree. On Unix the `Child` IS the Node process (shebang
+/// script), so a direct kill suffices. Best-effort throughout.
+fn kill_child_tree(child: &mut Child) {
+    #[cfg(target_os = "windows")]
+    {
+        let pid = child.id().to_string();
+        let _ = Command::new("taskkill")
+            .args(["/PID", pid.as_str(), "/T", "/F"])
+            .status();
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = child.kill();
+    }
+    let _ = child.wait(); // reap so we don't leave a zombie / wrapper handle
+}
+
 /// Kill the held `abs ui` sidecar (if any) and reap it. `std::process::Child` does NOT
 /// kill on drop, so without this the Node sidecar orphans on app exit and leaks its port
 /// across quit/relaunch cycles (F5-01). Best-effort: a missing/dead child is a no-op.
 fn kill_sidecar(state: &tauri::State<'_, AppState>) {
     if let Ok(mut slot) = state.sidecar.lock() {
         if let Some(mut child) = slot.take() {
-            let _ = child.kill();
-            let _ = child.wait();
+            kill_child_tree(&mut child);
         }
     }
 }
@@ -321,8 +341,7 @@ fn open_ocean(app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Resul
     if url.is_empty() {
         // The sidecar died before emitting a URL. Surface its stderr (e.g. a native
         // better-sqlite3 ABI mismatch) so the failure is diagnosable, not just "no URL".
-        let _ = child.kill();
-        let _ = child.wait();
+        kill_child_tree(&mut child); // tree-kill so a Windows cmd-shim's Node child dies too
         let detail = stderr
             .as_mut()
             .and_then(|s| {
@@ -362,8 +381,7 @@ fn open_ocean(app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Resul
     // Keep the sidecar alive for the window's lifetime (replacing any prior one).
     if let Ok(mut slot) = state.sidecar.lock() {
         if let Some(mut old) = slot.take() {
-            let _ = old.kill();
-            let _ = old.wait();
+            kill_child_tree(&mut old); // tree-kill the replaced sidecar (Windows shim child too)
         }
         *slot = Some(child);
     }
