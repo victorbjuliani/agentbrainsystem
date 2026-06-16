@@ -21,7 +21,7 @@ import type { HarnessAdapter } from '../harness/index.js';
 import { optimizeCursorKey } from '../hooks/staleness.js';
 import { type Memory, openMemory } from '../memory.js';
 import { projectSlug } from '../optimize/targets.js';
-import { EMBED_DEGRADED_KEY } from '../store/index.js';
+import { acquireRebuildLock, EMBED_DEGRADED_KEY } from '../store/index.js';
 import {
   cmdDoctor,
   cmdForget,
@@ -1106,6 +1106,36 @@ describe('cmdOpencodeCapture / cmdOpencodeRecall (#72, hermetic, real local prov
     mem = await openMemory(loadConfig(), { ensure: false });
     expect(mem.store.getAnchorsForObservation(obsId)[0]?.state).toBe('verified');
     mem.close();
+  });
+
+  // #159 (F1-01): the capture path must mirror SessionEnd's rebuild-lock defer. A
+  // background MCP rebuild holds the cross-process write lock; racing our ingest into
+  // it would block on busy_timeout and then fail-open, SILENTLY losing the session.
+  // Instead we must skip ingest (the opencode cursor is not advanced, so a later run
+  // re-pulls it) and emit one stderr defer line — no data lost.
+  it('(i) defers capture (no ingest) while a rebuild holds the write lock (#159 F1-01)', async () => {
+    // Materialize the store dir, then hold the rebuild lock as a peer would.
+    (await openMemory(loadConfig(), { ensure: false })).close();
+    const lock = acquireRebuildLock(loadConfig().dbPath);
+    try {
+      seedDb();
+      await cmdOpencodeCapture(['--session', SES, '--db', join(dir, 'opencode.db')], {
+        groundTruth: gtNull,
+      });
+      // Nothing ingested while deferred — the session was never created.
+      const mem = await openMemory(loadConfig(), { ensure: false });
+      try {
+        expect(mem.store.getSessionByExternalId(`opencode:${SES}`)).toBeNull();
+        expect(mem.store.counts().observations).toBe(0);
+      } finally {
+        mem.close();
+      }
+      // A defer line is emitted to stderr (the reliable signal).
+      expect(outLines.join('')).toContain('deferred');
+      expect(process.exitCode).not.toBe(1); // defer is success, not a hard error
+    } finally {
+      lock.release();
+    }
   });
 });
 

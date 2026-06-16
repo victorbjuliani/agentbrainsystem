@@ -3,10 +3,10 @@
  * id-anchored per-session watermark (at-least-once, never a silent drop). Builds a
  * temp opencode.db via the shared fixture and ingests into a temp memory store.
  */
-import { mkdtempSync, rmSync, statSync } from 'node:fs';
+import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { EmbeddingProvider } from '../../embedding/index.js';
 import { Indexer } from '../../indexer/index.js';
 import type { Memory } from '../../memory.js';
@@ -224,6 +224,27 @@ describe('sqliteTranscriptSource (#72)', () => {
     } finally {
       memory.close();
     }
+  });
+
+  it('(f2) unreadable/corrupt DB → empty result, no throw, but emits ONE stderr trace (#159 F2-06)', async () => {
+    // A present-but-not-a-SQLite-database file makes `new Database(...)` throw, exercising
+    // the fail-open catch. The defect: it swallowed the failure with ZERO trace.
+    const dbPath = join(home, 'opencode.db');
+    writeFileSync(dbPath, 'this is not a sqlite database');
+    const stderr = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation(() => true) as unknown as ReturnType<typeof vi.fn>;
+    const memory = await open();
+    try {
+      const result = await sqliteTranscriptSource({ dbPath }).ingestSession(memory, SES);
+      expect(result.observationsAdded).toBe(0); // fail-open: still empty, no throw
+    } finally {
+      memory.close();
+    }
+    const written = (stderr.mock.calls as unknown[][]).map((c) => String(c[0])).join('');
+    stderr.mockRestore();
+    expect(written).toContain('opencode-capture'); // a trace was emitted
+    expect(written).toContain(dbPath); // names the file it could not read
   });
 
   it('(g) read-only: never writes to opencode.db (size/mtime unchanged)', async () => {

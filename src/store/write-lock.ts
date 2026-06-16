@@ -35,9 +35,6 @@ export const REBUILD_HEARTBEAT_MS = 3_000;
 /** kv_meta key: when set, a background rebuild failed and recall is degraded (#101 surfaces it). */
 export const REBUILD_FAILED_KEY = 'index:rebuild_failed_at';
 
-/** kv_meta key: when set, an ingest was deferred because a rebuild held the write lock. */
-export const INGEST_DEFERRED_KEY = 'ingest:deferred_at';
-
 /** kv_meta key: when set, a hook-path embed timed out waiting for the first-run model
  * download — recall/ingest is degraded until an unbudgeted `abs ingest` caches it (#111). */
 export const EMBED_DEGRADED_KEY = 'embed:model_load_timeout_at';
