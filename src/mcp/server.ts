@@ -165,15 +165,33 @@ export function createMcpServer(memory: Memory, harnessId?: string): McpServer {
         // below trustworthy ones, so kind-weighting can NEVER promote a stale curated fact
         // to the top of an MCP result without its ⚠ tag (the hybrid path has no other
         // freshness step — that demotion otherwise lives only on the recallFts hook path).
-        const hits = annotateFreshness(
+        //
+        // Demote stale across the ENTIRE candidate pool, THEN slice to the requested limit
+        // (Codex review on PR #173). annotateFreshness only REORDERS the hits recall()
+        // returned — it can't pull in one recall() never returned. At a small `limit`,
+        // kind-weighting can promote STALE curated hits into the window and push the fresh
+        // match out, so a post-recall demotion has no fresh hit left to surface. A FIXED
+        // over-fetch only moves the cliff (it fails once the stale run exceeds the window);
+        // instead we return recall's WHOLE fused candidate pool (limit = candidates×2) and
+        // demote over all of it, so a fresh hit anywhere among the candidates beats stale
+        // before the slice. A fresh hit OUTSIDE the candidate pool was never recallable (it
+        // didn't rank in the top-`candidates` of either leg = below recall's relevance
+        // horizon), so excluding it is correct. The floor is widened to 50/leg (vs recall's
+        // default 20) so a long run of stale curated hits ahead of a fresh match doesn't
+        // exhaust the pool at small limits — the demotion sees ~100 fused candidates deep.
+        const want = limit ?? 10;
+        const candidates = Math.max(want * 5, 50); // generous horizon so stale runs don't starve fresh
+        const pool = annotateFreshness(
           memory.store,
           await memory.recall.recall(query, {
-            limit,
+            limit: candidates * 2, // ≥ the fused pool (vector⊕FTS) → demotion sees every candidate
+            candidates,
             project: scopeProject,
             includeGlobal: true,
             rankByKind: true,
           }),
         );
+        const hits = pool.slice(0, want);
         return jsonContent(
           hits.map((h) => ({
             id: h.observation.id,

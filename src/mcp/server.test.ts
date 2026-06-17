@@ -203,6 +203,34 @@ describe('MCP server', () => {
     expect(hits.findIndex((h) => h.id === fresh)).toBeLessThan(
       hits.findIndex((h) => h.id === staleDurable),
     ); // fresh precedes the stale durable
+
+    // limit:1 — the displacement case (Codex review on PR #173): kind-weighting promotes
+    // stale curated hits into the single-result window and pushes the fresh match out, so a
+    // post-recall demotion has nothing fresh left to surface. Seed a RUN of stale curated
+    // hits (not just one) so a FIXED over-fetch window would still be all-stale; the tool
+    // demotes across the WHOLE candidate pool, so the FRESH hit must still win the sole slot.
+    for (let i = 0; i < 8; i++) {
+      const s = mem.store.createObservation({
+        sessionId: sid,
+        kind: 'lesson',
+        content: `zeppelin protocol stale variant ${i}`,
+      });
+      mem.store.indexFts(s, `zeppelin protocol stale variant ${i}`);
+      mem.store.createAnchor({
+        observationId: s,
+        anchorKind: 'file',
+        filePath: `src/gone-${i}.ts`,
+        state: 'stale',
+      });
+    }
+    const top1 = parse(
+      await client.callTool({
+        name: 'recall',
+        arguments: { query: 'zeppelin protocol', limit: 1 },
+      }),
+    ) as Array<{ id: number }>;
+    expect(top1).toHaveLength(1);
+    expect(top1[0]?.id).toBe(fresh); // a whole run of stale curated did NOT take the only slot
   });
 
   it('promote (no as) MOVES the whole observation into the global brain', async () => {
