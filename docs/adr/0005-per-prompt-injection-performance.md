@@ -163,3 +163,27 @@ so a mis-calibrated threshold suppresses genuinely-relevant memory (a false nega
 junk it removes) and needs real-store calibration. Note the implicit floor that already exists —
 kind-weighting only reorders *pool members*, i.e. observations that already matched in at least one leg;
 it can never manufacture relevance, which bounds the harm of shipping ranking before the floor.
+
+## Addendum — 2026-06-16 (#144, recall noise floor — data-calibrated)
+
+The deferred floor is now shipped, calibrated from a read-only spike over the real 11k-observation
+store rather than a guessed constant. Probing 6 on-topic vs 6 off-topic queries gave a clean,
+**corpus-independent** separator: **query-token coverage** (the fraction of the query's content
+tokens the hit contains). Off-topic noise matched exactly ONE (usually common) token — coverage
+≤ 0.25; on-topic hits covered most of the query — ≥ 0.75. The hybrid vector leg's cosine
+(derived from the unit-vector L2 distance, `1 − d²/2`) separated too (off ≤ 0.35, on ≥ 0.66) but
+bm25 magnitude did not generalize. Thresholds: **coverage ≥ 0.40**, **cosine ≥ 0.45** — both with
+wide margins, both env-tunable (`ABS_RECALL_MIN_COVERAGE`, `ABS_RECALL_MIN_COSINE`; `0` disables).
+
+**Design.** A hit clears the floor on coverage OR (where a vector cosine is available) cosine, so a
+genuine **paraphrase** (low literal overlap, strong semantic match) is not suppressed. The FTS-only
+path floors on coverage alone — safe there because FTS only ever returns lexical matches, so there is
+no paraphrase to lose. The floor is **opt-in** (`noiseFloor`), enabled on the NL injection paths
+(the per-prompt UserPromptSubmit hook + the MCP `recall` tool) and deliberately NOT on delete-by-search
+(must find every match) nor the PreToolUse symbol-bag lens (its synthetic query is a different
+distribution the spike didn't calibrate). When the whole candidate pool fails the floor, the path
+returns `[]` — "nothing relevant" instead of best-of-the-junk (the LIVE-01 symptom).
+
+**Latency.** The floor reads each candidate's content (a `getObservation`) to score coverage; on the
+hot per-prompt path it adds at most one fetch per candidate it skips, bounded by the over-fetch pool.
+Measured p95 ≈ 6.7 ms (limit 8, rankByKind + noiseFloor) — comfortably under the 25 ms Gate 5 ceiling.

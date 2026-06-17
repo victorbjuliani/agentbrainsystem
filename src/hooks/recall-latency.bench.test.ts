@@ -92,13 +92,23 @@ describe('per-prompt FTS recall latency (ADR-0005 Gate 5)', () => {
   // PreToolUse surfaceDecisions lens (limit 20 → candidates 100), both with rankByKind (#141),
   // plus the legacy default path as a control. The re-rank over-fetch + sort must stay under
   // the ADR-0005 p95 budget on every path.
-  const SCENARIOS: Array<{ label: string; options: { limit: number; rankByKind?: boolean } }> = [
+  const SCENARIOS: Array<{
+    label: string;
+    options: { limit: number; rankByKind?: boolean; noiseFloor?: boolean };
+  }> = [
     // Control: the legacy default path. ADR-0005 spike measured ~4 ms p95 on an all-`note`
     // store; the seed is now a durable/raw mix, so compare against the 25 ms ceiling, not the
     // old absolute number.
     { label: 'limit 8, default (legacy path)', options: { limit: 8 } },
     { label: 'limit 8, rankByKind (prompt hook)', options: { limit: 8, rankByKind: true } },
     { label: 'limit 20, rankByKind (surfaceDecisions)', options: { limit: 20, rankByKind: true } },
+    // #144: the prompt hook now also applies the noise floor. The synth queries match many
+    // store tokens (high coverage) so most candidates PASS — the floor adds at most a
+    // getObservation per candidate it skips, bounded by the over-fetch pool. Must stay under budget.
+    {
+      label: 'limit 8, rankByKind + noiseFloor (prompt hook, #144)',
+      options: { limit: 8, rankByKind: true, noiseFloor: true },
+    },
   ];
 
   for (const { label, options } of SCENARIOS) {
