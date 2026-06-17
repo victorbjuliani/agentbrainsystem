@@ -52,10 +52,26 @@ import {
 } from '../optimize/index.js';
 import { projectSlug } from '../optimize/targets.js';
 import { type RecallHit, resolveRecallProject } from '../recall/index.js';
-import { EMBED_DEGRADED_KEY, isRebuildLocked, REBUILD_FAILED_KEY } from '../store/index.js';
+import {
+  EMBED_DEGRADED_KEY,
+  isRebuildLocked,
+  type MemoryStore,
+  REBUILD_FAILED_KEY,
+} from '../store/index.js';
 import { startUiServer } from '../ui/index.js';
 import { VERSION } from '../version.js';
-import { MCP_SERVER_NAME, type RunFn, type RunResult, unregisterMcpServer } from './setup.js';
+import {
+  type LlmChoice,
+  MCP_SERVER_NAME,
+  probeLlm,
+  type RunFn,
+  type RunResult,
+  runLlmSetupStep,
+  SETUP_LAST_RUN_AT_KEY,
+  SETUP_LLM_CHOICE_KEY,
+  type SetupIo,
+  unregisterMcpServer,
+} from './setup.js';
 import { fetchLatestVersion, isOutdated } from './update-check.js';
 
 const USAGE = `agentbrainsystem (abs) v${VERSION} — local-first memory for AI coding agents
@@ -848,9 +864,60 @@ async function cmdSetup(args: string[]): Promise<void> {
   if ('trustWarning' in hooks && hooks.trustWarning) out(`! ${hooks.trustWarning}`);
   surfaceJsoncManual(adapter.displayName, hooks);
 
+  // Guided LLM step (ADR-0018) — TTY-gated, additive, runs AFTER wiring so wiring success
+  // is independent of the interview. Always exits 0 (non-TTY/--harness/probe-fail/abort).
+  // Open the store `ensure:false` (no index rebuild / model cold-load just to write a
+  // non-secret marker) for the duration of the step, then close it.
+  //
+  // The whole open + step is swallowed: `loadConfig()` throws on a malformed env var and
+  // `openMemory(...)` throws CorruptStoreError/SchemaDowngradeError on a corrupt or
+  // newer-schema DB — none of which may fail setup, since MCP/hooks wiring already
+  // succeeded and the advisory LLM marker can be retried anytime (exit-0 invariant, E11/E12).
+  try {
+    const memory = await openMemory(loadConfig(), { ensure: false });
+    try {
+      await runLlmSetupStep(realSetupIo(memory.store), hasFlag(args, '--harness'));
+    } finally {
+      memory.close();
+    }
+  } catch {
+    /* advisory — `abs setup` stays exit-0; the LLM step can be retried anytime */
+  }
+
   out('');
   out(`Done. Restart ${adapter.displayName} — it will recall + remember automatically.`);
   out('Explore your memory anytime with:  abs ui');
+}
+
+/**
+ * The production {@link SetupIo} over an already-open store: real `process.stdin.isTTY`,
+ * a readline-on-stderr prompter (the `purgeStore` pattern — stdout stays clean), real env
+ * for `$LANG`, the real {@link probeLlm}, and kv_meta-backed choice persistence.
+ *
+ * SECRET-NEVER-STORED INVARIANT (ADR-0018): `setChoice` only ever writes the enum marker
+ * `setup:llmChoice` + the `setup:lastRunAt` timestamp — the API key is never passed here.
+ */
+function realSetupIo(store: MemoryStore): SetupIo {
+  return {
+    isTty: process.stdin.isTTY ?? false,
+    prompt: async (question: string): Promise<string> => {
+      // Prompt on stderr so stdout stays clean; try/finally close mirrors purgeStore (E12).
+      const rl = createInterface({ input: process.stdin, output: process.stderr });
+      try {
+        return (await rl.question(question)).trim();
+      } finally {
+        rl.close();
+      }
+    },
+    out,
+    getEnv: (k) => process.env[k],
+    probe: probeLlm,
+    getChoice: () => store.getMeta(SETUP_LLM_CHOICE_KEY) as LlmChoice | null,
+    setChoice: (choice) => {
+      store.setMeta(SETUP_LLM_CHOICE_KEY, choice);
+      store.setMeta(SETUP_LAST_RUN_AT_KEY, new Date().toISOString());
+    },
+  };
 }
 
 /**

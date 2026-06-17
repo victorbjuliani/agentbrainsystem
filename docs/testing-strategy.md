@@ -17,11 +17,13 @@
 | **UI** | graph UI (`abs ui`) — `buildGraph` projection unit tests, HTTP server contract tests (read-only/405/path-traversal/cap-clamp), boot smoke; canvas paint audited visually via `frontend-auditor`, not unit-tested | medium |
 | **LLM consolidation** | `abs consolidate` — pure `distill` unit tests (prompt/parse/zod/injection-golden), orchestrator integration (idempotency, `--force` replace, dry-run-writes-nothing, batch rollback, default-latest, guards) against a temp store with an **injected stub `LlmProvider`**; the OpenAI-compat client tested via **mocked `fetch`** | high |
 | **Native symbol index** (`src/index/`) | abs's own tree-sitter ground truth (TS/JS/Py). `parser` (per-language defs + ABI canary), `symbol-store` (per-repo SQLite), `git` helpers, `indexer` (full/incremental/dirty against temp git repos), `AbsIndexProvider` (the `GroundTruthProvider` port + never-false-stale rule), and an end-to-end `integration` test (claimed→verified→move→stale). **Parse suites read the bundled wasm from `dist/index/wasm`, so they set `ABS_WASM_DIR` to it; `pretest` (`build:ui`) copies the wasm, so `npm run check` is self-contained.** | highest |
+| **Interactive CLI steps** (`src/cli/`) | the `abs setup` guided LLM step (ADR-0018) is tested through the injected **`SetupIo` seam** (`{ isTty, prompt, out, getEnv, probe, getChoice, setChoice }`) — scripted prompt answers, a fake `probe`, a fake `getEnv`, and `isTty` toggled — so every interview branch (local/hosted/skip, non-TTY/`--harness` guard, advisory probe-fail, re-run idempotency, **prompt-abort/E12 → exit 0**) is deterministic with **no real TTY and no real network**. The `purgeStore`-style readline prompts (`--purge`, `optimize`, `forget`) follow the same try/finally-`rl.close()` discipline. | high |
 
 ## Non-Negotiable Coverage
 
 - The **`embed → persist → recall`** path must have an automated test that proves a saved item is retrievable by semantic query — including **across a restart** (persistence), not just in-memory. The tool we replace failed precisely because indexing was never persisted/rebuilt; a regression test guards this from day one.
 - **Export → import round-trip** must be tested: export, wipe, import, recall returns the same content.
+- **Secret-never-stored invariant (ADR-0018):** the `abs setup` LLM step must NEVER persist the API key. A test MUST drive the hosted path with a fake key and assert (a) **no `kv_meta` value equals the key** (full-scan via `listMetaKeys('')`) and (b) an **`abs export` round-trip artifact contains no `ABS_LLM_API_KEY` value** — `setup:llmChoice`/`setup:lastRunAt` are the only persisted markers. The step must also **always exit 0** (non-TTY, `--harness`, probe failure, and prompt-abort).
 
 ## Smoke Policy
 

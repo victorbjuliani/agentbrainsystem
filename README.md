@@ -7,7 +7,7 @@
 <p>
 Your agent forgets everything between sessions. <b>agentbrainsystem</b> captures every
 coding session — across <b>five harnesses</b> — and recalls what matters next time,
-<b>100% on your machine</b>. No cloud, no account, no API keys.
+<b>100% on your machine</b>. No cloud, no account, no API keys required.
 </p>
 
 <p>
@@ -75,7 +75,11 @@ abs setup
 `abs setup` is the one-shot onboarding: it installs the memory hooks **and** registers the
 MCP server with your harness (idempotent; if the harness CLI isn't found it just prints the
 manual command). With no flag it targets **Claude Code**; pass `--harness <id>` for any other
-supported harness (see [Connect](#connect-your-harness)). Restart the harness afterwards and
+supported harness (see [Connect](#connect-your-harness)). It then offers a **guided, optional
+LLM step** (local Ollama leads — $0/offline, no key; a hosted OpenAI-compatible endpoint
+second; or skip) so abs can distil your sessions into sharper recall — your API key is never
+stored, setup just prints the `export` lines. The step is **skipped automatically** in
+non-interactive/CI/`--harness` runs (no prompt, exit 0). Restart the harness afterwards and
 recall/remember are automatic.
 
 The first embedding call downloads the local model (~one-time, ~35 s); after that it runs
@@ -113,8 +117,10 @@ Not another write-only memory bucket. The parts most tools skip:
   *live* code; anchors **re-follow code when it moves** and go **stale** when it's deleted — in any git repo,
   offline, zero setup. A PreToolUse guard fires **in the loop**, before an edit lands: it flags code you're
   about to duplicate and surfaces past memory about the file you're touching.
-- 🔒 **Local-first, $0, offline — for real.** No cloud, no account, no API keys, no telemetry. Local
-  embeddings by default; a hosted embedder or any OpenAI-compatible LLM is **opt-in, never required**.
+- 🔒 **Local-first, $0, offline — for real.** No cloud, no account, no API keys required, no telemetry. Local
+  embeddings by default; an LLM that sharpens recall is **optional but recommended** — a guided, skippable
+  step in `abs setup` (local Ollama needs no key and stays $0/offline; a hosted OpenAI-compatible endpoint
+  also works). The API key is never stored — setup just prints the `export` lines for you.
 - 🗂️ **Project-scoped by default.** Recall is isolated per project — project B's memory never bleeds into
   project A. Promote a lesson to the global brain when it's worth sharing everywhere.
 - 🪶 **Deliberately small.** 8 runtime dependencies (two are the embedded WASM tree-sitter parser), embedded
@@ -252,13 +258,16 @@ Out of scope (for now): multi-user/team sharing, image/vision embeddings, heavyw
 <details>
 <summary><b>Does it send my code anywhere?</b></summary>
 
-No. Everything runs locally and offline — no network calls, no telemetry, no account.
+No, not by default — everything runs locally and offline, no telemetry, no account. The one
+exception is the optional LLM you connect during `abs setup`: that is the single outbound call,
+and only if you opt in. A **local Ollama** stays entirely on your machine (still $0/offline);
+skip the step and there are no network calls at all.
 </details>
 
 <details>
 <summary><b>Does it cost anything?</b></summary>
 
-$0 by default — local embeddings, no API keys. A hosted embedder or any OpenAI-compatible LLM (local Ollama or hosted) for deeper consolidation are **opt-in and off by default**.
+$0 by default — local embeddings, no API keys required. An LLM for deeper consolidation is an **optional, skippable step** in `abs setup` (a **local Ollama** is $0 too); a hosted OpenAI-compatible endpoint is the only paid option, and only if you choose it. Skip the step and it stays off.
 </details>
 
 <details>
