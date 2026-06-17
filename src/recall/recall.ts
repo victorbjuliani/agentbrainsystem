@@ -287,15 +287,21 @@ export class Recall {
       options.project,
       options.includeGlobal,
     );
-    // `pos` is the FTS rank position (best = 0). The kind weight applies ONLY when the
-    // caller asked to rank by kind (#141); a noiseFloor-only caller keeps pure FTS order
-    // (weight 1). Stable sort keeps FTS order within ties.
+    // `pos` is the FTS rank position (best = 0). `sortKey` orders the pool: kind-weighted
+    // when ranking by kind (#141), pure FTS position otherwise. The EMITTED `score` keeps the
+    // path's contract — the weighted value under rankByKind, but `-distance` for a
+    // noiseFloor-only caller, exactly like the default FTS path (so #144 doesn't silently
+    // change the score a non-rankByKind consumer sees — CodeRabbit review on PR #175).
     const ranked = matches
-      .map((m, pos) => ({
-        m,
-        score: (1 / (DEFAULT_RRF_K + pos)) * (options.rankByKind ? kindWeight(m.kind ?? '') : 1),
-      }))
-      .sort((a, b) => b.score - a.score);
+      .map((m, pos) => {
+        const weight = options.rankByKind ? kindWeight(m.kind ?? '') : 1;
+        return {
+          m,
+          sortKey: (1 / (DEFAULT_RRF_K + pos)) * weight,
+          score: options.rankByKind ? (1 / (DEFAULT_RRF_K + pos)) * weight : -m.distance,
+        };
+      })
+      .sort((a, b) => b.sortKey - a.sortKey);
 
     const floorCfg = options.noiseFloor ? noiseFloorConfig() : undefined;
     const hits: RecallHit[] = [];

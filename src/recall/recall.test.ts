@@ -542,6 +542,10 @@ describe('recall noise floor (#144)', () => {
   }
 
   beforeEach(() => {
+    // Isolate the floor thresholds from any ambient env so these tests use the defaults
+    // deterministically (CodeRabbit review on PR #175).
+    delete process.env.ABS_RECALL_MIN_COVERAGE;
+    delete process.env.ABS_RECALL_MIN_COSINE;
     bdir = mkdtempSync(join(tmpdir(), 'abs-floor-'));
     store = new MemoryStore({ dbPath: join(bdir, 'm.db'), dimensions: 8 }).open();
     sessionId = store.createSession({ externalId: 's1' });
@@ -549,6 +553,8 @@ describe('recall noise floor (#144)', () => {
   afterEach(() => {
     store.close();
     rmSync(bdir, { recursive: true, force: true });
+    delete process.env.ABS_RECALL_MIN_COVERAGE;
+    delete process.env.ABS_RECALL_MIN_COSINE;
   });
 
   function add(kind: string, content: string, vec?: number[]): number {
@@ -585,6 +591,15 @@ describe('recall noise floor (#144)', () => {
     // floor only (no rankByKind): the strong raw match stays on top (no durable lift).
     const hits = recall.recallFts('alpha', { limit: 5, noiseFloor: true });
     expect(hits[0]?.observation.id).toBe(raw);
+  });
+
+  it('recallFts noiseFloor-only keeps the score = -distance contract (not reciprocal rank)', () => {
+    // CodeRabbit review on PR #175: routing noiseFloor through the candidate path must NOT
+    // change the emitted score for a non-rankByKind caller — it stays the FTS `-distance`.
+    const recall = new Recall(store, stub);
+    add('user', 'alpha alpha alpha');
+    const [hit] = recall.recallFts('alpha', { limit: 1, noiseFloor: true });
+    expect(hit?.score).toBe(-(hit?.ftsRank ?? 0)); // same contract as the default FTS path
   });
 
   it('recall (hybrid): drops junk (low coverage + weak cosine) but keeps a semantic paraphrase', async () => {
