@@ -874,9 +874,14 @@ async function cmdSetup(args: string[]): Promise<void> {
   // newer-schema DB — none of which may fail setup, since MCP/hooks wiring already
   // succeeded and the advisory LLM marker can be retried anytime (exit-0 invariant, E11/E12).
   try {
-    const memory = await openMemory(loadConfig(), { ensure: false });
+    const cfg = loadConfig();
+    const memory = await openMemory(cfg, { ensure: false });
     try {
-      await runLlmSetupStep(realSetupIo(memory.store), hasFlag(args, '--harness'));
+      // `cfg.llm !== undefined` = an LLM is ACTUALLY live (env applied). The interview is
+      // gated on this, not on the stored choice, so a remembered-but-unapplied choice still
+      // re-offers (Codex P2, PR #179).
+      const io = realSetupIo(memory.store, cfg.llm !== undefined);
+      await runLlmSetupStep(io, hasFlag(args, '--harness'));
     } finally {
       memory.close();
     }
@@ -897,8 +902,9 @@ async function cmdSetup(args: string[]): Promise<void> {
  * SECRET-NEVER-STORED INVARIANT (ADR-0018): `setChoice` only ever writes the enum marker
  * `setup:llmChoice` + the `setup:lastRunAt` timestamp — the API key is never passed here.
  */
-function realSetupIo(store: MemoryStore): SetupIo {
+function realSetupIo(store: MemoryStore, llmConfigured: boolean): SetupIo {
   return {
+    llmConfigured,
     // Require BOTH stdin AND stdout to be a TTY before running the interview. stdin alone
     // is not enough: with stdout redirected/teed (`abs setup > setup.log`) the interview
     // would still run and the hosted `export ABS_LLM_API_KEY=…` snippet (printed via `out`

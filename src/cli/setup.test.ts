@@ -375,24 +375,32 @@ describe('unregisterMcpServer — idempotent, non-fatal', () => {
 // ----------------------------------------------------------- LLM setup step
 
 describe('shouldPromptForLlm — pure decision (truth table)', () => {
-  it('TTY + unset choice → prompt', () => {
-    expect(shouldPromptForLlm(null, true, false)).toBe(true);
+  // signature: (choice, isTty, hasHarnessFlag, llmConfigured)
+  it('TTY + unset choice + no live LLM → prompt', () => {
+    expect(shouldPromptForLlm(null, true, false, false)).toBe(true);
   });
-  it('TTY + declined → re-offer (they may have changed their mind, E9)', () => {
-    expect(shouldPromptForLlm('declined', true, false)).toBe(true);
+  it('TTY + declined + no live LLM → re-offer (they may have changed their mind, E9)', () => {
+    expect(shouldPromptForLlm('declined', true, false, false)).toBe(true);
   });
-  it('TTY + a real prior choice (local|hosted|configured) → skip (E5)', () => {
-    expect(shouldPromptForLlm('local', true, false)).toBe(false);
-    expect(shouldPromptForLlm('hosted', true, false)).toBe(false);
-    expect(shouldPromptForLlm('configured', true, false)).toBe(false);
+  it('TTY + remembered local/hosted but LLM NOT live → re-offer (Codex P2 #179)', () => {
+    // The stored marker is not proof of a working LLM — a printed-but-unapplied choice
+    // must re-prompt so the SessionStart "run abs setup" nudge isn't a dead end.
+    expect(shouldPromptForLlm('local', true, false, false)).toBe(true);
+    expect(shouldPromptForLlm('hosted', true, false, false)).toBe(true);
+    expect(shouldPromptForLlm('configured', true, false, false)).toBe(true);
+  });
+  it('LLM actually live → skip regardless of choice (nothing to set up)', () => {
+    expect(shouldPromptForLlm('hosted', true, false, true)).toBe(false);
+    expect(shouldPromptForLlm(null, true, false, true)).toBe(false);
+    expect(shouldPromptForLlm('declined', true, false, true)).toBe(false);
   });
   it('non-TTY → never prompt regardless of choice (E1)', () => {
-    expect(shouldPromptForLlm(null, false, false)).toBe(false);
-    expect(shouldPromptForLlm('declined', false, false)).toBe(false);
+    expect(shouldPromptForLlm(null, false, false, false)).toBe(false);
+    expect(shouldPromptForLlm('declined', false, false, false)).toBe(false);
   });
   it('--harness present → never prompt even on a TTY (E2)', () => {
-    expect(shouldPromptForLlm(null, true, true)).toBe(false);
-    expect(shouldPromptForLlm('declined', true, true)).toBe(false);
+    expect(shouldPromptForLlm(null, true, true, false)).toBe(false);
+    expect(shouldPromptForLlm('declined', true, true, false)).toBe(false);
   });
 });
 
@@ -524,6 +532,8 @@ function makeIo(opts: {
   probe?: (cfg: LlmConfig) => Promise<ProbeResult>;
   env?: Record<string, string | undefined>;
   initialChoice?: LlmChoice | null;
+  /** Whether an LLM is actually live (`loadConfig().llm !== undefined`). Default false. */
+  llmConfigured?: boolean;
 }): {
   io: SetupIo;
   lines: string[];
@@ -537,6 +547,7 @@ function makeIo(opts: {
   const promptedQuestions: string[] = [];
   const io: SetupIo = {
     isTty: opts.isTty,
+    llmConfigured: opts.llmConfigured ?? false,
     async prompt(q) {
       promptedQuestions.push(q);
       if (opts.promptReject) throw opts.promptReject;
@@ -660,15 +671,40 @@ describe('runLlmSetupStep — probe advisory (E3) never blocks', () => {
 });
 
 describe('runLlmSetupStep — re-run idempotency (E5)', () => {
-  it('prior choice=local → interview skipped, "already" line, NO prompt, choice unchanged', async () => {
-    const { io, lines, kv, promptedQuestions } = makeIo({ isTty: true, initialChoice: 'local' });
+  it('prior choice=local AND LLM live → interview skipped, "already" line, NO prompt', async () => {
+    const { io, lines, kv, promptedQuestions } = makeIo({
+      isTty: true,
+      initialChoice: 'local',
+      llmConfigured: true, // an LLM is actually configured now
+    });
     await runLlmSetupStep(io, false);
     expect(promptedQuestions).toEqual([]);
     expect(lines.join('\n')).toContain('already done');
-    expect(kv.get(SETUP_LLM_CHOICE_KEY)).toBe('local');
+    expect(kv.get(SETUP_LLM_CHOICE_KEY)).toBe('local'); // known kind preserved
   });
 
-  it('prior choice=declined on a TTY → RE-OFFERS the interview (E9)', async () => {
+  it('LLM live but no prior choice → records "configured", no prompt', async () => {
+    const { io, kv, promptedQuestions } = makeIo({ isTty: true, llmConfigured: true });
+    await runLlmSetupStep(io, false);
+    expect(promptedQuestions).toEqual([]);
+    expect(kv.get(SETUP_LLM_CHOICE_KEY)).toBe('configured');
+  });
+
+  it('prior choice=hosted but LLM NOT live → RE-OFFERS the interview (Codex P2 #179)', async () => {
+    // The user picked hosted but never applied the printed exports → no live LLM. A re-run
+    // must re-prompt (not say "already configured"), or the SessionStart nudge dead-ends.
+    const { io, lines, promptedQuestions } = makeIo({
+      isTty: true,
+      initialChoice: 'hosted',
+      llmConfigured: false,
+      answers: ['3'], // re-offered → they skip this time
+    });
+    await runLlmSetupStep(io, false);
+    expect(promptedQuestions.length).toBeGreaterThan(0); // re-offered, NOT skipped
+    expect(lines.join('\n')).not.toContain('already done');
+  });
+
+  it('prior choice=declined on a TTY (no live LLM) → RE-OFFERS the interview (E9)', async () => {
     const { io, promptedQuestions, kv } = makeIo({
       isTty: true,
       initialChoice: 'declined',
@@ -745,6 +781,7 @@ describe('CRITICAL invariant — the API key is NEVER persisted (kv_meta + abs e
     // A SetupIo backed by the REAL store's getMeta/setMeta — the production wiring.
     const io: SetupIo = {
       isTty: true,
+      llmConfigured: false, // no live LLM → the hosted interview runs
       prompt: (() => {
         const queue = ['2', 'https://api.example.com/v1', 'gpt-x', KEY];
         return async () => {

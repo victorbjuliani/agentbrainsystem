@@ -67,8 +67,13 @@ interview (`runLlmSetupStep`, `src/cli/setup.ts`):
 - **Prompt-abort safe (E12).** A rejected prompt (Ctrl-C / EOF / closed stdin) is caught and
   treated as `'declined'`, exit 0 — the step never lets a rejection escape to the top-level
   `main().catch`, which would otherwise flip the exit code to 1.
-- **Re-run idempotent.** A real prior choice (`local`/`hosted`/`configured`) skips the
-  interview with one line; `declined`/unset on a TTY re-offers (the user may reconsider).
+- **Re-run gated on the LIVE config, not the stored marker (Codex review, PR #179).** The
+  interview is skipped only when an LLM is **actually live** (`loadConfig().llm !== undefined`)
+  — then setup prints one "already configured" line. A remembered `local`/`hosted` choice
+  whose `export`s were never applied does NOT count as configured: a TTY re-run re-offers the
+  interview, so the SessionStart "run `abs setup`" nudge can't dead-end. (`declined`/unset on
+  a TTY also re-offers.) The stored marker is telemetry + the non-interactive `declined`
+  bookkeeping, never the skip signal.
 - **PT/EN only** for the CLI copy; the in-session SessionStart nudge is agent-localized.
 
 ### Cadence is UNCHANGED — the 3-conjunct gate

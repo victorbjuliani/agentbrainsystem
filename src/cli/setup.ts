@@ -267,6 +267,14 @@ export interface SetupIo {
   getChoice: () => LlmChoice | null;
   /** Persist the decision marker + the lastRunAt timestamp. The key is NEVER passed here. */
   setChoice: (choice: LlmChoice) => void;
+  /**
+   * Whether an LLM is ACTUALLY live now (`loadConfig().llm !== undefined` in production).
+   * The interview is skipped only when this is true. A remembered `local`/`hosted` choice
+   * that was printed but never exported does NOT count as configured — otherwise a re-run
+   * would say "already configured" and refuse to help a user who hasn't finished, dead-
+   * ending the SessionStart "run `abs setup`" nudge (Codex P2, PR #179).
+   */
+  llmConfigured: boolean;
 }
 
 /**
@@ -279,10 +287,14 @@ export function shouldPromptForLlm(
   choice: LlmChoice | null,
   isTty: boolean,
   hasHarnessFlag: boolean,
+  llmConfigured: boolean,
 ): boolean {
-  if (!isTty || hasHarnessFlag) return false;
-  if (choice === 'local' || choice === 'hosted' || choice === 'configured') return false;
-  return true; // unset | 'declined'
+  if (!isTty || hasHarnessFlag) return false; // non-interactive → never prompt
+  if (llmConfigured) return false; // an LLM is actually live → nothing to set up
+  // Interactive + no live LLM → offer the interview, EVEN IF a `local`/`hosted` choice was
+  // recorded before but never applied (printed exports not added to the shell). The stored
+  // marker is not proof of a working LLM; only the live config is (Codex P2, PR #179).
+  return true;
 }
 
 /**
@@ -422,30 +434,32 @@ async function finishChoice(
 /**
  * The guided LLM step appended to `abs setup` (ADR-0018). Always resolves — it NEVER
  * throws and NEVER sets a non-zero exit (invariant 2). Behaviour:
- *   - non-TTY / `--harness` → no prompt; mark `'declined'` ONLY when unset. A prior choice
- *     of any kind (real OR `'declined'`) is left untouched — no re-write, no `lastRunAt`
- *     bump — so a scripted re-run never clobbers a real choice (E1/E2; plan E1).
- *   - prior real choice (`local`/`hosted`/`configured`) → one line, re-persist to refresh
- *     `lastRunAt` (preserving the choice).
- *   - TTY + unset/declined → run the interview; a Ctrl-C/EOF/closed-stdin prompt
- *     rejection (E12) is caught and treated as `'declined'`, exit 0.
+ *   - LLM actually live (`io.llmConfigured`) → one "already configured" line (TTY only),
+ *     no prompt; record `configured` (preserving a known `local`/`hosted` kind).
+ *   - non-TTY / `--harness`, no live LLM → no prompt; mark `'declined'` ONLY when unset. A
+ *     prior choice of any kind is left untouched (no re-write, no `lastRunAt` bump) so a
+ *     scripted re-run never clobbers a real choice (E1/E2; plan E1).
+ *   - TTY, no live LLM → run the interview, even if a `local`/`hosted` choice was recorded
+ *     before but never applied (Codex P2, PR #179 — a remembered choice is not a live LLM).
+ *     A Ctrl-C/EOF/closed-stdin prompt rejection (E12) is caught → `'declined'`, exit 0.
  */
 export async function runLlmSetupStep(io: SetupIo, hasHarnessFlag: boolean): Promise<void> {
   // Detect the locale from $LANG via the seam.
   const locale = detectLocale(io.getEnv);
   const prior = io.getChoice();
 
-  if (!shouldPromptForLlm(prior, io.isTty, hasHarnessFlag)) {
-    // Idempotent re-run with a real prior choice → one line, no prompt; never clobber it (E5).
-    if (prior === 'local' || prior === 'hosted' || prior === 'configured') {
-      io.out(t(locale, 'alreadyConfigured'));
-      io.setChoice(prior); // re-persist (refreshes lastRunAt); preserves the real choice
+  if (!shouldPromptForLlm(prior, io.isTty, hasHarnessFlag, io.llmConfigured)) {
+    if (io.llmConfigured) {
+      // An LLM is genuinely live → acknowledge once (TTY), never re-prompt. Record
+      // 'configured', preserving a known kind so telemetry keeps local/hosted.
+      if (io.isTty) io.out(t(locale, 'alreadyConfigured'));
+      io.setChoice(prior === 'local' || prior === 'hosted' ? prior : 'configured');
     } else if (prior == null) {
-      // Non-interactive (non-TTY/--harness) FIRST run → silent degraded; mark 'declined'.
-      // Iff unset: a prior 'declined' is left untouched (no re-write, no lastRunAt bump) so
-      // a scripted re-run can't clobber a real choice (E1/E2; plan E1: don't overwrite).
+      // Non-interactive (non-TTY/--harness) first run, no live LLM → silent degraded; mark
+      // 'declined' iff unset (a prior choice is left untouched — no clobber; E1/E2, plan E1).
       io.setChoice('declined');
     }
+    // else: non-interactive with a prior choice and no live LLM → leave the marker untouched.
     return;
   }
 
