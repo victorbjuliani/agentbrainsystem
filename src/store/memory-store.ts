@@ -603,6 +603,29 @@ export class MemoryStore {
   }
 
   /**
+   * Batch-resolve `id → kind` for a set of observation ids in ONE query — the cheap
+   * lookup the hybrid recall re-rank uses to kind-weight vector-leg candidates without a
+   * `getObservation` per row (#143). Ids absent from the store (index drift) are simply
+   * omitted from the map; the caller treats a missing kind as non-durable (weight 1).
+   */
+  kindsByIds(ids: number[]): Map<number, string> {
+    const out = new Map<number, string>();
+    if (ids.length === 0) return out; // never emit `IN ()` (a SQL syntax error)
+    // Named placeholders (@id0, @id1, …): better-sqlite3 doesn't expand arrays, so this
+    // keeps `id IN (…)` parameterized rather than string-interpolated.
+    const placeholders = ids.map((_, i) => `@id${i}`).join(', ');
+    const params: Record<string, number> = {};
+    ids.forEach((id, i) => {
+      params[`id${i}`] = id;
+    });
+    const rows = this.conn()
+      .prepare(`SELECT id, kind FROM observations WHERE id IN (${placeholders})`)
+      .all(params) as Array<{ id: number; kind: string }>;
+    for (const r of rows) out.set(r.id, r.kind);
+    return out;
+  }
+
+  /**
    * Re-link an observation to a different session (used by `promote` to lift a
    * project memory into the global brain). The observation id (= fts/vec rowid)
    * is unchanged, so the FTS and vector indexes stay valid; only the FK moves.

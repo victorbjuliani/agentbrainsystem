@@ -36,7 +36,7 @@ import {
   type OptimizeCandidate,
   projectSlug,
 } from '../optimize/index.js';
-import { resolveRecallProject } from '../recall/index.js';
+import { annotateFreshness, resolveRecallProject } from '../recall/index.js';
 import { acquireRebuildLock, REBUILD_FAILED_KEY, REBUILD_HEARTBEAT_MS } from '../store/index.js';
 import { VERSION } from '../version.js';
 
@@ -159,17 +159,28 @@ export function createMcpServer(memory: Memory, harnessId?: string): McpServer {
         // includeGlobal: the curated cross-project global brain is recalled alongside
         // the project (no-op when already store-wide). Keeps the MCP pull path in sync
         // with the per-prompt hook injection.
-        const hits = await memory.recall.recall(query, {
-          limit,
-          project: scopeProject,
-          includeGlobal: true,
-        });
+        // rankByKind (#143): durable kinds (decision/lesson/note) lead over raw turns —
+        // the hybrid-path twin of the per-prompt hook. `score` stays the raw fused
+        // relevance (the weight reorders only). annotateFreshness then sinks `stale` hits
+        // below trustworthy ones, so kind-weighting can NEVER promote a stale curated fact
+        // to the top of an MCP result without its ⚠ tag (the hybrid path has no other
+        // freshness step — that demotion otherwise lives only on the recallFts hook path).
+        const hits = annotateFreshness(
+          memory.store,
+          await memory.recall.recall(query, {
+            limit,
+            project: scopeProject,
+            includeGlobal: true,
+            rankByKind: true,
+          }),
+        );
         return jsonContent(
           hits.map((h) => ({
             id: h.observation.id,
             kind: h.observation.kind,
             content: h.observation.content,
             score: Number(h.score.toFixed(6)),
+            anchorState: h.anchorState,
             vectorRank: h.vectorRank,
             ftsRank: h.ftsRank,
             createdAt: h.observation.createdAt,

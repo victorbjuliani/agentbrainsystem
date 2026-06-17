@@ -165,6 +165,46 @@ describe('MCP server', () => {
     expect(hits.some((h) => h.content.includes('Fridays'))).toBe(true);
   });
 
+  it('recall (#143): a STALE curated hit sinks below fresh and is tagged, never promoted to #1', async () => {
+    // A durable (lesson) hit kind-weighting would lift, BUT it is stale — annotateFreshness
+    // on the MCP path must sink it below the fresh raw hit and surface anchorState (CRITICAL-4:
+    // kind-weighting must not promote a stale curated fact to the top of an MCP result).
+    const client = await connectedClient();
+    const sid = mem.store.createSession({ externalId: 'sk', project: '-Users-me-Devs-k' });
+    const fresh = mem.store.createObservation({
+      sessionId: sid,
+      kind: 'user',
+      content: 'zeppelin protocol handshake notes',
+    });
+    mem.store.indexFts(fresh, 'zeppelin protocol handshake notes');
+    const staleDurable = mem.store.createObservation({
+      sessionId: sid,
+      kind: 'lesson',
+      content: 'zeppelin protocol decision record',
+    });
+    mem.store.indexFts(staleDurable, 'zeppelin protocol decision record');
+    mem.store.createAnchor({
+      observationId: staleDurable,
+      anchorKind: 'file',
+      filePath: 'src/gone.ts',
+      state: 'stale',
+    });
+
+    const hits = parse(
+      await client.callTool({
+        name: 'recall',
+        arguments: { query: 'zeppelin protocol', limit: 5 },
+      }),
+    ) as Array<{ id: number; anchorState?: string }>;
+
+    const staleHit = hits.find((h) => h.id === staleDurable);
+    expect(staleHit?.anchorState).toBe('stale'); // trust tag surfaced over the wire
+    expect(hits[0]?.id).not.toBe(staleDurable); // not promoted to #1 despite being curated
+    expect(hits.findIndex((h) => h.id === fresh)).toBeLessThan(
+      hits.findIndex((h) => h.id === staleDurable),
+    ); // fresh precedes the stale durable
+  });
+
   it('promote (no as) MOVES the whole observation into the global brain', async () => {
     const sid = mem.store.createSession({ externalId: 'pmv', project: '-Users-me-Devs-mv' });
     const id = mem.store.createObservation({
