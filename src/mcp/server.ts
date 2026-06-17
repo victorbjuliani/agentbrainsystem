@@ -189,6 +189,7 @@ export function createMcpServer(memory: Memory, harnessId?: string): McpServer {
             project: scopeProject,
             includeGlobal: true,
             rankByKind: true,
+            noiseFloor: true, // #144: drop best-of-the-junk → "nothing relevant" returns []
           }),
         );
         const hits = pool.slice(0, want);

@@ -177,6 +177,7 @@ async function recallFromStore(prompt: string, payload: HookPayload): Promise<Sc
       project,
       includeGlobal: true,
       rankByKind: true, // signal-first: durable kinds outrank raw turns (#141)
+      noiseFloor: true, // #144: a prompt with no relevant memory injects NOTHING, not junk
     });
     // Lazy self-healing (#28): re-verify the verified anchors of the facts about
     // to be surfaced, so a stale claim is caught at the exact moment of use.

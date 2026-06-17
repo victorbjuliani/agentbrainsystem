@@ -10,6 +10,7 @@ import type { EmbeddingProvider } from '../embedding/index.js';
 import { GLOBAL_PROJECT } from '../global.js';
 import type { AnchorState, MemoryStore, Observation } from '../store/index.js';
 import { kindWeight } from './kind-weight.js';
+import { cosineFromL2Distance, noiseFloorConfig, passesNoiseFloor } from './noise-floor.js';
 import { DEFAULT_RRF_K, reciprocalRankFusion } from './rrf.js';
 import { stemVariants } from './stemming.js';
 
@@ -39,6 +40,13 @@ export interface RecallOptions {
    * in the pool every weight is 1 and the order collapses to pure fused.
    */
   rankByKind?: boolean;
+  /**
+   * Apply the recall noise floor (#144): drop hits that clear neither the query-token
+   * coverage threshold NOR (using the vector leg's cosine) the semantic threshold, so a
+   * query with no genuinely relevant memory returns []. Coverage OR cosine — a paraphrase
+   * with low literal overlap but a strong semantic match still passes. Default `false`.
+   */
+  noiseFloor?: boolean;
 }
 
 export interface RecallHit {
@@ -77,6 +85,14 @@ export interface RecallFtsOptions {
    * weighted value. Opt in only on the always-on recall-injection hooks.
    */
   rankByKind?: boolean;
+  /**
+   * Apply the recall noise floor (#144): drop hits that don't clear the query-token
+   * coverage threshold so a prompt with no genuinely relevant memory injects NOTHING
+   * instead of best-of-the-junk. FTS-only, so coverage is the signal (no cosine here).
+   * Default `false` so delete-by-search still finds every lexical match. Pairs with the
+   * candidate (`rankByKind`) path — the injection hooks set both; see {@link noiseFloorConfig}.
+   */
+  noiseFloor?: boolean;
 }
 
 /**
@@ -129,11 +145,18 @@ export class Recall {
     const candidates = options.candidates ?? Math.max(limit * 5, 20);
     const rrfK = options.rrfK ?? DEFAULT_RRF_K;
 
-    const { project, includeGlobal, rankByKind } = options;
+    const { project, includeGlobal, rankByKind, noiseFloor } = options;
     const [queryVector] = await this.provider.embed([query]);
-    const vectorIds = queryVector
-      ? this.store.knn(queryVector, candidates, project, includeGlobal).map((h) => h.id)
+    const vectorHits = queryVector
+      ? this.store.knn(queryVector, candidates, project, includeGlobal)
       : [];
+    const vectorIds = vectorHits.map((h) => h.id);
+    // Per-id cosine (unit vectors: cos = 1 − L2²/2) so the noise floor can pass a strong
+    // SEMANTIC match even when its literal token coverage is low (a paraphrase).
+    const cosineById = new Map<number, number>();
+    if (noiseFloor) {
+      for (const h of vectorHits) cosineById.set(h.id, cosineFromL2Distance(h.distance));
+    }
 
     const ftsExpr = toFtsQuery(query);
     // Keep the full FTS matches (not just ids) so kind-weighting gets `kind` for the FTS
@@ -152,11 +175,21 @@ export class Recall {
 
     const ordered = rankByKind ? this.orderFusedByKind(fused, ftsMatches) : fused;
 
+    const floorCfg = noiseFloor ? noiseFloorConfig() : undefined;
     const hits: RecallHit[] = [];
     for (const f of ordered) {
       if (hits.length >= limit) break;
       const observation = this.store.getObservation(f.id);
       if (!observation) continue; // index drifted ahead of rows — skip defensively
+      // #144: drop a hit that clears neither lexical coverage nor (via the vector leg)
+      // the semantic cosine — so a query with no relevant memory returns []. Skipping a
+      // junk candidate lets a real one further down the pool take the slot instead.
+      if (
+        floorCfg &&
+        !passesNoiseFloor(query, observation.content, cosineById.get(f.id), floorCfg)
+      ) {
+        continue;
+      }
       hits.push({
         observation,
         score: f.score,
@@ -211,8 +244,11 @@ export class Recall {
     const ftsExpr = toFtsQuery(query);
     if (ftsExpr === null) return [];
 
-    if (options.rankByKind) {
-      return this.recallFtsRankedByKind(ftsExpr, limit, options);
+    // The candidate (over-fetch) path handles BOTH the kind re-rank (#141) and the noise
+    // floor (#144) — either opt-in routes here; delete-by-search (neither) keeps the exact
+    // default path below.
+    if (options.rankByKind || options.noiseFloor) {
+      return this.recallFtsRankedByKind(query, ftsExpr, limit, options);
     }
 
     // Default path — pure FTS order, `score = -distance` (unchanged contract; #141).
@@ -239,6 +275,7 @@ export class Recall {
    * matches to be promoted, so it always at least matched the query terms.
    */
   private recallFtsRankedByKind(
+    query: string,
     ftsExpr: string,
     limit: number,
     options: RecallFtsOptions,
@@ -250,16 +287,35 @@ export class Recall {
       options.project,
       options.includeGlobal,
     );
-    // `pos` is the FTS rank position (best = 0). Stable sort keeps FTS order within ties.
+    // `pos` is the FTS rank position (best = 0). `sortKey` orders the pool: kind-weighted
+    // when ranking by kind (#141), pure FTS position otherwise. The EMITTED `score` keeps the
+    // path's contract — the weighted value under rankByKind, but `-distance` for a
+    // noiseFloor-only caller, exactly like the default FTS path (so #144 doesn't silently
+    // change the score a non-rankByKind consumer sees — CodeRabbit review on PR #175).
     const ranked = matches
-      .map((m, pos) => ({ m, score: (1 / (DEFAULT_RRF_K + pos)) * kindWeight(m.kind ?? '') }))
-      .sort((a, b) => b.score - a.score);
+      .map((m, pos) => {
+        const weight = options.rankByKind ? kindWeight(m.kind ?? '') : 1;
+        return {
+          m,
+          sortKey: (1 / (DEFAULT_RRF_K + pos)) * weight,
+          score: options.rankByKind ? (1 / (DEFAULT_RRF_K + pos)) * weight : -m.distance,
+        };
+      })
+      .sort((a, b) => b.sortKey - a.sortKey);
 
+    const floorCfg = options.noiseFloor ? noiseFloorConfig() : undefined;
     const hits: RecallHit[] = [];
     for (const { m, score } of ranked) {
       if (hits.length >= limit) break;
       const observation = this.store.getObservation(m.id);
       if (!observation) continue; // index drifted ahead of rows — skip defensively
+      // #144: FTS leg has no cosine, so the floor is coverage-only here. Skipping a junk
+      // candidate lets a real one further down the over-fetched pool fill the slot; an
+      // all-junk pool yields [] ("nothing relevant"). Safe for FTS — it only ever returns
+      // lexical matches, so there is no semantic paraphrase to wrongly suppress.
+      if (floorCfg && !passesNoiseFloor(query, observation.content, undefined, floorCfg)) {
+        continue;
+      }
       hits.push({
         observation,
         score,

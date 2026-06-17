@@ -520,3 +520,112 @@ describe('MemoryStore.kindsByIds — batched id→kind (#143)', () => {
     expect(got.has(999999)).toBe(false); // absent id simply omitted
   });
 });
+
+describe('recall noise floor (#144)', () => {
+  let bdir: string;
+  let store: MemoryStore;
+  let sessionId: number;
+
+  const Q = unitVec(0);
+  // Returns a fixed query vector so the hybrid vector leg is fully controlled.
+  const stub: EmbeddingProvider = {
+    id: 'stub',
+    model: 'none',
+    dimensions: 8,
+    embed: async (texts: string[]) => texts.map(() => Q),
+  };
+
+  function unitVec(hot: number): number[] {
+    const v = new Array<number>(8).fill(0);
+    v[hot] = 1;
+    return v;
+  }
+
+  beforeEach(() => {
+    // Isolate the floor thresholds from any ambient env so these tests use the defaults
+    // deterministically (CodeRabbit review on PR #175).
+    delete process.env.ABS_RECALL_MIN_COVERAGE;
+    delete process.env.ABS_RECALL_MIN_COSINE;
+    bdir = mkdtempSync(join(tmpdir(), 'abs-floor-'));
+    store = new MemoryStore({ dbPath: join(bdir, 'm.db'), dimensions: 8 }).open();
+    sessionId = store.createSession({ externalId: 's1' });
+  });
+  afterEach(() => {
+    store.close();
+    rmSync(bdir, { recursive: true, force: true });
+    delete process.env.ABS_RECALL_MIN_COVERAGE;
+    delete process.env.ABS_RECALL_MIN_COSINE;
+  });
+
+  function add(kind: string, content: string, vec?: number[]): number {
+    const id = store.createObservation({ sessionId, kind, content });
+    store.indexFts(id, content);
+    if (vec) store.upsertVector(id, vec);
+    return id;
+  }
+
+  it('recallFts: drops a best-of-the-junk hit (1-of-many token overlap) → []', () => {
+    const recall = new Recall(store, stub);
+    // Only doc matches ONE of the four query content-tokens (coverage 0.25 < 0.4).
+    add('user', 'bread recipe notes');
+    const q = 'sourdough bread fermentation hydration';
+    expect(recall.recallFts(q, { limit: 5 })).toHaveLength(1); // default: junk surfaces
+    expect(recall.recallFts(q, { limit: 5, rankByKind: true, noiseFloor: true })).toEqual([]);
+  });
+
+  it('recallFts: keeps a hit that clears the coverage floor', () => {
+    const recall = new Recall(store, stub);
+    const good = add('lesson', 'coupa oauth migration client credentials grant');
+    const hits = recall.recallFts('coupa oauth migration', {
+      limit: 5,
+      rankByKind: true,
+      noiseFloor: true,
+    });
+    expect(hits.map((h) => h.observation.id)).toEqual([good]);
+  });
+
+  it('recallFts noiseFloor does NOT re-rank by kind unless asked (pure FTS order + floor)', () => {
+    const recall = new Recall(store, stub);
+    const raw = add('user', 'alpha alpha alpha'); // strong, covers the query
+    add('lesson', 'alpha beta gamma delta'); // weaker FTS, also covers "alpha"
+    // floor only (no rankByKind): the strong raw match stays on top (no durable lift).
+    const hits = recall.recallFts('alpha', { limit: 5, noiseFloor: true });
+    expect(hits[0]?.observation.id).toBe(raw);
+  });
+
+  it('recallFts noiseFloor-only keeps the score = -distance contract (not reciprocal rank)', () => {
+    // CodeRabbit review on PR #175: routing noiseFloor through the candidate path must NOT
+    // change the emitted score for a non-rankByKind caller — it stays the FTS `-distance`.
+    const recall = new Recall(store, stub);
+    add('user', 'alpha alpha alpha');
+    const [hit] = recall.recallFts('alpha', { limit: 1, noiseFloor: true });
+    expect(hit?.score).toBe(-(hit?.ftsRank ?? 0)); // same contract as the default FTS path
+  });
+
+  it('recall (hybrid): drops junk (low coverage + weak cosine) but keeps a semantic paraphrase', async () => {
+    const recall = new Recall(store, stub);
+    // Junk: matches one token, vector far from Q (orthogonal → cosine 0).
+    add('user', 'bread recipe', unitVec(4));
+    // Paraphrase: low literal overlap with the query but vector == Q (cosine 1) → kept.
+    const para = add('lesson', 'git rebase interactive squashes commits', Q);
+    const hits = await recall.recall('squash several commits version control', {
+      limit: 5,
+      rankByKind: true,
+      noiseFloor: true,
+    });
+    const ids = hits.map((h) => h.observation.id);
+    expect(ids).toContain(para); // semantic match survives the floor on cosine
+    expect(hits.every((h) => h.observation.content !== 'bread recipe')).toBe(true); // junk dropped
+  });
+
+  it('recall (hybrid): a query with no relevant memory returns []', async () => {
+    const recall = new Recall(store, stub);
+    add('user', 'completely unrelated content here', unitVec(4)); // far vector, no token overlap
+    const hits = await recall.recall('quantum chromodynamics gluon confinement', {
+      limit: 5,
+      rankByKind: true,
+      noiseFloor: true,
+    });
+    expect(hits).toEqual([]);
+  });
+});
