@@ -184,9 +184,13 @@ export function renderBaseline(facts: SessionStartFacts): string {
     if (facts.hasLlm) {
       lines.push(`${head} — auto-distill handles this in the background when each session ends.`);
     } else {
+      // Strengthened no-LLM nudge (ADR-0018): recall runs on raw turns and ~99% of the
+      // store stays undistilled without an LLM. Point at the guided `abs setup` step first
+      // (it offers a $0 local Ollama), keeping the env-var + manual-consolidate escapes.
       lines.push(
-        `${head} — configure an LLM (ABS_LLM_BASE_URL) or run \`abs consolidate\` to distil them ` +
-          'into durable lessons.',
+        `${head} — without an LLM, recall runs on raw turns and ~99% of your store stays ` +
+          'undistilled. Run `abs setup` to connect one (local Ollama is $0/offline), set ' +
+          'ABS_LLM_BASE_URL yourself, or run `abs consolidate` to distil them into durable lessons.',
       );
     }
   }

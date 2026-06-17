@@ -1,14 +1,32 @@
-import { describe, expect, it } from 'vitest';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { exportStore } from '../export/index.js';
+import type { LlmConfig, LlmProvider } from '../llm/types.js';
+import { MemoryStore } from '../store/memory-store.js';
 import {
   buildClaudeMcpAddArgs,
   buildClaudeMcpRemoveArgs,
+  buildExportSnippet,
   buildMcpAddArgs,
+  buildProbeConfig,
+  type LlmAnswers,
+  type LlmChoice,
   MCP_SERVER_NAME,
   manualMcpCommand,
   manualMcpRemoveCommand,
+  PROBE_TIMEOUT_MS,
+  type ProbeResult,
+  probeLlm,
   type RunFn,
   type RunResult,
   registerMcpServer,
+  runLlmSetupStep,
+  SETUP_LAST_RUN_AT_KEY,
+  SETUP_LLM_CHOICE_KEY,
+  type SetupIo,
+  shouldPromptForLlm,
   unregisterMcpServer,
 } from './setup.js';
 
@@ -351,5 +369,467 @@ describe('unregisterMcpServer — idempotent, non-fatal', () => {
       [`claude ${buildClaudeMcpRemoveArgs().join(' ')}`]: ok(),
     });
     expect((await unregisterMcpServer(run)).status).toBe('removed');
+  });
+});
+
+// ----------------------------------------------------------- LLM setup step
+
+describe('shouldPromptForLlm — pure decision (truth table)', () => {
+  // signature: (choice, isTty, hasHarnessFlag, llmConfigured)
+  it('TTY + unset choice + no live LLM → prompt', () => {
+    expect(shouldPromptForLlm(null, true, false, false)).toBe(true);
+  });
+  it('TTY + declined + no live LLM → re-offer (they may have changed their mind, E9)', () => {
+    expect(shouldPromptForLlm('declined', true, false, false)).toBe(true);
+  });
+  it('TTY + remembered local/hosted but LLM NOT live → re-offer (Codex P2 #179)', () => {
+    // The stored marker is not proof of a working LLM — a printed-but-unapplied choice
+    // must re-prompt so the SessionStart "run abs setup" nudge isn't a dead end.
+    expect(shouldPromptForLlm('local', true, false, false)).toBe(true);
+    expect(shouldPromptForLlm('hosted', true, false, false)).toBe(true);
+    expect(shouldPromptForLlm('configured', true, false, false)).toBe(true);
+  });
+  it('LLM actually live → skip regardless of choice (nothing to set up)', () => {
+    expect(shouldPromptForLlm('hosted', true, false, true)).toBe(false);
+    expect(shouldPromptForLlm(null, true, false, true)).toBe(false);
+    expect(shouldPromptForLlm('declined', true, false, true)).toBe(false);
+  });
+  it('non-TTY → never prompt regardless of choice (E1)', () => {
+    expect(shouldPromptForLlm(null, false, false, false)).toBe(false);
+    expect(shouldPromptForLlm('declined', false, false, false)).toBe(false);
+  });
+  it('--harness present → never prompt even on a TTY (E2)', () => {
+    expect(shouldPromptForLlm(null, true, true, false)).toBe(false);
+    expect(shouldPromptForLlm('declined', true, true, false)).toBe(false);
+  });
+});
+
+describe('buildProbeConfig — in-process LlmConfig from typed answers', () => {
+  it('builds a keyless local config with a SHORT probe timeout', () => {
+    const answers: LlmAnswers = { baseUrl: 'http://localhost:11434/v1', model: 'qwen2.5' };
+    const cfg = buildProbeConfig(answers);
+    expect(cfg.baseUrl).toBe('http://localhost:11434/v1');
+    expect(cfg.model).toBe('qwen2.5');
+    expect(cfg.apiKey).toBeUndefined();
+    // The probe must not inherit the 60s default — it injects a short timeout (WARNING-3).
+    expect(cfg.timeoutMs).toBe(PROBE_TIMEOUT_MS);
+    expect(cfg.timeoutMs).toBeLessThanOrEqual(8000);
+  });
+
+  it('threads a hosted key into the config but never widens the timeout', () => {
+    const cfg = buildProbeConfig({
+      baseUrl: 'https://api.example.com/v1',
+      model: 'gpt-x',
+      apiKey: 'sk-secret',
+    });
+    expect(cfg.apiKey).toBe('sk-secret');
+    expect(cfg.timeoutMs).toBe(PROBE_TIMEOUT_MS);
+  });
+});
+
+/** A provider that resolves or rejects on demand, never touching the network. */
+function fakeProvider(behavior: { ok: true } | { ok: false; err: Error }): LlmProvider {
+  return {
+    id: 'fake',
+    model: 'fake',
+    async complete() {
+      if (behavior.ok) return { text: 'pong' };
+      throw behavior.err;
+    },
+  };
+}
+
+describe('probeLlm — advisory reachability, never throws', () => {
+  const cfg: LlmConfig = {
+    baseUrl: 'http://localhost:11434/v1',
+    model: 'qwen2.5',
+    timeoutMs: PROBE_TIMEOUT_MS,
+  };
+
+  it('resolves {ok:true} when the provider answers', async () => {
+    const res = await probeLlm(cfg, { createProvider: () => fakeProvider({ ok: true }) });
+    expect(res).toEqual({ ok: true });
+  });
+
+  it('resolves {ok:false, detail} when the provider throws (timeout/connrefused) — never rethrows', async () => {
+    const res = await probeLlm(cfg, {
+      createProvider: () => fakeProvider({ ok: false, err: new Error('ECONNREFUSED') }),
+    });
+    expect(res.ok).toBe(false);
+    expect(res.detail).toContain('ECONNREFUSED');
+  });
+
+  it('resolves {ok:false} even when the FACTORY itself throws (no provider) — never rethrows', async () => {
+    const res = await probeLlm(cfg, {
+      createProvider: () => {
+        throw new Error('bad config');
+      },
+    });
+    expect(res.ok).toBe(false);
+  });
+});
+
+describe('buildExportSnippet — printable export lines, key inline only', () => {
+  it('posix local → keyless export lines (no ABS_LLM_API_KEY), values shell-quoted', () => {
+    const snippet = buildExportSnippet(
+      { baseUrl: 'http://localhost:11434/v1', model: 'qwen2.5' },
+      'linux',
+    );
+    expect(snippet).toContain("export ABS_LLM_BASE_URL='http://localhost:11434/v1'");
+    expect(snippet).toContain("export ABS_LLM_MODEL='qwen2.5'");
+    expect(snippet).not.toContain('ABS_LLM_API_KEY');
+  });
+
+  it('posix hosted → includes the key inline (terminal only) plus both vars, shell-quoted', () => {
+    const snippet = buildExportSnippet(
+      { baseUrl: 'https://api.example.com/v1', model: 'gpt-x', apiKey: 'sk-secret' },
+      'linux',
+    );
+    expect(snippet).toContain("export ABS_LLM_BASE_URL='https://api.example.com/v1'");
+    expect(snippet).toContain("export ABS_LLM_MODEL='gpt-x'");
+    expect(snippet).toContain("export ABS_LLM_API_KEY='sk-secret'");
+  });
+
+  it('posix shell-quotes metacharacters so the snippet is paste-safe (no injection / malformed line)', () => {
+    const snippet = buildExportSnippet(
+      {
+        baseUrl: 'http://h/v1?a=$x;`whoami` &b',
+        model: 'm with space',
+        apiKey: "sk-it's-tricky",
+      },
+      'linux',
+    );
+    // Whole value wrapped in single quotes — metacharacters become literal.
+    expect(snippet).toContain("export ABS_LLM_BASE_URL='http://h/v1?a=$x;`whoami` &b'");
+    expect(snippet).toContain("export ABS_LLM_MODEL='m with space'");
+    // Embedded single quote escaped via the close-reopen `'\''` trick.
+    expect(snippet).toContain("export ABS_LLM_API_KEY='sk-it'\\''s-tricky'");
+  });
+
+  it('win32 → PowerShell `$env:` form (POSIX export is invalid on Windows), PS-quoted', () => {
+    const snippet = buildExportSnippet(
+      { baseUrl: 'https://api.example.com/v1', model: 'gpt-x', apiKey: "sk-it's-tricky" },
+      'win32',
+    );
+    expect(snippet).toContain("$env:ABS_LLM_BASE_URL = 'https://api.example.com/v1'");
+    expect(snippet).toContain("$env:ABS_LLM_MODEL = 'gpt-x'");
+    // PowerShell escapes an embedded single quote by doubling it ('').
+    expect(snippet).toContain("$env:ABS_LLM_API_KEY = 'sk-it''s-tricky'");
+    // Never the POSIX form on Windows.
+    expect(snippet).not.toContain('export ABS_LLM_BASE_URL');
+  });
+});
+
+// ----------------------------------------- runLlmSetupStep (through the IO seam)
+
+/** A backing kv store + scripted prompts → a `SetupIo` whose `out` is captured. */
+function makeIo(opts: {
+  isTty: boolean;
+  answers?: string[];
+  promptReject?: Error;
+  /** Reject the (1-based) Nth prompt after answering the earlier ones (E12 on a LATER prompt). */
+  rejectAt?: number;
+  probe?: (cfg: LlmConfig) => Promise<ProbeResult>;
+  env?: Record<string, string | undefined>;
+  initialChoice?: LlmChoice | null;
+  /** Whether an LLM is actually live (`loadConfig().llm !== undefined`). Default false. */
+  llmConfigured?: boolean;
+}): {
+  io: SetupIo;
+  lines: string[];
+  kv: Map<string, string>;
+  promptedQuestions: string[];
+} {
+  const lines: string[] = [];
+  const kv = new Map<string, string>();
+  if (opts.initialChoice != null) kv.set(SETUP_LLM_CHOICE_KEY, opts.initialChoice);
+  const queue = [...(opts.answers ?? [])];
+  const promptedQuestions: string[] = [];
+  const io: SetupIo = {
+    isTty: opts.isTty,
+    llmConfigured: opts.llmConfigured ?? false,
+    async prompt(q) {
+      promptedQuestions.push(q);
+      if (opts.promptReject) throw opts.promptReject;
+      if (opts.rejectAt != null && promptedQuestions.length === opts.rejectAt)
+        throw new Error('readline closed mid-interview');
+      const next = queue.shift();
+      if (next === undefined) throw new Error('unscripted prompt');
+      return next;
+    },
+    out: (s) => lines.push(s),
+    getEnv: (k) => opts.env?.[k],
+    probe: opts.probe ?? (async () => ({ ok: true })),
+    getChoice: () => (kv.get(SETUP_LLM_CHOICE_KEY) as LlmChoice | undefined) ?? null,
+    setChoice: (choice) => {
+      kv.set(SETUP_LLM_CHOICE_KEY, choice);
+      kv.set(SETUP_LAST_RUN_AT_KEY, new Date().toISOString());
+    },
+  };
+  return { io, lines, kv, promptedQuestions };
+}
+
+describe('runLlmSetupStep — non-interactive guard (E1/E2)', () => {
+  it('non-TTY → never prompts; sets choice=declined when unset; resolves (exit 0)', async () => {
+    const { io, lines, kv, promptedQuestions } = makeIo({ isTty: false });
+    await expect(runLlmSetupStep(io, false)).resolves.toBeUndefined();
+    expect(promptedQuestions).toEqual([]);
+    expect(kv.get(SETUP_LLM_CHOICE_KEY)).toBe('declined');
+    expect(kv.get(SETUP_LAST_RUN_AT_KEY)).toBeDefined();
+    expect(lines).toEqual([]); // silent degraded — no interview copy
+  });
+
+  it('--harness present (hasHarnessFlag) → never prompts even when isTty is true (E2)', async () => {
+    const { io, promptedQuestions, kv } = makeIo({ isTty: true });
+    await runLlmSetupStep(io, true);
+    expect(promptedQuestions).toEqual([]);
+    expect(kv.get(SETUP_LLM_CHOICE_KEY)).toBe('declined');
+  });
+
+  it('non-TTY does NOT overwrite a real prior choice (E1 — preserves local)', async () => {
+    const { io, kv } = makeIo({ isTty: false, initialChoice: 'local' });
+    await runLlmSetupStep(io, false);
+    expect(kv.get(SETUP_LLM_CHOICE_KEY)).toBe('local');
+  });
+
+  it('non-TTY + prior declined → leaves it untouched, no re-write / no lastRunAt bump (FIX 2)', async () => {
+    // Seeding only sets the choice key, never lastRunAt — so an absent lastRunAt proves
+    // setChoice was NOT called (a re-write would stamp lastRunAt). The prior choice persists.
+    const { io, kv } = makeIo({ isTty: false, initialChoice: 'declined' });
+    await runLlmSetupStep(io, false);
+    expect(kv.get(SETUP_LLM_CHOICE_KEY)).toBe('declined');
+    expect(kv.get(SETUP_LAST_RUN_AT_KEY)).toBeUndefined(); // setChoice not called → no bump
+  });
+});
+
+describe('runLlmSetupStep — interview branches', () => {
+  it('local (choice 1) → keyless Ollama snippet, choice=local, exit 0', async () => {
+    const { io, lines, kv } = makeIo({ isTty: true, answers: ['1'] });
+    await runLlmSetupStep(io, false);
+    const text = lines.join('\n');
+    expect(text).toContain("export ABS_LLM_BASE_URL='http://localhost:11434/v1'");
+    expect(text).not.toContain('ABS_LLM_API_KEY');
+    expect(kv.get(SETUP_LLM_CHOICE_KEY)).toBe('local');
+  });
+
+  it('hosted (choice 2) → prompts URL/model/key, snippet WITH key reminder, choice=hosted', async () => {
+    const { io, lines, kv, promptedQuestions } = makeIo({
+      isTty: true,
+      answers: ['2', 'https://api.example.com/v1', 'gpt-x', 'sk-live-123'],
+    });
+    await runLlmSetupStep(io, false);
+    // The choice prompt + the three hosted follow-ups.
+    expect(promptedQuestions.length).toBe(4);
+    const text = lines.join('\n');
+    expect(text).toContain("export ABS_LLM_API_KEY='sk-live-123'");
+    expect(kv.get(SETUP_LLM_CHOICE_KEY)).toBe('hosted');
+  });
+
+  it('skip (choice 3) → choice=declined, no snippet, exit 0', async () => {
+    const { io, lines, kv } = makeIo({ isTty: true, answers: ['3'] });
+    await runLlmSetupStep(io, false);
+    expect(kv.get(SETUP_LLM_CHOICE_KEY)).toBe('declined');
+    expect(lines.join('\n')).not.toContain('export ABS_LLM_BASE_URL');
+  });
+
+  it('hosted with an EMPTY model → declined, no broken snippet/marker (Codex P2 #179)', async () => {
+    // Empty model would persist `hosted` + print `ABS_LLM_MODEL=''` → loadLlmConfig throws
+    // on the partial env at runtime → hooks silently degrade. Must refuse the half-config.
+    const { io, lines, kv, promptedQuestions } = makeIo({
+      isTty: true,
+      answers: ['2', 'https://api.example.com/v1', ''], // base URL given, model blank
+    });
+    await runLlmSetupStep(io, false);
+    expect(kv.get(SETUP_LLM_CHOICE_KEY)).toBe('declined'); // NOT 'hosted'
+    const text = lines.join('\n');
+    expect(text).not.toContain('export ABS_LLM_'); // no broken snippet printed
+    expect(promptedQuestions.length).toBe(3); // choice + baseUrl + model; key NOT asked
+  });
+});
+
+describe('runLlmSetupStep — probe advisory (E3) never blocks', () => {
+  it('probe {ok:false} → warns + still persists the choice + exit 0 (advisory)', async () => {
+    const { io, lines, kv } = makeIo({
+      isTty: true,
+      answers: ['1'],
+      probe: async () => ({ ok: false, detail: 'ECONNREFUSED' }),
+    });
+    await expect(runLlmSetupStep(io, false)).resolves.toBeUndefined();
+    expect(lines.join('\n')).toContain('Could not reach the LLM');
+    // The snippet still prints and the choice is still persisted.
+    expect(lines.join('\n')).toContain('export ABS_LLM_BASE_URL');
+    expect(kv.get(SETUP_LLM_CHOICE_KEY)).toBe('local');
+  });
+
+  it('probe {ok:true} → success line + choice persisted', async () => {
+    const { io, lines, kv } = makeIo({
+      isTty: true,
+      answers: ['1'],
+      probe: async () => ({ ok: true }),
+    });
+    await runLlmSetupStep(io, false);
+    expect(lines.join('\n')).toContain('Reachable');
+    expect(kv.get(SETUP_LLM_CHOICE_KEY)).toBe('local');
+  });
+
+  it('key pasted into the base-URL field → probe fails → advisory warn, exit 0, no crash (E6)', async () => {
+    const { io, lines, kv } = makeIo({
+      isTty: true,
+      answers: ['2', 'sk-oops-this-is-a-key', 'gpt-x', ''],
+      probe: async () => ({ ok: false, detail: 'invalid url' }),
+    });
+    await expect(runLlmSetupStep(io, false)).resolves.toBeUndefined();
+    expect(lines.join('\n')).toContain('Could not reach the LLM');
+    expect(kv.get(SETUP_LLM_CHOICE_KEY)).toBe('hosted');
+  });
+});
+
+describe('runLlmSetupStep — re-run idempotency (E5)', () => {
+  it('prior choice=local AND LLM live → interview skipped, "already" line, NO prompt', async () => {
+    const { io, lines, kv, promptedQuestions } = makeIo({
+      isTty: true,
+      initialChoice: 'local',
+      llmConfigured: true, // an LLM is actually configured now
+    });
+    await runLlmSetupStep(io, false);
+    expect(promptedQuestions).toEqual([]);
+    expect(lines.join('\n')).toContain('already done');
+    expect(kv.get(SETUP_LLM_CHOICE_KEY)).toBe('local'); // known kind preserved
+  });
+
+  it('LLM live but no prior choice → records "configured", no prompt', async () => {
+    const { io, kv, promptedQuestions } = makeIo({ isTty: true, llmConfigured: true });
+    await runLlmSetupStep(io, false);
+    expect(promptedQuestions).toEqual([]);
+    expect(kv.get(SETUP_LLM_CHOICE_KEY)).toBe('configured');
+  });
+
+  it('prior choice=hosted but LLM NOT live → RE-OFFERS the interview (Codex P2 #179)', async () => {
+    // The user picked hosted but never applied the printed exports → no live LLM. A re-run
+    // must re-prompt (not say "already configured"), or the SessionStart nudge dead-ends.
+    const { io, lines, promptedQuestions } = makeIo({
+      isTty: true,
+      initialChoice: 'hosted',
+      llmConfigured: false,
+      answers: ['3'], // re-offered → they skip this time
+    });
+    await runLlmSetupStep(io, false);
+    expect(promptedQuestions.length).toBeGreaterThan(0); // re-offered, NOT skipped
+    expect(lines.join('\n')).not.toContain('already done');
+  });
+
+  it('prior choice=declined on a TTY (no live LLM) → RE-OFFERS the interview (E9)', async () => {
+    const { io, promptedQuestions, kv } = makeIo({
+      isTty: true,
+      initialChoice: 'declined',
+      answers: ['3'],
+    });
+    await runLlmSetupStep(io, false);
+    expect(promptedQuestions.length).toBeGreaterThan(0); // re-offered
+    expect(kv.get(SETUP_LLM_CHOICE_KEY)).toBe('declined');
+  });
+});
+
+describe('runLlmSetupStep — prompt-abort (E12, exit-0 contract)', () => {
+  it('a rejected prompt (Ctrl-C/EOF/closed stdin) → choice=declined, resolves (exit 0)', async () => {
+    const { io, kv } = makeIo({
+      isTty: true,
+      promptReject: new Error('readline closed'),
+    });
+    // Must NOT reject — a thrown rejection would hit main().catch and flip exit to 1.
+    await expect(runLlmSetupStep(io, false)).resolves.toBeUndefined();
+    expect(kv.get(SETUP_LLM_CHOICE_KEY)).toBe('declined');
+  });
+
+  it('abort on a LATER prompt (hosted path, key stage) → still resolves (exit 0), choice=declined', async () => {
+    // Choice '2' → URL → model answer, then the 4th prompt (the key stage) rejects mid-interview.
+    // The reject must be caught the same as a first-prompt abort, never escaping to main().catch.
+    const { io, kv, promptedQuestions } = makeIo({
+      isTty: true,
+      answers: ['2', 'https://api.example.com/v1', 'gpt-x'],
+      rejectAt: 4,
+    });
+    await expect(runLlmSetupStep(io, false)).resolves.toBeUndefined();
+    expect(promptedQuestions.length).toBe(4); // got all the way to the key prompt before aborting
+    expect(kv.get(SETUP_LLM_CHOICE_KEY)).toBe('declined');
+  });
+});
+
+describe('runLlmSetupStep — locale ($LANG via the seam)', () => {
+  it('renders the PT explanation when LANG=pt_BR', async () => {
+    const { io, lines } = makeIo({
+      isTty: true,
+      answers: ['3'],
+      env: { LANG: 'pt_BR.UTF-8' },
+    });
+    await runLlmSetupStep(io, false);
+    expect(lines.join('\n')).toContain('Opcional: conecte um LLM');
+  });
+
+  it('renders the EN explanation when LANG=en_US', async () => {
+    const { io, lines } = makeIo({
+      isTty: true,
+      answers: ['3'],
+      env: { LANG: 'en_US.UTF-8' },
+    });
+    await runLlmSetupStep(io, false);
+    expect(lines.join('\n')).toContain('Optional: connect an LLM');
+  });
+});
+
+describe('CRITICAL invariant — the API key is NEVER persisted (kv_meta + abs export)', () => {
+  let dir: string;
+  let store: MemoryStore;
+  const KEY = 'sk-super-secret-live-key-DO-NOT-STORE';
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'abs-setup-secret-'));
+    store = new MemoryStore({ dbPath: join(dir, 'memory.db'), dimensions: 8 }).open();
+  });
+  afterEach(() => {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('drives the hosted path with a fake key → no kv_meta value equals the key', async () => {
+    // A SetupIo backed by the REAL store's getMeta/setMeta — the production wiring.
+    const io: SetupIo = {
+      isTty: true,
+      llmConfigured: false, // no live LLM → the hosted interview runs
+      prompt: (() => {
+        const queue = ['2', 'https://api.example.com/v1', 'gpt-x', KEY];
+        return async () => {
+          const v = queue.shift();
+          if (v === undefined) throw new Error('unscripted');
+          return v;
+        };
+      })(),
+      out: () => {},
+      getEnv: () => undefined,
+      probe: async () => ({ ok: true }),
+      getChoice: () => store.getMeta(SETUP_LLM_CHOICE_KEY) as LlmChoice | null,
+      setChoice: (choice) => {
+        store.setMeta(SETUP_LLM_CHOICE_KEY, choice);
+        store.setMeta(SETUP_LAST_RUN_AT_KEY, new Date().toISOString());
+      },
+    };
+    await runLlmSetupStep(io, false);
+
+    expect(store.getMeta(SETUP_LLM_CHOICE_KEY)).toBe('hosted');
+    // Full kv_meta scan: NOT ONE value may contain the secret key.
+    for (const k of store.listMetaKeys('')) {
+      expect(store.getMeta(k) ?? '').not.toContain(KEY);
+    }
+  });
+
+  it('abs export round-trip contains no ABS_LLM_API_KEY value (export is key-clean)', async () => {
+    // Even if a malicious caller tried to stash the key, export never serialises kv_meta.
+    store.setMeta(SETUP_LLM_CHOICE_KEY, 'hosted');
+    store.setMeta(SETUP_LAST_RUN_AT_KEY, new Date().toISOString());
+    const out = join(dir, 'export.jsonl');
+    await exportStore(store, out);
+    const payload = readFileSync(out, 'utf8');
+    expect(payload).not.toContain(KEY);
+    expect(payload).not.toContain('ABS_LLM_API_KEY');
   });
 });

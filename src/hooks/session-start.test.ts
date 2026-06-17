@@ -55,13 +55,26 @@ describe('renderBaseline', () => {
     expect(block).not.toContain('abs consolidate');
   });
 
-  it('raw-pending + NO LLM → configure an LLM / run `abs consolidate`', () => {
+  it('raw-pending + NO LLM → strengthened nudge: run `abs setup` + ~99%-undistilled framing', () => {
     const block = renderBaseline(
       facts({ rawPending: 30, rawSessions: 2, rawFlagged: true, hasLlm: false }),
     );
     expect(block).toContain('not yet distilled');
+    // Strengthened copy (ADR-0018): point the user at the guided setup step explicitly,
+    // keep the env-var + consolidate escape hatches, and frame the cost.
+    expect(block).toContain('abs setup');
     expect(block).toContain('ABS_LLM_BASE_URL');
     expect(block).toContain('abs consolidate');
+    expect(block).toMatch(/99%/);
+  });
+
+  it('raw-pending + LLM → auto-distill copy stays unchanged (regression — no `abs setup` nudge)', () => {
+    const block = renderBaseline(
+      facts({ rawPending: 30, rawSessions: 2, rawFlagged: true, hasLlm: true }),
+    );
+    expect(block).toContain('auto-distill');
+    expect(block).not.toContain('abs setup');
+    expect(block).not.toMatch(/99%/);
   });
 
   it('consolidated-pending (decisions only) → run `abs optimize`', () => {
