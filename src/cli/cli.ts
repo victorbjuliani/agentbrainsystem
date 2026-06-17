@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 import { loadConfig } from '../config.js';
 import { consolidate } from '../consolidate/index.js';
 import { type DeleteSelector, executeIds, previewSelector } from '../delete/index.js';
+import { EmbeddingLoadTimeoutError } from '../embedding/index.js';
 import { exportStore, importStore } from '../export/index.js';
 import { GLOBAL_PROJECT, getOrCreateGlobalSession, promoteAction } from '../global.js';
 import type { OpencodeInstallReport } from '../harness/capabilities/opencode-plugin-installer.js';
@@ -41,7 +42,7 @@ import { createLlmProvider } from '../llm/index.js';
 import { runMaintainAuto } from '../maintain/index.js';
 import { type PostCaptureDeps, runPostCaptureMaintenance } from '../maintenance/index.js';
 import { startStdio } from '../mcp/index.js';
-import { openMemory } from '../memory.js';
+import { type Memory, openMemory } from '../memory.js';
 import {
   type ApplyOptions,
   advanceOptimizeCursorsAfterApply,
@@ -554,10 +555,28 @@ async function cmdHook(args: string[]): Promise<void> {
  * openMemory with the default ensure gate (a drifted index self-heals, same as
  * SessionEnd). The PLUGIN is the fail-open boundary (`.nothrow()`), so a hard error
  * here cleanly exits 1 (the plugin swallows it); success is silent (plugin `.quiet()`s).
+ *
+ * Failure classification (#156): a swallowed `process.exitCode = 1` made "embedded 0
+ * observations because the model failed" indistinguishable from "nothing to ingest"
+ * success, surfacing downstream as a silent empty `<recalled-memory>` block. The catch
+ * now mirrors SessionEnd: a transient `EmbeddingLoadTimeoutError` DEFERS (degraded note +
+ * exit 0, retried next session, no data lost); any other embed/persist error FAILS LOUDLY
+ * with a dedicated exit code (3) so the empty-persist is unmistakable.
  */
+const OPENCODE_CAPTURE_EMBED_FAIL_EXIT = 3;
+
+export interface OpencodeCaptureDeps extends PostCaptureDeps {
+  /**
+   * Injection seam for tests — override how memory is opened so a failing provider can be
+   * exercised hermetically (the real model is never loaded). Defaults to the real
+   * `openMemory(loadConfig())`.
+   */
+  openMemory?: () => Promise<Memory>;
+}
+
 export async function cmdOpencodeCapture(
   args: string[],
-  deps: PostCaptureDeps = {},
+  deps: OpencodeCaptureDeps = {},
 ): Promise<void> {
   const sessionId = optionValue(args, '--session');
   if (!sessionId) {
@@ -583,7 +602,7 @@ export async function cmdOpencodeCapture(
     );
     return;
   }
-  const memory = await openMemory(loadConfig());
+  const memory = await (deps.openMemory ?? (() => openMemory(loadConfig())))();
   try {
     await sqliteTranscriptSource(dbPath ? { dbPath } : {}).ingestSession(memory, sessionId);
     // #107: OpenCode has no SessionEnd, so run the same claimed→verified anchor sweep
@@ -592,8 +611,29 @@ export async function cmdOpencodeCapture(
     // `groundTruth` so the real refreshIndex (tree-sitter wasm + repo scan) is skipped.
     await runPostCaptureMaintenance(memory.store, cwd, deps);
   } catch (e) {
-    err(`opencode-capture: ${e instanceof Error ? e.message : String(e)}`);
-    process.exitCode = 1;
+    // #156: differentiate the failure classes instead of masking everything into a
+    // generic exit 1 (which made a failed embed indistinguishable from "nothing to
+    // ingest" success — a silent empty recall downstream).
+    if (e instanceof EmbeddingLoadTimeoutError) {
+      // Transient: the embedding model is still loading (first run). DEFER — mirror the
+      // SessionEnd hook (session-end.ts): best-effort degraded note, exit 0. The opencode
+      // cursor is NOT advanced, so a later capture re-pulls this session (no data lost).
+      try {
+        memory.store.setMeta(EMBED_DEGRADED_KEY, new Date().toISOString());
+      } catch {
+        // best-effort note — the stderr line below is the reliable defer signal
+      }
+      err('opencode-capture deferred: embedding model still loading; will retry next session');
+    } else {
+      // Genuine embed/persist failure (dimension mismatch, disk, provider error, …) →
+      // FAIL LOUDLY with a dedicated exit code distinguishable from the generic exit 1.
+      err(
+        `capture persisted 0 observations (embedding failed?): ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
+      process.exitCode = OPENCODE_CAPTURE_EMBED_FAIL_EXIT;
+    }
   } finally {
     memory.close();
   }

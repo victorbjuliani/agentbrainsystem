@@ -14,6 +14,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { loadConfig } from '../config.js';
 import { __clearDeleteCacheForTests } from '../delete/delete.js';
+import { EmbeddingLoadTimeoutError } from '../embedding/index.js';
 import { getOrCreateGlobalSession } from '../global.js';
 import type { GroundTruthProvider, ResolvedSymbol } from '../ground-truth/index.js';
 import { buildOpencodeDb } from '../harness/capabilities/__fixtures__/opencode-db.js';
@@ -36,6 +37,7 @@ import {
   cmdUninstall,
   gatherHarnessStatus,
   hasFlag,
+  type OpencodeCaptureDeps,
   optionValue,
   optionValues,
   parseForgetSelector,
@@ -1350,6 +1352,77 @@ describe('cmdOpencodeCapture / cmdOpencodeRecall (#72, hermetic, real local prov
       expect(process.exitCode).not.toBe(1); // defer is success, not a hard error
     } finally {
       lock.release();
+    }
+  });
+
+  // #156: classify the embed/persist failure in the catch path instead of masking
+  // everything into a generic exit 1 (which made a failed embed indistinguishable from
+  // a legitimately empty session — a silent empty `<recalled-memory>` block downstream).
+  //
+  // Inject an `openMemory` whose `indexer.write` throws, so the failure propagates up the
+  // SAME path the real provider.embed would (cmdOpencodeCapture → ingestSession →
+  // indexer.write). No real model is loaded.
+  function failingCapture(makeError: () => unknown): OpencodeCaptureDeps {
+    return {
+      groundTruth: gtNull,
+      openMemory: async () => {
+        const memory = await openMemory(loadConfig(), { ensure: false });
+        memory.indexer.write = async () => {
+          throw makeError();
+        };
+        return memory;
+      },
+    };
+  }
+
+  // (j) Transient model-load timeout → DEFER (mirror SessionEnd): exit 0, degraded flag
+  // set, a deferral note on stderr. NOT a loud error, NOT empty-recall confusion.
+  it('(j) capture with embed-load TIMEOUT defers: exit 0, degraded flag, deferral note (#156)', async () => {
+    seedDb();
+    await cmdOpencodeCapture(
+      ['--session', SES, '--db', join(dir, 'opencode.db')],
+      failingCapture(() => new EmbeddingLoadTimeoutError('Xenova/all-MiniLM-L6-v2', 6_000)),
+    );
+
+    // defer is success — exit code untouched (0/undefined), NOT a failing code.
+    expect(process.exitCode).not.toBe(1);
+    expect(process.exitCode).not.toBe(3);
+    const text = outLines.join('');
+    expect(text).toContain('deferred');
+    expect(text).toContain('embedding model still loading');
+    expect(text).not.toContain('embedding failed?'); // NOT the loud branch
+
+    // The degraded flag is recorded (best-effort note, mirrors SessionEnd).
+    const mem = await openMemory(loadConfig(), { ensure: false });
+    try {
+      expect(mem.store.getMeta(EMBED_DEGRADED_KEY)).not.toBeNull();
+    } finally {
+      mem.close();
+    }
+  });
+
+  // (k) Any OTHER embed/persist failure (dimension mismatch, disk, provider error, …) →
+  // FAIL LOUDLY with a dedicated exit code (3) distinguishable from the generic exit 1,
+  // plus a clear "persisted 0 observations (embedding failed?)" stderr message.
+  it('(k) capture with a NON-timeout embed failure fails loudly: exit 3 + clear message (#156)', async () => {
+    seedDb();
+    await cmdOpencodeCapture(
+      ['--session', SES, '--db', join(dir, 'opencode.db')],
+      failingCapture(() => new Error('vector width 384 != 768 (dimension mismatch)')),
+    );
+
+    expect(process.exitCode).toBe(3); // distinct from the generic exit 1
+    const text = outLines.join('');
+    expect(text).toContain('persisted 0 observations (embedding failed?)');
+    expect(text).toContain('dimension mismatch'); // underlying cause surfaced
+    expect(text).not.toContain('deferred'); // NOT the defer branch
+
+    // No degraded flag on a genuine failure — that key is reserved for the defer path.
+    const mem = await openMemory(loadConfig(), { ensure: false });
+    try {
+      expect(mem.store.getMeta(EMBED_DEGRADED_KEY)).toBeNull();
+    } finally {
+      mem.close();
     }
   });
 });
