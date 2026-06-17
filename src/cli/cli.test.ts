@@ -1359,12 +1359,14 @@ describe('cmdOpencodeCapture / cmdOpencodeRecall (#72, hermetic, real local prov
   // everything into a generic exit 1 (which made a failed embed indistinguishable from
   // a legitimately empty session — a silent empty `<recalled-memory>` block downstream).
   //
-  // Inject an `openMemory` whose `indexer.write` throws, so the failure propagates up the
-  // SAME path the real provider.embed would (cmdOpencodeCapture → ingestSession →
-  // indexer.write). No real model is loaded.
+  // LOUD path: inject an `openMemory` whose `indexer.write` throws, so a genuine embed/
+  // persist failure propagates up the SAME path the real provider.embed would
+  // (cmdOpencodeCapture → ingestSession → indexer.write). The no-op `embedReady` makes the
+  // budgeted warm-up resolve instantly so the test never touches the real model.
   function failingCapture(makeError: () => unknown): OpencodeCaptureDeps {
     return {
       groundTruth: gtNull,
+      embedReady: async () => {}, // warm-up succeeds; the failure comes from the write below
       openMemory: async () => {
         const memory = await openMemory(loadConfig(), { ensure: false });
         memory.indexer.write = async () => {
@@ -1375,13 +1377,28 @@ describe('cmdOpencodeCapture / cmdOpencodeRecall (#72, hermetic, real local prov
     };
   }
 
+  // DEFER path: the ONLY real producer of EmbeddingLoadTimeoutError is the budgeted
+  // `ensureReady` warm-up (an unbudgeted `indexer.write` blocks on the full download instead
+  // of timing out — #176 Codex review). Inject `embedReady` so we exercise that exact hop;
+  // open a real hermetic memory (ensure:false, no model) so the defer path's setMeta/close
+  // run, but ingestSession is never reached.
+  function deferringCapture(): OpencodeCaptureDeps {
+    return {
+      groundTruth: gtNull,
+      embedReady: async () => {
+        throw new EmbeddingLoadTimeoutError('Xenova/all-MiniLM-L6-v2', 6_000);
+      },
+      openMemory: async () => openMemory(loadConfig(), { ensure: false }),
+    };
+  }
+
   // (j) Transient model-load timeout → DEFER (mirror SessionEnd): exit 0, degraded flag
   // set, a deferral note on stderr. NOT a loud error, NOT empty-recall confusion.
   it('(j) capture with embed-load TIMEOUT defers: exit 0, degraded flag, deferral note (#156)', async () => {
     seedDb();
     await cmdOpencodeCapture(
       ['--session', SES, '--db', join(dir, 'opencode.db')],
-      failingCapture(() => new EmbeddingLoadTimeoutError('Xenova/all-MiniLM-L6-v2', 6_000)),
+      deferringCapture(),
     );
 
     // defer is success — exit code untouched (0/undefined), NOT a failing code.

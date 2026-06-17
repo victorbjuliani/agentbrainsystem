@@ -558,12 +558,18 @@ async function cmdHook(args: string[]): Promise<void> {
  *
  * Failure classification (#156): a swallowed `process.exitCode = 1` made "embedded 0
  * observations because the model failed" indistinguishable from "nothing to ingest"
- * success, surfacing downstream as a silent empty `<recalled-memory>` block. The catch
- * now mirrors SessionEnd: a transient `EmbeddingLoadTimeoutError` DEFERS (degraded note +
- * exit 0, retried next session, no data lost); any other embed/persist error FAILS LOUDLY
- * with a dedicated exit code (3) so the empty-persist is unmistakable.
+ * success, surfacing downstream as a silent empty `<recalled-memory>` block. We now mirror
+ * SessionEnd exactly: a budgeted `ensureReady` warms the model UP FRONT so a cold first-run
+ * download surfaces as `EmbeddingLoadTimeoutError` instead of blocking the idle handler for
+ * ~35s (an unbudgeted `indexer.write` would never time out — #176 Codex review). A timeout
+ * DEFERS (degraded note + exit 0, retried next session, no data lost); any other embed/
+ * persist error FAILS LOUDLY with a dedicated exit code (3) so the empty-persist is
+ * unmistakable.
  */
 const OPENCODE_CAPTURE_EMBED_FAIL_EXIT = 3;
+// Warm the model with the same budget the SessionEnd hook uses (session-end.ts), so the
+// defer path is reachable in production, not just under an injected provider.
+const OPENCODE_CAPTURE_EMBED_BUDGET_MS = 6_000;
 
 export interface OpencodeCaptureDeps extends PostCaptureDeps {
   /**
@@ -572,6 +578,11 @@ export interface OpencodeCaptureDeps extends PostCaptureDeps {
    * `openMemory(loadConfig())`.
    */
   openMemory?: () => Promise<Memory>;
+  /**
+   * Injection seam for tests — override the budgeted model warm-up so the defer path can be
+   * exercised without a real cold download. Defaults to `memory.provider.ensureReady`.
+   */
+  embedReady?: (opts: { budgetMs?: number }) => Promise<void>;
 }
 
 export async function cmdOpencodeCapture(
@@ -604,6 +615,13 @@ export async function cmdOpencodeCapture(
   }
   const memory = await (deps.openMemory ?? (() => openMemory(loadConfig())))();
   try {
+    // #176 (Codex review): warm the model UP FRONT with a budget, exactly like SessionEnd
+    // (session-end.ts). `indexer.write` calls the provider with NO budget and would block on
+    // the full first-run download (~35s) rather than throw, so without this the defer branch
+    // below is unreachable in the real OpenCode path. A budgeted ensureReady is the ONLY
+    // path that raises `EmbeddingLoadTimeoutError`.
+    const ensureReady = deps.embedReady ?? memory.provider.ensureReady?.bind(memory.provider);
+    if (ensureReady) await ensureReady({ budgetMs: OPENCODE_CAPTURE_EMBED_BUDGET_MS });
     await sqliteTranscriptSource(dbPath ? { dbPath } : {}).ingestSession(memory, sessionId);
     // #107: OpenCode has no SessionEnd, so run the same claimed→verified anchor sweep
     // here that the SessionEnd handler runs for every other harness. The helper is
@@ -615,9 +633,10 @@ export async function cmdOpencodeCapture(
     // generic exit 1 (which made a failed embed indistinguishable from "nothing to
     // ingest" success — a silent empty recall downstream).
     if (e instanceof EmbeddingLoadTimeoutError) {
-      // Transient: the embedding model is still loading (first run). DEFER — mirror the
-      // SessionEnd hook (session-end.ts): best-effort degraded note, exit 0. The opencode
-      // cursor is NOT advanced, so a later capture re-pulls this session (no data lost).
+      // Transient: the embedding model is still loading (first run, raised by the budgeted
+      // ensureReady above). DEFER — mirror the SessionEnd hook (session-end.ts): best-effort
+      // degraded note, exit 0. ingestSession never ran, so the opencode cursor is NOT
+      // advanced and a later capture re-pulls this session (no data lost).
       try {
         memory.store.setMeta(EMBED_DEGRADED_KEY, new Date().toISOString());
       } catch {
