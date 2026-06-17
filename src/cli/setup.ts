@@ -328,21 +328,45 @@ export async function probeLlm(cfg: LlmConfig, deps: ProbeDeps = {}): Promise<Pr
  * wrong value or execute injected commands when the snippet is pasted. Embedded single
  * quotes are escaped via the standard `'\''` close-reopen trick.
  */
-function shellQuote(value: string): string {
+function posixQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 /**
- * The copy-pasteable `export ABS_LLM_*` snippet. The key is inline ONLY for hosted
- * (terminal display) and is never persisted anywhere by abs — local/Ollama is keyless.
- * Values are shell-quoted so metacharacters can't malform the line or inject commands.
+ * Single-quote a value for PowerShell. A single-quoted PowerShell string is literal (no
+ * interpolation), so metacharacters are safe; an embedded single quote is escaped by
+ * doubling it (`''`).
  */
-export function buildExportSnippet(answers: LlmAnswers): string {
+function powershellQuote(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+/**
+ * The copy-pasteable env snippet. The key is inline ONLY for hosted (terminal display) and
+ * is never persisted anywhere by abs — local/Ollama is keyless. Values are quoted so
+ * metacharacters can't malform the line or inject commands.
+ *
+ * Platform-aware (Codex review, PR #179): abs targets Windows (ADR-0001), where the POSIX
+ * `export VAR=...` form is not a valid command. On `win32` we emit the PowerShell
+ * `$env:VAR = '...'` form (the Windows default shell); elsewhere the POSIX `export` form.
+ */
+export function buildExportSnippet(
+  answers: LlmAnswers,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (platform === 'win32') {
+    const lines = [
+      `$env:ABS_LLM_BASE_URL = ${powershellQuote(answers.baseUrl)}`,
+      `$env:ABS_LLM_MODEL = ${powershellQuote(answers.model)}`,
+    ];
+    if (answers.apiKey) lines.push(`$env:ABS_LLM_API_KEY = ${powershellQuote(answers.apiKey)}`);
+    return lines.join('\n');
+  }
   const lines = [
-    `export ABS_LLM_BASE_URL=${shellQuote(answers.baseUrl)}`,
-    `export ABS_LLM_MODEL=${shellQuote(answers.model)}`,
+    `export ABS_LLM_BASE_URL=${posixQuote(answers.baseUrl)}`,
+    `export ABS_LLM_MODEL=${posixQuote(answers.model)}`,
   ];
-  if (answers.apiKey) lines.push(`export ABS_LLM_API_KEY=${shellQuote(answers.apiKey)}`);
+  if (answers.apiKey) lines.push(`export ABS_LLM_API_KEY=${posixQuote(answers.apiKey)}`);
   return lines.join('\n');
 }
 

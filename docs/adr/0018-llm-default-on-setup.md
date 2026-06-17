@@ -40,10 +40,12 @@ interview (`runLlmSetupStep`, `src/cli/setup.ts`):
    from `loadConfig()`/env — the user's `export`s are not in the running process yet). The
    probe **never throws** and **never blocks** — a failure only warns ("continue anyway /
    configure later").
-4. **Print** the `export ABS_LLM_*` snippet (the key inline only for hosted, terminal display
-   only). Values are **shell-quoted** so a base URL / model / key containing shell
-   metacharacters (`$`, backtick, `;`, space, `&`, …) can't malform the line or inject
-   commands when pasted (Codex/CodeRabbit review, PR #179).
+4. **Print** the env snippet (the key inline only for hosted, terminal display only). Values
+   are **quoted** so a base URL / model / key containing metacharacters (`$`, backtick, `;`,
+   space, `&`, …) can't malform the line or inject commands when pasted. The snippet is
+   **platform-aware** (abs targets Windows, ADR-0001): on `win32` it emits the PowerShell
+   `$env:VAR = '...'` form (POSIX `export` is not a valid command there); elsewhere the POSIX
+   `export VAR='...'` form (Codex/CodeRabbit review, PR #179).
 5. **Persist** two non-secret `kv_meta` markers: `setup:llmChoice` (`'local'|'hosted'|
    'declined'`) + `setup:lastRunAt` (ISO).
 

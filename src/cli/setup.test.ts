@@ -462,38 +462,53 @@ describe('probeLlm — advisory reachability, never throws', () => {
 });
 
 describe('buildExportSnippet — printable export lines, key inline only', () => {
-  it('local → keyless export lines (no ABS_LLM_API_KEY), values shell-quoted', () => {
-    const snippet = buildExportSnippet({
-      baseUrl: 'http://localhost:11434/v1',
-      model: 'qwen2.5',
-    });
+  it('posix local → keyless export lines (no ABS_LLM_API_KEY), values shell-quoted', () => {
+    const snippet = buildExportSnippet(
+      { baseUrl: 'http://localhost:11434/v1', model: 'qwen2.5' },
+      'linux',
+    );
     expect(snippet).toContain("export ABS_LLM_BASE_URL='http://localhost:11434/v1'");
     expect(snippet).toContain("export ABS_LLM_MODEL='qwen2.5'");
     expect(snippet).not.toContain('ABS_LLM_API_KEY');
   });
 
-  it('hosted → includes the key inline (terminal only) plus both vars, shell-quoted', () => {
-    const snippet = buildExportSnippet({
-      baseUrl: 'https://api.example.com/v1',
-      model: 'gpt-x',
-      apiKey: 'sk-secret',
-    });
+  it('posix hosted → includes the key inline (terminal only) plus both vars, shell-quoted', () => {
+    const snippet = buildExportSnippet(
+      { baseUrl: 'https://api.example.com/v1', model: 'gpt-x', apiKey: 'sk-secret' },
+      'linux',
+    );
     expect(snippet).toContain("export ABS_LLM_BASE_URL='https://api.example.com/v1'");
     expect(snippet).toContain("export ABS_LLM_MODEL='gpt-x'");
     expect(snippet).toContain("export ABS_LLM_API_KEY='sk-secret'");
   });
 
-  it('shell-quotes metacharacters so the snippet is paste-safe (no injection / malformed line)', () => {
-    const snippet = buildExportSnippet({
-      baseUrl: 'http://h/v1?a=$x;`whoami` &b',
-      model: 'm with space',
-      apiKey: "sk-it's-tricky",
-    });
+  it('posix shell-quotes metacharacters so the snippet is paste-safe (no injection / malformed line)', () => {
+    const snippet = buildExportSnippet(
+      {
+        baseUrl: 'http://h/v1?a=$x;`whoami` &b',
+        model: 'm with space',
+        apiKey: "sk-it's-tricky",
+      },
+      'linux',
+    );
     // Whole value wrapped in single quotes — metacharacters become literal.
     expect(snippet).toContain("export ABS_LLM_BASE_URL='http://h/v1?a=$x;`whoami` &b'");
     expect(snippet).toContain("export ABS_LLM_MODEL='m with space'");
     // Embedded single quote escaped via the close-reopen `'\''` trick.
     expect(snippet).toContain("export ABS_LLM_API_KEY='sk-it'\\''s-tricky'");
+  });
+
+  it('win32 → PowerShell `$env:` form (POSIX export is invalid on Windows), PS-quoted', () => {
+    const snippet = buildExportSnippet(
+      { baseUrl: 'https://api.example.com/v1', model: 'gpt-x', apiKey: "sk-it's-tricky" },
+      'win32',
+    );
+    expect(snippet).toContain("$env:ABS_LLM_BASE_URL = 'https://api.example.com/v1'");
+    expect(snippet).toContain("$env:ABS_LLM_MODEL = 'gpt-x'");
+    // PowerShell escapes an embedded single quote by doubling it ('').
+    expect(snippet).toContain("$env:ABS_LLM_API_KEY = 'sk-it''s-tricky'");
+    // Never the POSIX form on Windows.
+    expect(snippet).not.toContain('export ABS_LLM_BASE_URL');
   });
 });
 
