@@ -36,6 +36,19 @@ describe('queryTokenCoverage (#144)', () => {
     // Mirrors the spike: off-topic queries matched exactly one (common) token.
     expect(queryTokenCoverage('sourdough bread fermentation hydration', 'bread recipe')).toBe(0.25);
   });
+  it('ignores filler/stopwords so a verbose NL prompt is not penalized (Codex P1)', () => {
+    // The per-prompt hook runs against the raw prompt; without stopword stripping the 8
+    // filler words would dilute coverage to 3/11 < 0.4 and DROP a real match.
+    const q = 'Can you remind me what we decided about Coupa OAuth migration?';
+    // Topic tokens after stopword strip ≈ {decided, coupa, oauth, migration}; the memory has
+    // 3 of them → 0.75, WELL above the 0.4 floor. Without stripping it would be ~3/11 ≈ 0.27
+    // (dropped). The exact value isn't the point — clearing the floor with margin is.
+    expect(
+      queryTokenCoverage(q, 'Coupa OAuth migration moved to client credentials'),
+    ).toBeGreaterThanOrEqual(0.7);
+    // An all-stopword query has no topic tokens → never suppressed.
+    expect(queryTokenCoverage('can you tell me about it', 'anything at all')).toBe(1);
+  });
 });
 
 describe('cosineFromL2Distance (#144)', () => {
@@ -64,6 +77,13 @@ describe('passesNoiseFloor (#144)', () => {
     process.env.ABS_RECALL_MIN_COVERAGE = '0';
     process.env.ABS_RECALL_MIN_COSINE = '0';
     expect(passesNoiseFloor('a b c d', 'only a', 0.0)).toBe(true);
+  });
+  it('disabling the coverage leg lets FTS-only recall (no cosine) THROUGH, not suppress all (Codex P2)', () => {
+    // ABS_RECALL_MIN_COVERAGE=0 disables the only leg the FTS path can use; with the default
+    // cosine threshold still 0.45 and no cosine supplied, the hit must PASS (nothing applies),
+    // not be dropped because neither branch can ever match.
+    process.env.ABS_RECALL_MIN_COVERAGE = '0';
+    expect(passesNoiseFloor('completely unrelated query terms', 'junk', undefined)).toBe(true);
   });
 });
 

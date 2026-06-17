@@ -168,9 +168,12 @@ it can never manufacture relevance, which bounds the harm of shipping ranking be
 
 The deferred floor is now shipped, calibrated from a read-only spike over the real 11k-observation
 store rather than a guessed constant. Probing 6 on-topic vs 6 off-topic queries gave a clean,
-**corpus-independent** separator: **query-token coverage** (the fraction of the query's content
-tokens the hit contains). Off-topic noise matched exactly ONE (usually common) token — coverage
-≤ 0.25; on-topic hits covered most of the query — ≥ 0.75. The hybrid vector leg's cosine
+**corpus-independent** separator: **query-token coverage** (the fraction of the query's TOPIC
+tokens — content tokens minus EN/PT stopwords — the hit contains). Off-topic noise matched exactly
+ONE (usually common) token — coverage ≤ 0.25; on-topic hits covered most of the query — ≥ 0.75.
+(Stopword stripping is load-bearing: the per-prompt hook floors the RAW user prompt, so without it
+a verbose "can you remind me what we decided about X" would dilute a real match below the floor —
+Codex review on PR #175.) The hybrid vector leg's cosine
 (derived from the unit-vector L2 distance, `1 − d²/2`) separated too (off ≤ 0.35, on ≥ 0.66) but
 bm25 magnitude did not generalize. Thresholds: **coverage ≥ 0.40**, **cosine ≥ 0.45** — both with
 wide margins, both env-tunable (`ABS_RECALL_MIN_COVERAGE`, `ABS_RECALL_MIN_COSINE`; `0` disables).
