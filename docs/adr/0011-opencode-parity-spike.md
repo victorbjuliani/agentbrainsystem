@@ -1,3 +1,11 @@
+---
+type: adr
+title: "ADR 0011 — OpenCode parity spike: does sst/opencode qualify for full memory parity?"
+description: "OpenCode parity spike: can sst/opencode reach full memory parity?"
+timestamp: 2026-05-23T01:23:36-03:00
+status: accepted
+---
+
 # ADR 0011 — OpenCode parity spike: does sst/opencode qualify for full memory parity?
 
 **Status:** accepted · **Date:** 2026-05-23 · Spike for: #70 · Feeds: #72 (adapter)

@@ -1,3 +1,11 @@
+---
+type: export-format
+title: "Export format — `abs-export` v1"
+description: "The `abs-export` v1 portability artifact shape."
+timestamp: 2026-05-20T16:06:43-03:00
+status: active
+---
+
 # Export format — `abs-export` v1
 
 The portable artifact produced by `exportStore` / consumed by `importStore`

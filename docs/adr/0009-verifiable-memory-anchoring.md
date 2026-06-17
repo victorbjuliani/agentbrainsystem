@@ -1,3 +1,11 @@
+---
+type: adr
+title: "ADR 0009 — Verifiable memory: code-grounded anchoring, self-healing, contradiction guard"
+description: "Verifiable memory: code-grounded anchoring, self-healing, contradiction guard."
+timestamp: 2026-06-15T11:32:27-03:00
+status: accepted
+---
+
 # ADR 0009 — Verifiable memory: code-grounded anchoring, self-healing, contradiction guard
 
 **Status:** accepted · **Date:** 2026-05-21 · Depends on: #3 (store), #6 (recall),

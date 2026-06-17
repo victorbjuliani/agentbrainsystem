@@ -1,3 +1,11 @@
+---
+type: adr
+title: ADR 0010 — Intentional session→project binding (decision-aware ingest)
+description: Intentional session-to-project binding with decision-aware ingest.
+timestamp: 2026-05-22T10:50:08-03:00
+status: accepted
+---
+
 # ADR 0010 — Intentional session→project binding (decision-aware ingest)
 
 **Status:** accepted · **Date:** 2026-05-21 · Depends on: #3 (store), #7 (ingest),

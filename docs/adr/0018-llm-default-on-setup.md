@@ -1,3 +1,11 @@
+---
+type: adr
+title: "ADR 0018 — LLM optimization as a default-ON, guided step in `abs setup`"
+description: "LLM optimization as a default-ON, guided step in `abs setup`."
+timestamp: 2026-06-17T12:01:19-03:00
+status: accepted
+---
+
 # ADR 0018 — LLM optimization as a default-ON, guided step in `abs setup`
 
 **Status:** accepted · **Date:** 2026-06-17 · Closes: the "LLM is invisible/never-configured"

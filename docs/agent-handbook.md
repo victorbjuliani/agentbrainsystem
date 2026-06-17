@@ -1,3 +1,11 @@
+---
+type: handbook
+title: Agent Handbook
+description: Repository map, commands, boundaries, validation expectations, gotchas.
+timestamp: 2026-06-17T12:01:19-03:00
+status: active
+---
+
 # Agent Handbook
 
 Shared onboarding layer for AI coding agents in this repository. Keep project facts here. Keep `AGENTS.md` and `CLAUDE.md` thin and agent-specific.

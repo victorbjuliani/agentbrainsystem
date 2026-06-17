@@ -1,3 +1,11 @@
+---
+type: adr
+title: ADR 0005 — Per-prompt injection performance (FTS-first)
+description: Per-prompt injection performance via an FTS-first path.
+timestamp: 2026-06-16T22:54:17-03:00
+status: accepted
+---
+
 # ADR 0005 — Per-prompt injection performance (FTS-first)
 
 **Status:** accepted · **Date:** 2026-05-20 · Depends on: #3 (store), #6 (recall) · Decides design of: #19 (UserPromptSubmit hook)

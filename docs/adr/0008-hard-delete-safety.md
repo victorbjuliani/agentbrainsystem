@@ -1,3 +1,11 @@
+---
+type: adr
+title: "ADR 0008 — Selective hard-delete: safety for destructive memory removal"
+description: "Selective hard-delete: safety for destructive memory removal."
+timestamp: 2026-05-20T23:44:57-03:00
+status: accepted
+---
+
 # ADR 0008 — Selective hard-delete: safety for destructive memory removal
 
 **Status:** accepted · **Date:** 2026-05-20 · Extends: ADR-0006 (gated apply) ·

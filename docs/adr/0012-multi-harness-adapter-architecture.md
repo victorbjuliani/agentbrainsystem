@@ -1,3 +1,11 @@
+---
+type: adr
+title: ADR 0012 — Multi-harness adapter architecture
+description: Multi-harness adapter architecture for memory across CLIs.
+timestamp: 2026-05-23T16:02:30-03:00
+status: accepted
+---
+
 # ADR 0012 — Multi-harness adapter architecture
 
 **Status:** accepted · **Date:** 2026-05-23 · Epic: #65 · Adapters: #67 (Codex),

@@ -1,3 +1,11 @@
+---
+type: adr
+title: "ADR 0007 — UI write path: security controls for selective hard-delete"
+description: "UI write path: security controls for selective hard-delete."
+timestamp: 2026-05-20T23:28:08-03:00
+status: accepted
+---
+
 # ADR 0007 — UI write path: security controls for selective hard-delete
 
 - **Status:** Accepted

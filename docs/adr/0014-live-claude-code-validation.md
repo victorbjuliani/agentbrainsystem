@@ -1,3 +1,11 @@
+---
+type: adr
+title: "ADR 0014 — Live Claude Code validation: prove the memory loop against a real harness"
+description: "Live Claude Code validation: prove the memory loop against a real harness."
+timestamp: 2026-05-23T18:12:40-03:00
+status: accepted
+---
+
 # ADR 0014 — Live Claude Code validation: prove the memory loop against a real harness
 
 **Status:** accepted · **Date:** 2026-05-23 · Closes: 1.0 certification gap · Ships in: PR #94

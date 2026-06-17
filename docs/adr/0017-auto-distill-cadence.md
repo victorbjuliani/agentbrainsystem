@@ -1,3 +1,11 @@
+---
+type: adr
+title: "ADR 0017 — Auto-distill cadence: optimize by default, two-signal staleness"
+description: "Auto-distill cadence: optimize by default with two-signal staleness."
+timestamp: 2026-06-15T21:47:23-03:00
+status: accepted
+---
+
 # ADR 0017 — Auto-distill cadence: optimize by default, two-signal staleness
 
 **Status:** accepted · **Date:** 2026-06-15 · Closes: #138 (optimize shouldn't be

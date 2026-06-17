@@ -1,3 +1,11 @@
+---
+type: adr
+title: "ADR 0016 — Optimize curation gate: drop trivia before promotion"
+description: "Optimize curation gate: drop trivia before promotion."
+timestamp: 2026-06-15T17:28:17-03:00
+status: accepted
+---
+
 # ADR 0016 — Optimize curation gate: drop trivia before promotion
 
 **Status:** accepted · **Date:** 2026-06-15 · Depends on: #12 (consolidation), #18

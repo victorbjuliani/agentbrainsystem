@@ -1,3 +1,11 @@
+---
+type: adr
+title: "ADR 0013 — Antigravity CLI (`agy`) memory-parity spike"
+description: Antigravity CLI (agy) memory-parity spike.
+timestamp: 2026-05-23T04:16:24-03:00
+status: accepted
+---
+
 # ADR 0013 — Antigravity CLI (`agy`) memory-parity spike
 
 **Status:** accepted (spike) · **Date:** 2026-05-23 · Issue: #71 · Feeds: #73

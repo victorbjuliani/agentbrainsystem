@@ -1,3 +1,11 @@
+---
+type: engineering-workflow
+title: Engineering Workflow
+description: Issue, branch, worktree, PR, review, and validation rules.
+timestamp: 2026-06-15T22:49:43-03:00
+status: active
+---
+
 # Engineering Workflow
 
 Default workflow baseline for this repository. Update this file when reality diverges, rather than forcing a process nobody follows.

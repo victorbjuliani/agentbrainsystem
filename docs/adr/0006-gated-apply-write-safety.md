@@ -1,3 +1,11 @@
+---
+type: adr
+title: "ADR 0006 — Gated apply: write safety for CLAUDE.md + auto-memory"
+description: "Gated apply: write safety for CLAUDE.md and auto-memory."
+timestamp: 2026-06-15T15:10:12-03:00
+status: accepted
+---
+
 # ADR 0006 — Gated apply: write safety for CLAUDE.md + auto-memory
 
 **Status:** accepted · **Date:** 2026-05-20 · Depends on: #12 (consolidation), #18

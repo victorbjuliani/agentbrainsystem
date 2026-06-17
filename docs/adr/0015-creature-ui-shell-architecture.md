@@ -1,3 +1,11 @@
+---
+type: adr
+title: "ADR 0015 — Creature UI: renderer paradigm + tray shell architecture"
+description: "Creature UI: renderer paradigm plus tray shell architecture."
+timestamp: 2026-05-23T21:59:03-03:00
+status: accepted
+---
+
 # ADR 0015 — Creature UI: renderer paradigm + tray shell architecture
 
 - **Status:** Accepted (F1 + F1 polish + F2 implemented & verified; F3 tray code-complete, cross-OS build via `release.yml`)

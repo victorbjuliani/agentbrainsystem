@@ -1,3 +1,11 @@
+---
+type: adr
+title: ADR 0001 — Storage engine and embedding provider
+description: Storage engine and embedding provider for the memory index.
+timestamp: 2026-05-20T15:36:31-03:00
+status: accepted
+---
+
 # ADR 0001 — Storage engine and embedding provider
 
 - **Status:** Accepted

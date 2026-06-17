@@ -1,3 +1,11 @@
+---
+type: testing-strategy
+title: Testing Strategy
+description: Stack family, required suites, smoke policy, commands, fixtures.
+timestamp: 2026-06-17T12:01:19-03:00
+status: active
+---
+
 # Testing Strategy
 
 > **Status:** baseline for a greenfield repo. Stack-specific commands are finalized at the first `/feature` (once Solution Shape picks the stack). Update this file then.

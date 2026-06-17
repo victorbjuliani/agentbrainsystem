@@ -1,3 +1,11 @@
+---
+type: adr
+title: ADR 0003 — Optional LLM consolidation (session → lessons)
+description: Optional LLM consolidation of session memory into lessons.
+timestamp: 2026-06-15T17:28:17-03:00
+status: accepted
+---
+
 # ADR 0003 — Optional LLM consolidation (session → lessons)
 
 **Status:** accepted · **Date:** 2026-05-20 · Supersedes/extends: none (depends on #3–#6)

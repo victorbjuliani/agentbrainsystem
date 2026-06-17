@@ -1,3 +1,11 @@
+---
+type: documentation-standards
+title: Documentation Standards
+description: Doc taxonomy, source-of-truth rules, update triggers, OKF house profile.
+timestamp: 2026-05-26T22:37:52-03:00
+status: active
+---
+
 # Documentation Standards
 
 > **Status:** baseline for a greenfield repo. Expand as surfaces materialize.
@@ -23,3 +31,12 @@
 - Shared knowledge lives in `docs/`, not duplicated across `CLAUDE.md` / `AGENTS.md`.
 - The **MCP tool contract** and the **export/import format** are public interfaces — document and version them explicitly when they exist.
 - Architecture decisions get an ADR (`docs/adr/`), especially: storage engine, embedding default, export format, graph-UI approach.
+
+## OKF House Profile
+
+<!-- okf:begin -->
+OKF profile pinned at SPEC.md@55d0a46. Corpus types in use here: handbook, engineering-workflow, testing-strategy, documentation-standards, design, adr, export-format.
+Rules live in agent-docs doc-system → "OKF House Profile" — do not restate them here.
+<!-- okf:end -->
+
+Adoption rationale and pin provenance: [/docs/adr/0019-okf-house-profile.md](/docs/adr/0019-okf-house-profile.md).

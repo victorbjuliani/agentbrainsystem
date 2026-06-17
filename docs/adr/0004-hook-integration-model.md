@@ -1,3 +1,11 @@
+---
+type: adr
+title: ADR 0004 — Hook integration model (Claude Code lifecycle hooks)
+description: Hook integration model built on Claude Code lifecycle hooks.
+timestamp: 2026-05-20T22:02:55-03:00
+status: accepted
+---
+
 # ADR 0004 — Hook integration model (Claude Code lifecycle hooks)
 
 **Status:** accepted · **Date:** 2026-05-20 · Depends on: #7 (ingest), #6 (recall) · Implemented across: #15 (SessionEnd), #16 (SessionStart), #19 (UserPromptSubmit)

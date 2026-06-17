@@ -1,3 +1,11 @@
+---
+type: design
+title: Design Intent — agentbrainsystem
+description: Visual identity — palette, typography, motion, creature anatomy.
+timestamp: 2026-05-23T19:22:57-03:00
+status: active
+---
+
 # Design Intent — agentbrainsystem
 
 > Documento canônico de identidade visual. Lido por `frontend-design`, `frontend-auditor`, `vercel:shadcn`.

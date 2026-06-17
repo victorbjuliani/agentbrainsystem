@@ -1,3 +1,11 @@
+---
+type: adr
+title: ADR 0002 — UI build pipeline and frontend stack
+description: UI build pipeline and frontend stack choice.
+timestamp: 2026-05-23T20:12:47-03:00
+status: accepted
+---
+
 # ADR 0002 — UI build pipeline and frontend stack
 
 - **Status:** Accepted; **frontend stack partially superseded by ADR 0015**
