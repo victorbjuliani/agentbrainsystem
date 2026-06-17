@@ -899,7 +899,12 @@ async function cmdSetup(args: string[]): Promise<void> {
  */
 function realSetupIo(store: MemoryStore): SetupIo {
   return {
-    isTty: process.stdin.isTTY ?? false,
+    // Require BOTH stdin AND stdout to be a TTY before running the interview. stdin alone
+    // is not enough: with stdout redirected/teed (`abs setup > setup.log`) the interview
+    // would still run and the hosted `export ABS_LLM_API_KEY=…` snippet (printed via `out`
+    // → stdout) would land in that file. Gating on stdout too keeps the key on a real
+    // terminal only; a redirected run goes silent-degraded (exit 0). (Codex review, PR #179)
+    isTty: (process.stdin.isTTY ?? false) && (process.stdout.isTTY ?? false),
     prompt: async (question: string): Promise<string> => {
       // Prompt on stderr so stdout stays clean; try/finally close mirrors purgeStore (E12).
       const rl = createInterface({ input: process.stdin, output: process.stderr });

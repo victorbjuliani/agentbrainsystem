@@ -323,15 +323,26 @@ export async function probeLlm(cfg: LlmConfig, deps: ProbeDeps = {}): Promise<Pr
 }
 
 /**
+ * Single-quote a value for safe copy-paste into a POSIX shell. Without this, a value
+ * containing shell metacharacters (`$`, backtick, `;`, space, `&`, …) would either set the
+ * wrong value or execute injected commands when the snippet is pasted. Embedded single
+ * quotes are escaped via the standard `'\''` close-reopen trick.
+ */
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+/**
  * The copy-pasteable `export ABS_LLM_*` snippet. The key is inline ONLY for hosted
  * (terminal display) and is never persisted anywhere by abs — local/Ollama is keyless.
+ * Values are shell-quoted so metacharacters can't malform the line or inject commands.
  */
 export function buildExportSnippet(answers: LlmAnswers): string {
   const lines = [
-    `export ABS_LLM_BASE_URL=${answers.baseUrl}`,
-    `export ABS_LLM_MODEL=${answers.model}`,
+    `export ABS_LLM_BASE_URL=${shellQuote(answers.baseUrl)}`,
+    `export ABS_LLM_MODEL=${shellQuote(answers.model)}`,
   ];
-  if (answers.apiKey) lines.push(`export ABS_LLM_API_KEY=${answers.apiKey}`);
+  if (answers.apiKey) lines.push(`export ABS_LLM_API_KEY=${shellQuote(answers.apiKey)}`);
   return lines.join('\n');
 }
 

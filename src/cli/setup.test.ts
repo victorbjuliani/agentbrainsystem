@@ -462,25 +462,38 @@ describe('probeLlm — advisory reachability, never throws', () => {
 });
 
 describe('buildExportSnippet — printable export lines, key inline only', () => {
-  it('local → keyless export lines (no ABS_LLM_API_KEY)', () => {
+  it('local → keyless export lines (no ABS_LLM_API_KEY), values shell-quoted', () => {
     const snippet = buildExportSnippet({
       baseUrl: 'http://localhost:11434/v1',
       model: 'qwen2.5',
     });
-    expect(snippet).toContain('export ABS_LLM_BASE_URL=http://localhost:11434/v1');
-    expect(snippet).toContain('export ABS_LLM_MODEL=qwen2.5');
+    expect(snippet).toContain("export ABS_LLM_BASE_URL='http://localhost:11434/v1'");
+    expect(snippet).toContain("export ABS_LLM_MODEL='qwen2.5'");
     expect(snippet).not.toContain('ABS_LLM_API_KEY');
   });
 
-  it('hosted → includes the key inline (terminal only) plus both vars', () => {
+  it('hosted → includes the key inline (terminal only) plus both vars, shell-quoted', () => {
     const snippet = buildExportSnippet({
       baseUrl: 'https://api.example.com/v1',
       model: 'gpt-x',
       apiKey: 'sk-secret',
     });
-    expect(snippet).toContain('export ABS_LLM_BASE_URL=https://api.example.com/v1');
-    expect(snippet).toContain('export ABS_LLM_MODEL=gpt-x');
-    expect(snippet).toContain('export ABS_LLM_API_KEY=sk-secret');
+    expect(snippet).toContain("export ABS_LLM_BASE_URL='https://api.example.com/v1'");
+    expect(snippet).toContain("export ABS_LLM_MODEL='gpt-x'");
+    expect(snippet).toContain("export ABS_LLM_API_KEY='sk-secret'");
+  });
+
+  it('shell-quotes metacharacters so the snippet is paste-safe (no injection / malformed line)', () => {
+    const snippet = buildExportSnippet({
+      baseUrl: 'http://h/v1?a=$x;`whoami` &b',
+      model: 'm with space',
+      apiKey: "sk-it's-tricky",
+    });
+    // Whole value wrapped in single quotes — metacharacters become literal.
+    expect(snippet).toContain("export ABS_LLM_BASE_URL='http://h/v1?a=$x;`whoami` &b'");
+    expect(snippet).toContain("export ABS_LLM_MODEL='m with space'");
+    // Embedded single quote escaped via the close-reopen `'\''` trick.
+    expect(snippet).toContain("export ABS_LLM_API_KEY='sk-it'\\''s-tricky'");
   });
 });
 
@@ -519,7 +532,7 @@ function makeIo(opts: {
       return next;
     },
     out: (s) => lines.push(s),
-    getEnv: (k) => (opts.env ?? {})[k],
+    getEnv: (k) => opts.env?.[k],
     probe: opts.probe ?? (async () => ({ ok: true })),
     getChoice: () => (kv.get(SETUP_LLM_CHOICE_KEY) as LlmChoice | undefined) ?? null,
     setChoice: (choice) => {
@@ -568,7 +581,7 @@ describe('runLlmSetupStep — interview branches', () => {
     const { io, lines, kv } = makeIo({ isTty: true, answers: ['1'] });
     await runLlmSetupStep(io, false);
     const text = lines.join('\n');
-    expect(text).toContain('export ABS_LLM_BASE_URL=http://localhost:11434/v1');
+    expect(text).toContain("export ABS_LLM_BASE_URL='http://localhost:11434/v1'");
     expect(text).not.toContain('ABS_LLM_API_KEY');
     expect(kv.get(SETUP_LLM_CHOICE_KEY)).toBe('local');
   });
@@ -582,7 +595,7 @@ describe('runLlmSetupStep — interview branches', () => {
     // The choice prompt + the three hosted follow-ups.
     expect(promptedQuestions.length).toBe(4);
     const text = lines.join('\n');
-    expect(text).toContain('export ABS_LLM_API_KEY=sk-live-123');
+    expect(text).toContain("export ABS_LLM_API_KEY='sk-live-123'");
     expect(kv.get(SETUP_LLM_CHOICE_KEY)).toBe('hosted');
   });
 

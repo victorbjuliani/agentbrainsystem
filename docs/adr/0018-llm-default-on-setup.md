@@ -41,7 +41,9 @@ interview (`runLlmSetupStep`, `src/cli/setup.ts`):
    probe **never throws** and **never blocks** — a failure only warns ("continue anyway /
    configure later").
 4. **Print** the `export ABS_LLM_*` snippet (the key inline only for hosted, terminal display
-   only).
+   only). Values are **shell-quoted** so a base URL / model / key containing shell
+   metacharacters (`$`, backtick, `;`, space, `&`, …) can't malform the line or inject
+   commands when pasted (Codex/CodeRabbit review, PR #179).
 5. **Persist** two non-secret `kv_meta` markers: `setup:llmChoice` (`'local'|'hosted'|
    'declined'`) + `setup:lastRunAt` (ISO).
 
@@ -53,7 +55,10 @@ interview (`runLlmSetupStep`, `src/cli/setup.ts`):
   `kv_meta` at all, so the key cannot leak through an export — asserted by a round-trip test.)
 - **Advisory probe, never blocking.** Any probe outcome (ok, unreachable, timeout, bad
   config) ⇒ the step continues and `abs setup` exits 0.
-- **Non-TTY / `--harness` → silent degraded, exit 0.** `process.stdin.isTTY` falsy OR an
+- **Non-TTY / `--harness` → silent degraded, exit 0.** The interview requires **both
+  `process.stdin.isTTY` AND `process.stdout.isTTY`** — stdin alone is insufficient, because
+  with stdout redirected/teed (`abs setup > setup.log`) the hosted key snippet (printed to
+  stdout) would otherwise leak into that file (Codex review, PR #179). Falsy on either, OR an
   explicit `--harness <id>` (a scripted, single-target invocation) ⇒ NO prompt; mark
   `setup:llmChoice='declined'` **only if unset** (never clobber a real prior choice); exit 0.
   CI/scripted setup is byte-identical except for that one marker write.
