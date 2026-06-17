@@ -132,3 +132,34 @@ benchmark now measures both production pool sizes — the prompt hook (`limit 8`
 PreToolUse decision lens (`limit 20` → 100 candidates), both with `rankByKind` — and all stay
 well under **p95 ≤ 25 ms** (measured p95 < 6 ms). The hybrid `recall()` re-rank and a recall
 noise floor are deferred to follow-ups.
+
+## Addendum — 2026-06-16 (#143, hybrid `recall()` kind-weighted re-rank)
+
+The deferred hybrid re-rank above is now done. `Recall.recall(query, { rankByKind: true })` — the
+path the MCP `recall` tool uses — re-orders the WHOLE fused pool by `fusedScore × kindWeight(kind)`
+(not a truncated window, so a durable hit deep in the pool that should win is never dropped). `kind`
+comes from the FTS leg for free (`searchFts` already returns it); vector-only candidates are resolved
+in ONE batched `MemoryStore.kindsByIds` query, so `getObservation` stays bounded to `≤ limit` exactly
+as before. Default `false` keeps the pure fused order byte-identical for any non-opted caller.
+
+**Score contract — deliberate divergence from `recallFts`.** Unlike the in-process FTS path (where
+`rankByKind` makes `score` the weighted value), the hybrid path keeps each hit's `score` = the raw
+fused RRF value; the kind weight drives **ordering only**. Rationale: `recall()`'s `score` crosses
+the MCP wire (`server.ts` serializes `score.toFixed(6)`), and emitting a weighted score would mix two
+incomparable regimes (durable ×2.5 vs raw ×1) in one response — a relevance number a client may
+threshold/sort. Ordering-only weighting gives durable-first results without corrupting the wire signal.
+
+**Stale safety.** The hybrid path has no built-in freshness step, so kind-weighting alone could lift a
+*stale* curated decision to the top of an MCP result. The tool therefore runs `annotateFreshness` after
+recall — stale hits sink below fresh (regardless of kind) and carry `anchorState` over the wire — so a
+curated-but-stale fact can never be promoted to #1 untagged.
+
+**Latency.** A new Gate 5 bench seeds BOTH indexes (FTS + vec0) and measures `recall({rankByKind})` at
+`limit 10`; the full-pool weight + the batched kind lookup stay under a generous async budget
+(p95 ≈ 6 ms, budget 50 ms = 2× the FTS ceiling to absorb the embed + KNN leg the FTS path skips).
+
+The recall **noise floor** (#144) remains deferred: a bm25/RRF floor isn't normalized across queries,
+so a mis-calibrated threshold suppresses genuinely-relevant memory (a false negative is worse than the
+junk it removes) and needs real-store calibration. Note the implicit floor that already exists —
+kind-weighting only reorders *pool members*, i.e. observations that already matched in at least one leg;
+it can never manufacture relevance, which bounds the harm of shipping ranking before the floor.

@@ -68,9 +68,19 @@ beforeAll(() => {
       content,
     });
     store.indexFts(id, content);
+    // Seed the vector index too so the HYBRID recall() bench below exercises a real KNN
+    // leg (not a free/empty one). Varied hot dimension → a non-degenerate distance order.
+    store.upsertVector(id, benchVec(i % 8));
   }
   recall = new Recall(store, new NoEmbedProvider());
 });
+
+/** A unit 8-vector with a single hot dimension — cheap, deterministic, varied per doc. */
+function benchVec(hot: number): number[] {
+  const v = new Array<number>(8).fill(0);
+  v[hot] = 1;
+  return v;
+}
 
 afterAll(() => {
   store.close();
@@ -112,4 +122,43 @@ describe('per-prompt FTS recall latency (ADR-0005 Gate 5)', () => {
       expect(p95).toBeLessThanOrEqual(P95_BUDGET_MS);
     });
   }
+});
+
+/**
+ * Gate 5 for the HYBRID recall() kind-weighted re-rank (#143) — the MCP recall tool path.
+ * It embeds the query (stubbed to a fixed vector here), runs KNN ⊕ FTS, fuses, then
+ * re-ranks the WHOLE fused pool by kind. The full-pool weight + the batched `kindsByIds`
+ * lookup must stay under the same ADR-0005 p95 budget as the FTS path. A generous async
+ * margin (×2) absorbs the embed-call + KNN overhead the FTS path doesn't pay.
+ */
+class FixedVecProvider implements EmbeddingProvider {
+  readonly id = 'fixedvec';
+  readonly model = 'none';
+  readonly dimensions = 8;
+  async embed(texts: string[]): Promise<number[][]> {
+    return texts.map(() => benchVec(0)); // always query near the hot-0 cluster
+  }
+}
+
+describe('hybrid recall() kind-weighted re-rank latency (Gate 5, #143)', () => {
+  const HYBRID_BUDGET_MS = P95_BUDGET_MS * 2; // hybrid pays an embed + KNN leg the FTS path skips
+  it(`stays under p95 ${HYBRID_BUDGET_MS}ms over ${STORE_SIZE} obs — limit 10, rankByKind`, async () => {
+    const r = new Recall(store, new FixedVecProvider());
+    const opts = { limit: 10, rankByKind: true, includeGlobal: true } as const;
+    for (let i = 0; i < 20; i++) await r.recall(synth(i * 37 + 1).slice(0, 60), opts); // warm
+
+    const times: number[] = [];
+    for (let i = 0; i < ITERATIONS; i++) {
+      const q = synth(i * 37 + 1).slice(0, 60);
+      const s = process.hrtime.bigint();
+      await r.recall(q, opts);
+      times.push(Number(process.hrtime.bigint() - s) / 1e6);
+    }
+    times.sort((a, b) => a - b);
+    const p95 = percentile(times, 95);
+    console.log(
+      `recall (hybrid) [limit 10, rankByKind] p50=${percentile(times, 50).toFixed(3)}ms p95=${p95.toFixed(3)}ms`,
+    );
+    expect(p95).toBeLessThanOrEqual(HYBRID_BUDGET_MS);
+  });
 });

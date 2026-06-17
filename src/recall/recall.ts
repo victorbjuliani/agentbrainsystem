@@ -28,6 +28,17 @@ export interface RecallOptions {
   project?: string;
   /** Also include the cross-project global brain (`__global__`) alongside the project (#). */
   includeGlobal?: boolean;
+  /**
+   * Rank curated/durable kinds (`decision`/`lesson`/`note`) above raw turns (#143) — the
+   * hybrid-path twin of `recallFts({rankByKind})` (#141). The WHOLE fused pool is re-ordered
+   * by `fusedScore × kindWeight(kind)`, NOT a truncated window, so a durable hit deep in the
+   * pool that should win is never dropped. It is ORDERING-ONLY: each hit's `score` stays the
+   * raw fused RRF value (the contract serialized to MCP clients is unchanged — the weight is
+   * not exposed over the wire). A no-op `false` (default) keeps the pure fused order, so the
+   * UI and any other caller are byte-identical. NOT a hard filter — when no durable kind is
+   * in the pool every weight is 1 and the order collapses to pure fused.
+   */
+  rankByKind?: boolean;
 }
 
 export interface RecallHit {
@@ -118,27 +129,31 @@ export class Recall {
     const candidates = options.candidates ?? Math.max(limit * 5, 20);
     const rrfK = options.rrfK ?? DEFAULT_RRF_K;
 
-    const { project, includeGlobal } = options;
+    const { project, includeGlobal, rankByKind } = options;
     const [queryVector] = await this.provider.embed([query]);
     const vectorIds = queryVector
       ? this.store.knn(queryVector, candidates, project, includeGlobal).map((h) => h.id)
       : [];
 
     const ftsExpr = toFtsQuery(query);
-    const ftsIds = ftsExpr
-      ? this.store.searchFts(ftsExpr, candidates, project, includeGlobal).map((h) => h.id)
+    // Keep the full FTS matches (not just ids) so kind-weighting gets `kind` for the FTS
+    // leg for FREE (searchFts already joins it); only vector-only candidates need a lookup.
+    const ftsMatches = ftsExpr
+      ? this.store.searchFts(ftsExpr, candidates, project, includeGlobal)
       : [];
 
     const fused = reciprocalRankFusion(
       [
         { name: 'vector', ids: vectorIds },
-        { name: 'fts', ids: ftsIds },
+        { name: 'fts', ids: ftsMatches.map((m) => m.id) },
       ],
       rrfK,
     );
 
+    const ordered = rankByKind ? this.orderFusedByKind(fused, ftsMatches) : fused;
+
     const hits: RecallHit[] = [];
-    for (const f of fused) {
+    for (const f of ordered) {
       if (hits.length >= limit) break;
       const observation = this.store.getObservation(f.id);
       if (!observation) continue; // index drifted ahead of rows — skip defensively
@@ -150,6 +165,31 @@ export class Recall {
       });
     }
     return hits;
+  }
+
+  /**
+   * Re-order the WHOLE fused pool by `fusedScore × kindWeight(kind)` so durable kinds lead
+   * (#143). Re-ranking the entire pool (not a truncated top-N) means a durable hit deep in
+   * the pool that should win after weighting is never excluded; only the final `≤limit`
+   * `getObservation` calls cost I/O, so this stays bounded. `kind` comes from the FTS leg
+   * for free; vector-only candidates are resolved in ONE batched `kindsByIds` query. The
+   * returned items keep their fused `score` — the weight drives ORDER only.
+   */
+  private orderFusedByKind(
+    fused: ReturnType<typeof reciprocalRankFusion>,
+    ftsMatches: ReadonlyArray<{ id: number; kind?: string }>,
+  ): ReturnType<typeof reciprocalRankFusion> {
+    const kindById = new Map<number, string>();
+    for (const m of ftsMatches) if (m.kind !== undefined) kindById.set(m.id, m.kind);
+    const missing = fused.filter((f) => !kindById.has(f.id)).map((f) => f.id);
+    if (missing.length > 0) {
+      for (const [id, kind] of this.store.kindsByIds(missing)) kindById.set(id, kind);
+    }
+    // Stable: ties (equal weighted score) keep the original fused order via the index tiebreak.
+    return fused
+      .map((f, i) => ({ f, i, weighted: f.score * kindWeight(kindById.get(f.id) ?? '') }))
+      .sort((a, b) => b.weighted - a.weighted || a.i - b.i)
+      .map((x) => x.f);
   }
 
   /**

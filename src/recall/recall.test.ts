@@ -383,3 +383,140 @@ describe('recallFts — kind-weighted re-rank (#141)', () => {
     expect(ranked.map((h) => h.observation.id)).toContain(raw); // raw still surfaces (no filter)
   });
 });
+
+describe('recall (hybrid) — kind-weighted re-rank (#143)', () => {
+  let bdir: string;
+  let store: MemoryStore;
+  let recall: Recall;
+  let sessionId: number;
+
+  // Deterministic vector leg: the provider returns a FIXED query vector regardless of the
+  // text, and each doc's vector is seeded by hand (see `add`), so the hybrid fusion is fully
+  // controlled. Hot dimension 0 = "close to query"; any other = "far".
+  const Q = unit(0);
+  const stub: EmbeddingProvider = {
+    id: 'stub',
+    model: 'none',
+    dimensions: 8,
+    embed: async (texts: string[]) => texts.map(() => Q),
+  };
+
+  // Filler tokens (don't match any query) make a durable doc's bm25 weak so FTS ranks it
+  // last — the kind weight still has to lift it. Mirrors the #141 suite's FILLER.
+  const FILLER = Array.from({ length: 40 }, (_, i) => `filler${i}`).join(' ');
+
+  function unit(hot: number): number[] {
+    const v = new Array<number>(8).fill(0);
+    v[hot] = 1;
+    return v;
+  }
+
+  beforeEach(() => {
+    bdir = mkdtempSync(join(tmpdir(), 'abs-recall-hybrid-'));
+    store = new MemoryStore({ dbPath: join(bdir, 'm.db'), dimensions: 8 }).open();
+    recall = new Recall(store, stub);
+    sessionId = store.createSession({ externalId: 's1' });
+  });
+
+  afterEach(() => {
+    store.close();
+    rmSync(bdir, { recursive: true, force: true });
+  });
+
+  /** Seed an observation into BOTH the FTS index and the vector index (hybrid needs both). */
+  function add(kind: string, content: string, vec: number[]): number {
+    const id = store.createObservation({ sessionId, kind, content });
+    store.indexFts(id, content);
+    store.upsertVector(id, vec);
+    return id;
+  }
+
+  it('lifts a durable hit above a stronger-fused raw turn (hybrid)', async () => {
+    // raw: strong on BOTH legs (exact terms + vector = query). durable: weak on both.
+    const raw = add('user', 'alpha alpha alpha', Q);
+    const durable = add('lesson', `alpha ${FILLER}`, unit(4));
+
+    const off = (await recall.recall('alpha', { limit: 5 })).map((h) => h.observation.id);
+    expect(off[0]).toBe(raw); // fused order: strong raw first
+
+    const on = await recall.recall('alpha', { limit: 5, rankByKind: true });
+    expect(on[0]?.observation.id).toBe(durable); // kind weight lifts the durable to the top
+    expect(on.map((h) => h.observation.id)).toContain(raw); // NOT a filter — raw still present
+  });
+
+  it('keeps `score` = the raw fused RRF value even when rankByKind (wire contract)', async () => {
+    const raw = add('user', 'beta beta beta', Q);
+    add('lesson', `beta ${FILLER}`, unit(4));
+
+    // Same query both ways; the fused score for a given id must be identical — the weight
+    // changes ORDER only, never the serialized score (Codex review on PR / #143 contract).
+    const plain = await recall.recall('beta', { limit: 5 });
+    const ranked = await recall.recall('beta', { limit: 5, rankByKind: true });
+    const rawPlain = plain.find((h) => h.observation.id === raw)?.score;
+    const rawRanked = ranked.find((h) => h.observation.id === raw)?.score;
+    expect(rawRanked).toBe(rawPlain); // byte-identical fused score; not multiplied by the weight
+  });
+
+  it('rankByKind off (default) is byte-identical order AND score', async () => {
+    add('user', 'gamma gamma gamma', Q);
+    add('lesson', `gamma ${FILLER}`, unit(4));
+
+    const omitted = await recall.recall('gamma', { limit: 5 });
+    const explicitFalse = await recall.recall('gamma', { limit: 5, rankByKind: false });
+    expect(explicitFalse.map((h) => h.observation.id)).toEqual(
+      omitted.map((h) => h.observation.id),
+    );
+    expect(explicitFalse.map((h) => h.score)).toEqual(omitted.map((h) => h.score));
+  });
+
+  it('re-ranks the WHOLE pool — a durable hit DEEP in the pool is not truncated away', async () => {
+    // 7 strong raw matches push the weak durable far down the fused pool (well past a naive
+    // limit×factor window at limit:1). Full-pool re-rank must still surface it.
+    for (let i = 0; i < 7; i++) add('user', `delta delta delta raw${i}`, Q);
+    const durable = add('lesson', `delta ${FILLER}`, unit(4));
+
+    expect((await recall.recall('delta', { limit: 1 })).map((h) => h.observation.id)).not.toContain(
+      durable,
+    ); // pure fused at limit 1 → a strong raw, durable is deep
+    expect((await recall.recall('delta', { limit: 1, rankByKind: true }))[0]?.observation.id).toBe(
+      durable,
+    ); // full-pool weight surfaces the deep durable
+  });
+
+  it('no durable in the pool → rankByKind is a no-op (order unchanged)', async () => {
+    add('user', 'epsilon epsilon epsilon', Q);
+    add('assistant', 'epsilon epsilon', unit(1));
+    add('user', 'epsilon zeta', unit(2));
+
+    const off = (await recall.recall('epsilon', { limit: 5 })).map((h) => h.observation.id);
+    const on = (await recall.recall('epsilon', { limit: 5, rankByKind: true })).map(
+      (h) => h.observation.id,
+    );
+    expect(on).toEqual(off); // all weights 1 → identical order
+  });
+});
+
+describe('MemoryStore.kindsByIds — batched id→kind (#143)', () => {
+  let kdir: string;
+  let store: MemoryStore;
+  beforeEach(() => {
+    kdir = mkdtempSync(join(tmpdir(), 'abs-kinds-'));
+    store = new MemoryStore({ dbPath: join(kdir, 'm.db'), dimensions: 8 }).open();
+  });
+  afterEach(() => {
+    store.close();
+    rmSync(kdir, { recursive: true, force: true });
+  });
+
+  it('resolves kinds for present ids, omits absent ones, and never emits IN ()', () => {
+    const s = store.createSession({ externalId: 's1' });
+    const a = store.createObservation({ sessionId: s, kind: 'lesson', content: 'x' });
+    const b = store.createObservation({ sessionId: s, kind: 'user', content: 'y' });
+
+    expect(store.kindsByIds([])).toEqual(new Map()); // empty → no query, no IN () crash
+    const got = store.kindsByIds([a, b, 999999]); // 999999 is absent (index drift)
+    expect(got.get(a)).toBe('lesson');
+    expect(got.get(b)).toBe('user');
+    expect(got.has(999999)).toBe(false); // absent id simply omitted
+  });
+});
