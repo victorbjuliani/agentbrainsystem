@@ -43,6 +43,7 @@ export const LOCALE_MESSAGE_IDS = [
   'snippetKeyReminder',
   'declined',
   'alreadyConfigured',
+  'hostedIncomplete',
 ] as const;
 
 export type LocaleMessageId = (typeof LOCALE_MESSAGE_IDS)[number];
@@ -89,6 +90,10 @@ const TABLE: Record<Locale, MessageTable> = {
     alreadyConfigured:
       '✓ LLM step already done — reconfigure anytime by re-running `abs setup` after editing ' +
       'your ABS_LLM_* env vars.',
+    hostedIncomplete:
+      '! Hosted setup needs BOTH a base URL and a model — one was empty, so nothing was ' +
+      'saved (an empty value would print a broken export that breaks abs at runtime). ' +
+      'Re-run `abs setup` to try again.',
   },
   pt: {
     explainTitle: 'Opcional: conecte um LLM para o abs destilar suas sessões (recomendado).',
@@ -123,6 +128,10 @@ const TABLE: Record<Locale, MessageTable> = {
     alreadyConfigured:
       '✓ Etapa do LLM já concluída — reconfigure quando quiser rodando `abs setup` de novo ' +
       'após editar suas variáveis de ambiente ABS_LLM_*.',
+    hostedIncomplete:
+      '! O setup hospedado precisa de base URL E modelo — um veio vazio, então nada foi ' +
+      'salvo (um valor vazio imprimiria um export quebrado que falha o abs em runtime). ' +
+      'Rode `abs setup` de novo para tentar.',
   },
 };
 

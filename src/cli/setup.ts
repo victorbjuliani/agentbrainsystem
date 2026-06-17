@@ -404,6 +404,14 @@ async function conductInterview(io: SetupIo, locale: Locale): Promise<LlmChoice>
   if (pick === '2') {
     const baseUrl = (await io.prompt(t(locale, 'askBaseUrl'))).trim();
     const model = (await io.prompt(t(locale, 'askModel'))).trim();
+    // A hosted config needs BOTH a base URL and a model. An empty value would print a
+    // broken `export ABS_LLM_*` (e.g. `ABS_LLM_MODEL=''`) that makes loadLlmConfig throw on
+    // a partial env at runtime → hooks silently degrade. Refuse to persist/print a half-
+    // config; treat it as declined (Codex P2, PR #179).
+    if (!baseUrl || !model) {
+      io.out(t(locale, 'hostedIncomplete'));
+      return 'declined';
+    }
     const apiKey = (await io.prompt(t(locale, 'askApiKey'))).trim();
     const answers: LlmAnswers = { baseUrl, model };
     if (apiKey) answers.apiKey = apiKey;

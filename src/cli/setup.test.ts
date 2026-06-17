@@ -631,6 +631,20 @@ describe('runLlmSetupStep — interview branches', () => {
     expect(kv.get(SETUP_LLM_CHOICE_KEY)).toBe('declined');
     expect(lines.join('\n')).not.toContain('export ABS_LLM_BASE_URL');
   });
+
+  it('hosted with an EMPTY model → declined, no broken snippet/marker (Codex P2 #179)', async () => {
+    // Empty model would persist `hosted` + print `ABS_LLM_MODEL=''` → loadLlmConfig throws
+    // on the partial env at runtime → hooks silently degrade. Must refuse the half-config.
+    const { io, lines, kv, promptedQuestions } = makeIo({
+      isTty: true,
+      answers: ['2', 'https://api.example.com/v1', ''], // base URL given, model blank
+    });
+    await runLlmSetupStep(io, false);
+    expect(kv.get(SETUP_LLM_CHOICE_KEY)).toBe('declined'); // NOT 'hosted'
+    const text = lines.join('\n');
+    expect(text).not.toContain('export ABS_LLM_'); // no broken snippet printed
+    expect(promptedQuestions.length).toBe(3); // choice + baseUrl + model; key NOT asked
+  });
 });
 
 describe('runLlmSetupStep — probe advisory (E3) never blocks', () => {
