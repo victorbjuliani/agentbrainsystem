@@ -35,13 +35,28 @@ describe('selfHealClaudeCodeHooks', () => {
       install: install.fn,
       detectClaudeCode: () => true,
     });
-    expect(res).toEqual({ action: 'skipped', reason: 'other-harness' });
+    expect(res).toEqual({ action: 'skipped', reason: 'not-claude-launch' });
+    expect(install.calls).toHaveLength(0);
+  });
+
+  it('skips a bare `abs start` (no --harness) so smoke tests / probes never touch real HOME', () => {
+    // Real Claude Code launches pass `--harness claude-code` (#109). A bare start —
+    // stdio-smoke.test.ts, manual probes, legacy registrations — must NOT self-heal,
+    // since those isolate ABS_HOME but not HOME.
+    const install = fakeInstall(['SessionEnd']);
+    const res = selfHealClaudeCodeHooks({
+      env: {},
+      install: install.fn,
+      detectClaudeCode: () => true, // Claude Code IS installed, but the launch is bare
+    });
+    expect(res).toEqual({ action: 'skipped', reason: 'not-claude-launch' });
     expect(install.calls).toHaveLength(0);
   });
 
   it('skips when Claude Code is not installed (no false action on a Codex-only box)', () => {
     const install = fakeInstall([]);
     const res = selfHealClaudeCodeHooks({
+      harness: 'claude-code',
       env: {},
       install: install.fn,
       detectClaudeCode: () => false,
@@ -54,6 +69,7 @@ describe('selfHealClaudeCodeHooks', () => {
     const install = fakeInstall([]); // installHooks added nothing → already present
     const log = vi.fn();
     const res = selfHealClaudeCodeHooks({
+      harness: 'claude-code',
       env: {},
       install: install.fn,
       detectClaudeCode: () => true,
@@ -65,10 +81,11 @@ describe('selfHealClaudeCodeHooks', () => {
     expect(log).not.toHaveBeenCalled();
   });
 
-  it('restores evicted hooks and logs once (default harness = claude-code)', () => {
+  it('restores evicted hooks and logs once on an explicit claude-code launch', () => {
     const install = fakeInstall(['SessionEnd', 'SessionStart', 'UserPromptSubmit']);
     const log = vi.fn();
     const res = selfHealClaudeCodeHooks({
+      harness: 'claude-code',
       env: {},
       install: install.fn,
       detectClaudeCode: () => true,
@@ -85,6 +102,7 @@ describe('selfHealClaudeCodeHooks', () => {
   it('fails open (skips, no throw) when the installer throws — server must still serve', () => {
     const log = vi.fn();
     const res = selfHealClaudeCodeHooks({
+      harness: 'claude-code',
       env: {},
       detectClaudeCode: () => true,
       install: () => {
@@ -114,7 +132,12 @@ describe('selfHealClaudeCodeHooks', () => {
         JSON.stringify({ hooks: { Notification: [{ matcher: '', hooks: [] }] } }),
         'utf8',
       );
-      const res = selfHealClaudeCodeHooks({ env: {}, detectClaudeCode: () => true, settingsPath });
+      const res = selfHealClaudeCodeHooks({
+        harness: 'claude-code',
+        env: {},
+        detectClaudeCode: () => true,
+        settingsPath,
+      });
       expect(res.action).toBe('restored');
 
       const s = JSON.parse(readFileSync(settingsPath, 'utf8')) as {
@@ -132,6 +155,7 @@ describe('selfHealClaudeCodeHooks', () => {
 
       // Idempotent: a second launch finds them wired and does nothing.
       const second = selfHealClaudeCodeHooks({
+        harness: 'claude-code',
         env: {},
         detectClaudeCode: () => true,
         settingsPath,

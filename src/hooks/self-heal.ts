@@ -25,7 +25,7 @@ export type SelfHealResult =
   | { action: 'noop' }
   | {
       action: 'skipped';
-      reason: 'opt-out' | 'other-harness' | 'not-installed' | 'error';
+      reason: 'opt-out' | 'not-claude-launch' | 'not-installed' | 'error';
       detail?: string;
     };
 
@@ -54,10 +54,14 @@ export function selfHealClaudeCodeHooks(opts: SelfHealOptions = {}): SelfHealRes
   const env = opts.env ?? process.env;
   if (env.ABS_SELF_HEAL_HOOKS === '0') return { action: 'skipped', reason: 'opt-out' };
 
-  // Only the harness that owns ~/.claude/settings.json hooks. Absent (legacy
-  // registration) defaults to claude-code, matching startStdio's own default.
-  if (opts.harness && opts.harness !== 'claude-code') {
-    return { action: 'skipped', reason: 'other-harness' };
+  // Require an EXPLICIT claude-code launch. abs registers its MCP server as
+  // `start --harness claude-code` (#109), so a real Claude Code launch always passes it.
+  // A bare `abs start` (smoke tests, manual stdio probes, pre-#109 legacy registrations)
+  // is NOT treated as a Claude Code launch — those isolate ABS_HOME but not HOME, so
+  // self-healing on the absent default would rewrite the real ~/.claude/settings.json
+  // outside an actual launch. Re-run `abs setup` to upgrade a legacy registration.
+  if (opts.harness !== 'claude-code') {
+    return { action: 'skipped', reason: 'not-claude-launch' };
   }
 
   const detect = opts.detectClaudeCode ?? defaultDetectClaudeCode;
