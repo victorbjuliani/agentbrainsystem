@@ -207,7 +207,7 @@ abs uninstall [--purge]   # reverse of setup: remove hooks + unregister MCP (--p
 abs start                 # run the MCP server (what Claude Code spawns)
 abs ingest [...]          # opt-in historical ingest — preview default; --apply + --all|--project <slug>
 abs status                # db path, schema, counts, index staleness
-abs doctor                # health check (integrity, drift) + best-effort update check
+abs doctor                # health check (integrity, drift, Claude Code hook wiring) + best-effort update check
 abs project [...]         # set/confirm/skip the current session's project
 abs remember "…" --global # add a memory to the cross-project global brain
 abs promote <id>          # move an existing memory into the global brain

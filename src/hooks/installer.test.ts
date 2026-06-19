@@ -10,7 +10,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { installHooks, uninstallHooks } from './installer.js';
+import { checkHooks, installHooks, uninstallHooks } from './installer.js';
 
 let dir: string;
 let settingsPath: string;
@@ -300,5 +300,108 @@ describe('uninstallHooks', () => {
     installHooks({ settingsPath });
     uninstallHooks({ settingsPath });
     expect(readdirSync(dir).filter((f) => f.includes('abs-settings-tmp'))).toEqual([]);
+  });
+});
+
+describe('checkHooks', () => {
+  it('reports wired:true with no missing when install wrote all hooks', () => {
+    installHooks({ settingsPath });
+    const health = checkHooks({ settingsPath });
+    expect(health.wired).toBe(true);
+    expect(health.missing).toEqual([]);
+    expect(health.present.sort()).toEqual([
+      'PreToolUse',
+      'SessionEnd',
+      'SessionStart',
+      'UserPromptSubmit',
+    ]);
+    expect(health.unreadable).toBe(false);
+  });
+
+  it('reports wired:false and lists the evicted events when a tool drops them', () => {
+    installHooks({ settingsPath });
+    // Simulate a third-party rewrite that kept only one matcher group and erased the rest.
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        hooks: {
+          SessionStart: [
+            { matcher: '', hooks: [{ type: 'command', command: 'abs hook session-start' }] },
+          ],
+        },
+      }),
+      'utf8',
+    );
+    const health = checkHooks({ settingsPath });
+    expect(health.wired).toBe(false);
+    expect(health.present).toEqual(['SessionStart']);
+    expect(health.missing.sort()).toEqual(['PreToolUse', 'SessionEnd', 'UserPromptSubmit']);
+  });
+
+  it('reports wired:false (everything missing) when settings.json does not exist', () => {
+    const health = checkHooks({ settingsPath });
+    expect(health.wired).toBe(false);
+    expect(health.present).toEqual([]);
+    expect(health.missing).toHaveLength(4);
+    expect(health.unreadable).toBe(false);
+  });
+
+  it('reports unreadable:true (not wired) when settings.json is corrupt JSON', () => {
+    writeFileSync(settingsPath, '{ not valid json', 'utf8');
+    const health = checkHooks({ settingsPath });
+    expect(health.wired).toBe(false);
+    expect(health.unreadable).toBe(true);
+  });
+
+  it('matches hooks installed via an absolute binary path or node invocation', () => {
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        hooks: {
+          SessionEnd: [
+            {
+              matcher: '',
+              hooks: [{ type: 'command', command: '/usr/local/bin/abs hook session-end' }],
+            },
+          ],
+          SessionStart: [
+            {
+              matcher: '',
+              hooks: [{ type: 'command', command: 'node /opt/abs/cli.js hook session-start' }],
+            },
+          ],
+        },
+      }),
+      'utf8',
+    );
+    const health = checkHooks({ settingsPath, events: ['SessionEnd', 'SessionStart'] });
+    expect(health.missing).toEqual([]);
+    expect(health.wired).toBe(true);
+  });
+
+  it('treats malformed hook shapes as not-wired without throwing (external-rewrite hardening)', () => {
+    // Valid JSON, but a third-party rewrite left non-array / null / primitive shapes
+    // where groups are expected. checkHooks must never throw (it would crash doctor).
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        hooks: {
+          SessionEnd: { not: 'an array' },
+          SessionStart: 'a string',
+          UserPromptSubmit: [null, 42, { hooks: 'also not an array' }],
+          PreToolUse: [{ matcher: '', hooks: [null, { command: 'abs hook pre-tool-use' }] }],
+        },
+      }),
+      'utf8',
+    );
+    let health!: ReturnType<typeof checkHooks>;
+    expect(() => {
+      health = checkHooks({ settingsPath });
+    }).not.toThrow();
+    expect(health.unreadable).toBe(false); // JSON parsed fine; only the shapes are off
+    // Malformed events are reported missing; the one well-formed entry is found.
+    expect(health.missing.sort()).toEqual(['SessionEnd', 'SessionStart', 'UserPromptSubmit']);
+    expect(health.present).toEqual(['PreToolUse']);
+    expect(health.wired).toBe(false);
   });
 });
