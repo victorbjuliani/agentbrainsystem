@@ -28,7 +28,12 @@ import { loadConfig } from '../config.js';
 import { readBinding } from '../ingest/index.js';
 import { openMemory } from '../memory.js';
 import { resolveRecallProject } from '../recall/index.js';
-import { EMBED_DEGRADED_KEY, type MemoryStore, REBUILD_FAILED_KEY } from '../store/index.js';
+import {
+  CAPTURE_FAILED_KEY,
+  EMBED_DEGRADED_KEY,
+  type MemoryStore,
+  REBUILD_FAILED_KEY,
+} from '../store/index.js';
 import { buildContextOutput, type HookPayload } from './payload.js';
 import { evaluateTwoSignalStaleness, optimizeCursorKey, parseCursor } from './staleness.js';
 
@@ -78,6 +83,9 @@ export interface SessionStartFacts {
   hasBinding?: boolean;
   /** Index is stale / a prior rebuild left it degraded — recall is unreliable (#101). */
   indexStale?: boolean;
+  /** The last OpenCode capture failed to persist (embed/persist error the fail-open plugin
+   * swallowed) — recent OpenCode turns may be missing from memory (#177). */
+  captureFailed?: boolean;
 }
 
 export interface SessionStartDeps {
@@ -160,6 +168,9 @@ async function gatherFactsFromStore(payload: HookPayload): Promise<SessionStartF
         memory.indexer.status().stale ||
         memory.store.getMeta(REBUILD_FAILED_KEY) !== null ||
         memory.store.getMeta(EMBED_DEGRADED_KEY) !== null,
+      // #177: a genuine OpenCode capture failure leaves a durable breadcrumb the fail-open
+      // plugin swallowed — surface it so the agent knows recent OpenCode turns may be missing.
+      captureFailed: memory.store.getMeta(CAPTURE_FAILED_KEY) !== null,
     };
     if (payload.sessionId) {
       facts.hasBinding = readBinding(memory.store, payload.sessionId) !== null;
@@ -206,6 +217,16 @@ export function renderBaseline(facts: SessionStartFacts): string {
     lines.push(
       'DEGRADED: the recall index is stale (a rebuild is pending or a prior one failed) — ' +
         'recall may miss memories until it is rebuilt. Run `abs doctor` to inspect.',
+    );
+  }
+  // #177: distinct from index staleness — a fail-open OpenCode capture that errored leaves a
+  // breadcrumb the plugin's `.nothrow().quiet()` swallowed. Surface it as its own line so the
+  // agent knows recent OpenCode turns may be missing (clears on the next successful capture).
+  if (facts.captureFailed) {
+    lines.push(
+      'DEGRADED: the last OpenCode memory capture failed to persist (embedding?) — recent ' +
+        'OpenCode turns may be missing from memory. Run `abs doctor` to inspect; it clears on ' +
+        'the next successful capture.',
     );
   }
   return lines.join('\n');

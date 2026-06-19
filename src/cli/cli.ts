@@ -56,6 +56,7 @@ import {
 import { projectSlug } from '../optimize/targets.js';
 import { type RecallHit, resolveRecallProject } from '../recall/index.js';
 import {
+  CAPTURE_FAILED_KEY,
   EMBED_DEGRADED_KEY,
   isRebuildLocked,
   type MemoryStore,
@@ -384,12 +385,18 @@ export async function cmdDoctor(deps: DoctorDeps = {}): Promise<void> {
     const rebuildFailedAt = memory.store.getMeta(REBUILD_FAILED_KEY);
     const embedDegradedAt = memory.store.getMeta(EMBED_DEGRADED_KEY);
     const degraded = rebuildFailedAt !== null || embedDegradedAt !== null;
+    // #177: a genuine OpenCode capture failure leaves a durable breadcrumb the plugin's
+    // fail-open shell (`.nothrow().quiet()`) swallowed. It is orthogonal to index health (a
+    // capture can fail while the index is fresh), so it gets its own `healthy` term + line below.
+    const captureFailedAt = memory.store.getMeta(CAPTURE_FAILED_KEY);
+    const captureFailed = captureFailedAt !== null;
     // Hook wiring: a third-party rewrite of settings.json can drop abs's hooks, leaving
     // capture/recall silently OFF while the db looks perfectly healthy. doctor used to
     // report healthy:true through that — the whole reason this bug went undetected.
     const hooks = (deps.checkHooks ?? defaultDoctorHookCheck)();
     const hooksBroken = hooks !== null && !hooks.wired;
-    const healthy = integrity.ok && !status.stale && !drift && !degraded && !hooksBroken;
+    const healthy =
+      integrity.ok && !status.stale && !drift && !degraded && !captureFailed && !hooksBroken;
     // Best-effort, offline-safe (null on any failure). Explicit command only.
     const latest = await fetchLatest();
     const updateAvailable = latest !== null && isOutdated(VERSION, latest);
@@ -409,6 +416,7 @@ export async function cmdDoctor(deps: DoctorDeps = {}): Promise<void> {
           degraded: {
             rebuildFailedAt,
             embedModelTimeoutAt: embedDegradedAt,
+            captureFailedAt,
           },
           hooks:
             hooks === null
@@ -459,6 +467,17 @@ export async function cmdDoctor(deps: DoctorDeps = {}): Promise<void> {
         err(
           'abs doctor: index is STALE/drifted — recall is degraded. It rebuilds on the next ' +
             'MCP launch (`abs start`); run `abs status` to trigger a rebuild now.',
+        );
+      }
+      // #177: orthogonal to the index chain above — emit independently so a capture failure on
+      // a fresh index still gets a line (the plugin swallowed the exit code + stderr).
+      if (captureFailed) {
+        err(
+          'abs doctor: the last OpenCode memory capture FAILED to persist (embedding/persist ' +
+            `error) at ${captureFailedAt}. The OpenCode plugin runs fail-open ` +
+            '(.nothrow().quiet()), so this breadcrumb is the only signal — captures are being ' +
+            'silently dropped. It clears on the next successful capture; check the embedding ' +
+            'model / disk.',
         );
       }
       process.exitCode = 1;
@@ -706,6 +725,15 @@ export async function cmdOpencodeCapture(
     // fail-open (never throws), so a sweep miss can't fail the capture. Tests inject
     // `groundTruth` so the real refreshIndex (tree-sitter wasm + repo scan) is skipped.
     await runPostCaptureMaintenance(memory.store, cwd, deps);
+    // #177: a successful capture clears any prior failure breadcrumb — the operator signal is
+    // "the LAST capture failed", not "a capture ever failed". Without this clear a one-off
+    // failure would pin a permanent false "captures are dropping" banner (the stale-flag trap
+    // that already misled the EMBED_DEGRADED banner).
+    try {
+      memory.store.deleteMeta(CAPTURE_FAILED_KEY);
+    } catch {
+      // best-effort — a clear miss only risks a stale breadcrumb, never data loss
+    }
   } catch (e) {
     // #156: differentiate the failure classes instead of masking everything into a
     // generic exit 1 (which made a failed embed indistinguishable from "nothing to
@@ -730,6 +758,16 @@ export async function cmdOpencodeCapture(
         }`,
       );
       process.exitCode = OPENCODE_CAPTURE_EMBED_FAIL_EXIT;
+      // #177: the plugin shells this with `.nothrow().quiet()`, so neither the exit code (3)
+      // nor the stderr above reaches a live OpenCode session — operationally the failure is
+      // still silent there. Leave a durable, queryable breadcrumb (mirror of the defer path's
+      // EMBED_DEGRADED_KEY) so `abs status`/`abs doctor` and SessionStart can report the silent
+      // drop. Cleared on the next successful capture.
+      try {
+        memory.store.setMeta(CAPTURE_FAILED_KEY, new Date().toISOString());
+      } catch {
+        // best-effort — the exit code + stderr already carry the signal for direct callers
+      }
     }
   } finally {
     memory.close();

@@ -25,7 +25,7 @@ import {
   GEMINI_LASTID_PREFIX,
 } from '../ingest/ingest.js';
 import type { MemoryStore } from '../store/memory-store.js';
-import { EMBED_DEGRADED_KEY, REBUILD_FAILED_KEY } from '../store/write-lock.js';
+import { CAPTURE_FAILED_KEY, EMBED_DEGRADED_KEY, REBUILD_FAILED_KEY } from '../store/write-lock.js';
 import {
   EXPORT_FORMAT,
   EXPORT_VERSION,
@@ -260,7 +260,7 @@ const INGEST_STATE_META_PREFIXES = [
 ];
 
 /** Single-key ingest-state kv_meta flags cleared on a full reset (F3-04). */
-const INGEST_STATE_META_KEYS = [REBUILD_FAILED_KEY, EMBED_DEGRADED_KEY];
+const INGEST_STATE_META_KEYS = [REBUILD_FAILED_KEY, EMBED_DEGRADED_KEY, CAPTURE_FAILED_KEY];
 
 /** Delete every ingest-progress kv_meta key/prefix — but never user bindings. */
 function clearIngestStateMeta(store: MemoryStore): void {

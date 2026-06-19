@@ -102,6 +102,18 @@ describe('renderBaseline', () => {
     const block = renderBaseline(facts({ indexStale: false }));
     expect(block).not.toContain('DEGRADED');
   });
+
+  it('surfaces a capture-failed note when the last OpenCode capture failed (#177)', () => {
+    const block = renderBaseline(facts({ captureFailed: true }));
+    expect(block).toContain('DEGRADED');
+    expect(block).toMatch(/capture/i);
+    expect(block).toContain('abs doctor');
+  });
+
+  it('omits the capture-failed note when no capture failure is recorded', () => {
+    const block = renderBaseline(facts({ captureFailed: false }));
+    expect(block).not.toMatch(/capture failed/i);
+  });
 });
 
 describe('handleSessionStart', () => {
