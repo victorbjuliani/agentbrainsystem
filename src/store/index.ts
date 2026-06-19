@@ -30,6 +30,7 @@ export type {
 } from './types.js';
 export {
   acquireRebuildLock,
+  CAPTURE_FAILED_KEY,
   EMBED_DEGRADED_KEY,
   isRebuildLocked,
   REBUILD_FAILED_KEY,

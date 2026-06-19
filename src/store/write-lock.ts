@@ -39,6 +39,13 @@ export const REBUILD_FAILED_KEY = 'index:rebuild_failed_at';
  * download — recall/ingest is degraded until an unbudgeted `abs ingest` caches it (#111). */
 export const EMBED_DEGRADED_KEY = 'embed:model_load_timeout_at';
 
+/** kv_meta key: when set, the LAST OpenCode capture FAILED to persist (a genuine embed/
+ * persist error, not the transient model-load timeout that `EMBED_DEGRADED_KEY` tracks). The
+ * OpenCode plugin shells the capture with `.nothrow().quiet()`, so neither the exit code (3)
+ * nor the stderr reaches a live session — this durable breadcrumb is the only operational
+ * signal that captures are being silently dropped. Cleared on the next successful capture (#177). */
+export const CAPTURE_FAILED_KEY = 'capture:opencode_failed_at';
+
 export interface RebuildLock {
   /** Refresh the lockfile mtime so readers keep seeing the lock as held. */
   heartbeat(): void;

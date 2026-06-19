@@ -22,7 +22,7 @@ import type { HarnessAdapter } from '../harness/index.js';
 import { optimizeCursorKey } from '../hooks/staleness.js';
 import { type Memory, openMemory } from '../memory.js';
 import { projectSlug } from '../optimize/targets.js';
-import { acquireRebuildLock, EMBED_DEGRADED_KEY } from '../store/index.js';
+import { acquireRebuildLock, CAPTURE_FAILED_KEY, EMBED_DEGRADED_KEY } from '../store/index.js';
 import {
   cmdDoctor,
   cmdForget,
@@ -1442,6 +1442,54 @@ describe('cmdOpencodeCapture / cmdOpencodeRecall (#72, hermetic, real local prov
       mem.close();
     }
   });
+
+  // #177: the loud-fail path (k) sets exit 3 + a clear stderr line, but the OpenCode plugin
+  // shells capture with `.nothrow().quiet()` — BOTH are swallowed, so in the harness where it
+  // matters a failed capture is still operationally silent. Leave a durable, queryable
+  // breadcrumb (mirror of the defer path's EMBED_DEGRADED_KEY) so status/doctor/SessionStart
+  // can report the silent drop. The defer key stays reserved for the transient-timeout path.
+  it('(l) a NON-timeout embed failure ALSO leaves a durable CAPTURE_FAILED_KEY breadcrumb (#177)', async () => {
+    seedDb();
+    await cmdOpencodeCapture(
+      ['--session', SES, '--db', join(dir, 'opencode.db')],
+      failingCapture(() => new Error('vector width 384 != 768 (dimension mismatch)')),
+    );
+
+    expect(process.exitCode).toBe(3); // loud failure preserved
+    const mem = await openMemory(loadConfig(), { ensure: false });
+    try {
+      expect(mem.store.getMeta(CAPTURE_FAILED_KEY)).not.toBeNull(); // breadcrumb set
+      expect(mem.store.getMeta(EMBED_DEGRADED_KEY)).toBeNull(); // NOT the defer key
+    } finally {
+      mem.close();
+    }
+  });
+
+  // #177: the operator signal is "the LAST capture failed", so a later SUCCESSFUL capture must
+  // clear the breadcrumb (mirror of how a successful rebuild clears EMBED_DEGRADED_KEY). Without
+  // the clear, a one-off failure would pin a permanent false "captures are dropping" banner —
+  // the exact stale-flag trap that mislead the DEGRADED banner before.
+  it('(m) a successful capture CLEARS a prior CAPTURE_FAILED_KEY breadcrumb (#177)', async () => {
+    // Pre-set the breadcrumb in the same tmp store the capture path will open, then close so
+    // the capture gets its own connection (mirror of test (h)'s pre-seed).
+    const seed = await openMemory(loadConfig(), { ensure: false });
+    seed.store.setMeta(CAPTURE_FAILED_KEY, '2026-06-19T00:00:00.000Z');
+    seed.close();
+
+    seedDb();
+    await cmdOpencodeCapture(['--session', SES, '--db', join(dir, 'opencode.db')], {
+      groundTruth: gtNull,
+    });
+
+    const mem = await openMemory(loadConfig(), { ensure: false });
+    try {
+      expect(mem.store.getMeta(CAPTURE_FAILED_KEY)).toBeNull(); // cleared on success
+      // Sanity: the capture really persisted (a genuine success, not a deferred no-op).
+      expect(mem.store.listObservations({ project: PROJ_SLUG }).length).toBe(2);
+    } finally {
+      mem.close();
+    }
+  });
 });
 
 describe('cmdDoctor — health check (#101, hermetic, tmp ABS_HOME)', () => {
@@ -1521,6 +1569,24 @@ describe('cmdDoctor — health check (#101, hermetic, tmp ABS_HOME)', () => {
     expect(report.degraded.embedModelTimeoutAt).toBe('2026-05-26T21:22:46.793Z');
     expect(process.exitCode).toBe(1);
     expect(errLines.join('')).toMatch(/degraded/i);
+  });
+
+  it('surfaces a capture-failed breadcrumb — unhealthy + exit 1 + a distinct line, even with a fresh index (#177)', async () => {
+    const mem = await openMemory(loadConfig(), { ensure: false });
+    mem.store.createSession({ externalId: 's1' });
+    // A genuine OpenCode capture failure leaves this breadcrumb; the index itself is fresh —
+    // doctor must still report unhealthy (the plugin swallowed the exit code + stderr).
+    mem.store.setMeta(CAPTURE_FAILED_KEY, '2026-06-19T12:00:00.000Z');
+    mem.close();
+
+    await cmdDoctor({ fetchLatest: async () => null, checkHooks: () => null });
+
+    const report = JSON.parse(outLines.join(''));
+    expect(report.healthy).toBe(false);
+    expect(report.drift).toBe(false);
+    expect(report.degraded.captureFailedAt).toBe('2026-06-19T12:00:00.000Z');
+    expect(process.exitCode).toBe(1);
+    expect(errLines.join('')).toMatch(/capture/i);
   });
 
   it('flags an available update + prints the upgrade hint when a newer version is published', async () => {
