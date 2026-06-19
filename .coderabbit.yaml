@@ -7,8 +7,11 @@ reviews:
   # Codex already does dense review — keep CodeRabbit chill to avoid duplicate nitpicks.
   profile: chill
 
-  # Auto-approve once CodeRabbit's comments are resolved (convenient for a solo repo).
-  request_changes_workflow: true
+  # Comment-only reviewer: never emit an APPROVED or CHANGES_REQUESTED verdict.
+  # Merge gating is owned by branch protection (required human code-owner review +
+  # conversation resolution + CI) — NOT by a bot's review state. This prevents
+  # CodeRabbit from auto-approving (rubber-stamping) a PR.
+  request_changes_workflow: false
 
   # Useful walkthrough pieces — keep on.
   high_level_summary: true

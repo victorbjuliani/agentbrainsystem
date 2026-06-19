@@ -1,0 +1,11 @@
+# Code owners — require an explicit HUMAN review on every PR.
+#
+# Why: branch protection requires a code-owner approval to merge. A bot reviewer
+# (e.g. CodeRabbit) is NOT a code owner, so its approval can never satisfy the gate
+# — only a real owner's can. This closes the "a bot rubber-stamps the merge" hole.
+#
+# Solo-repo note: GitHub forbids approving your own PR, so the maintainer merges
+# their own PRs via admin override (`gh pr merge --admin`) — a conscious bypass,
+# never a silent one. External contributors' PRs are fully gated.
+
+* @victorbjuliani
