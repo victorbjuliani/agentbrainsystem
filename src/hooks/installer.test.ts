@@ -378,4 +378,30 @@ describe('checkHooks', () => {
     expect(health.missing).toEqual([]);
     expect(health.wired).toBe(true);
   });
+
+  it('treats malformed hook shapes as not-wired without throwing (external-rewrite hardening)', () => {
+    // Valid JSON, but a third-party rewrite left non-array / null / primitive shapes
+    // where groups are expected. checkHooks must never throw (it would crash doctor).
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        hooks: {
+          SessionEnd: { not: 'an array' },
+          SessionStart: 'a string',
+          UserPromptSubmit: [null, 42, { hooks: 'also not an array' }],
+          PreToolUse: [{ matcher: '', hooks: [null, { command: 'abs hook pre-tool-use' }] }],
+        },
+      }),
+      'utf8',
+    );
+    let health!: ReturnType<typeof checkHooks>;
+    expect(() => {
+      health = checkHooks({ settingsPath });
+    }).not.toThrow();
+    expect(health.unreadable).toBe(false); // JSON parsed fine; only the shapes are off
+    // Malformed events are reported missing; the one well-formed entry is found.
+    expect(health.missing.sort()).toEqual(['SessionEnd', 'SessionStart', 'UserPromptSubmit']);
+    expect(health.present).toEqual(['PreToolUse']);
+    expect(health.wired).toBe(false);
+  });
 });

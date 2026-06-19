@@ -291,15 +291,24 @@ export function checkHooks(options: CheckHooksOptions = {}): HookHealth {
     unreadable = true;
   }
 
-  const hooks = settings.hooks ?? {};
+  const hooksMap = (settings.hooks ?? {}) as Record<string, unknown>;
   const present: HookEvent[] = [];
   const missing: HookEvent[] = [];
   for (const spec of specs) {
-    const groups = hooks[spec.event] ?? [];
+    // External rewrites can leave malformed shapes in otherwise-valid JSON — a non-array
+    // event value, or null/primitive entries. Treat anything that isn't a well-formed
+    // group as "not wired" rather than throwing: this probe must never crash doctor.
+    const rawGroups = hooksMap[spec.event];
+    const groups = Array.isArray(rawGroups) ? rawGroups : [];
     const found = groups.some((g) => {
-      const entries = (g as { hooks?: HookCommand[] }).hooks;
-      return (
-        Array.isArray(entries) && entries.some((h) => commandMatchesHook(h?.command, spec.eventArg))
+      if (g == null || typeof g !== 'object') return false;
+      const entries = (g as { hooks?: unknown }).hooks;
+      if (!Array.isArray(entries)) return false;
+      return entries.some((h) =>
+        commandMatchesHook(
+          h != null && typeof h === 'object' ? (h as { command?: string }).command : undefined,
+          spec.eventArg,
+        ),
       );
     });
     (found ? present : missing).push(spec.event);
