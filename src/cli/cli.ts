@@ -173,7 +173,7 @@ function out(msg: string): void {
   process.stdout.write(`${msg}\n`);
 }
 
-async function cmdStart(args: string[] = []): Promise<void> {
+export async function cmdStart(args: string[] = []): Promise<void> {
   // No stdout writes here — startStdio owns stdout for JSON-RPC.
   // `--harness <id>` is baked into the registered launch command (#109) so the
   // server resolves env-based sessions through the harness that launched it,

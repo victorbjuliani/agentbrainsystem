@@ -83,7 +83,9 @@ describe('installHooks', () => {
     expect(result.backupPath).toBeNull();
     expect(result.added).toHaveLength(4);
     expect(readdirSync(dir).filter((f) => f.endsWith('.bak'))).toEqual([]);
-    const s = read() as { hooks: Record<string, unknown> };
+    const s = read() as { hooks: Record<string, unknown>; permissions?: { allow: unknown[] } };
+    // The additive, non-clobbering contract holds on the self-heal path too.
+    expect(s.permissions).toEqual({ allow: [] });
     expect(Object.keys(s.hooks).sort()).toEqual([
       'PreToolUse',
       'SessionEnd',
