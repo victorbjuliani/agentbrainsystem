@@ -195,7 +195,14 @@ export async function cmdStart(args: string[] = []): Promise<void> {
  * full back-fill is never accidental. `--project <slug>` is repeatable. `--dir PATH`
  * overrides the projects root (tests).
  */
-export async function cmdIngest(args: string[]): Promise<void> {
+/** Test seam for {@link cmdIngest}: override the ingest itself so an embed/persist failure (or
+ * success) can be exercised hermetically without loading the real model — mirror of the
+ * `OpencodeCaptureDeps` pattern (#178). Defaults to the real `ingestClaudeProjects`. */
+export interface CmdIngestDeps {
+  ingest?: typeof ingestClaudeProjects;
+}
+
+export async function cmdIngest(args: string[], deps: CmdIngestDeps = {}): Promise<void> {
   const dir = optionValue(args, '--dir');
   const all = args.includes('--all');
   const apply = args.includes('--apply');
@@ -247,11 +254,28 @@ export async function cmdIngest(args: string[]): Promise<void> {
 
   const memory = await openMemory();
   try {
-    const result = await ingestClaudeProjects(memory, {
+    const result = await (deps.ingest ?? ingestClaudeProjects)(memory, {
       ...base,
       ...(all ? {} : { projects }),
     });
     out(JSON.stringify(result, null, 2));
+  } catch (e) {
+    // #178 (sibling of #156): an embed/persist failure here used to escape as a raw,
+    // undiagnosed stack trace via main().catch — indistinguishable from any other crash.
+    // Classify it into the same clear signal the OpenCode capture path emits so a failed or
+    // partial embed is never mistaken for success.
+    //
+    // Deliberately NO budgeted ensureReady/defer (unlike the hook + capture paths): `abs ingest
+    // --apply` is the FOREGROUND, user-initiated model-caching path — the exact command
+    // SessionEnd points users at to download the model (session-end.ts). Blocking on the
+    // first-run download is the whole point here; deferring would break that contract. It only
+    // needs to surface a genuine failure clearly instead of as an undiagnosed stack trace.
+    err(
+      `ingest persisted 0 observations (embedding failed?): ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    );
+    process.exitCode = 1;
   } finally {
     memory.close();
   }
@@ -1287,7 +1311,14 @@ async function cmdMaintain(args: string[]): Promise<void> {
   try {
     await runMaintainAuto(memory, config);
   } catch {
-    // Fail-open (ADR-0004): a background cadence must never surface an error.
+    // Fail-open BY DESIGN (ADR-0004): `abs maintain --auto` is a DETACHED background cadence
+    // spawned at SessionEnd — it must never surface an error or block session close. #178:
+    // confirmed deliberate, NOT a #156-style masking bug. An embed-load TIMEOUT cannot surface
+    // here to be swallowed — maintain runs no budgeted `ensureReady`, so an unbudgeted
+    // `indexer.write` blocks on the first-run download rather than throwing (only a budgeted
+    // ensureReady raises EmbeddingLoadTimeoutError), and the SessionEnd hook that spawned this
+    // already recorded the cold-model defer + EMBED_DEGRADED_KEY breadcrumb. Any other error is
+    // benign: consolidate is idempotent and the next cadence retries, so no data is lost.
   } finally {
     memory.close();
   }

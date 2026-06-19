@@ -386,6 +386,41 @@ describe('cmdIngest — opt-in historical ingest (#62, hermetic, no model load)'
     expect(mem.store.getSessionByExternalId('sa')).toBeNull();
     mem.close();
   });
+
+  // #178 (sibling of #156): an embed/persist failure during apply used to escape as a raw,
+  // undiagnosed stack trace via main().catch — indistinguishable from any other crash. Now it
+  // is classified into the same clear signal the OpenCode capture path emits, so a failed or
+  // partial embed is never mistaken for success. Inject a throwing `ingest` (the same hop the
+  // real provider.embed would fail on) so the test stays hermetic.
+  it('--apply surfaces a clear message + exit 1 on an embed/persist failure, not a raw stack trace (#178)', async () => {
+    await cmdIngest(['--apply', '--all', '--dir', projectsDir], {
+      ingest: async () => {
+        throw new Error('vector width 8 != 768 (dimension mismatch)');
+      },
+    });
+    expect(process.exitCode).toBe(1);
+    const text = errLines.join('');
+    expect(text).toContain('persisted 0 observations (embedding failed?)');
+    expect(text).toContain('dimension mismatch'); // underlying cause surfaced, not swallowed
+  });
+
+  // #178 regression: the new try/catch must not swallow the happy path — a successful ingest
+  // still prints its result summary and leaves the exit code clean. Inject a resolving `ingest`
+  // so the assertion stays hermetic (a real apply embeds, which dim-8 can't satisfy).
+  it('--apply prints the result summary on success — the try/catch does not swallow it (#178)', async () => {
+    await cmdIngest(['--apply', '--all', '--dir', projectsDir], {
+      ingest: async () => ({
+        filesProcessed: 1,
+        filesSkipped: 0,
+        observationsAdded: 2,
+        observationsSkipped: 0,
+        anchorsSeeded: 0,
+      }),
+    });
+    expect(process.exitCode).not.toBe(1);
+    expect(outLines.join('')).toContain('observationsAdded'); // result JSON printed
+    expect(errLines.join('')).not.toContain('embedding failed?'); // success ⇒ no failure line
+  });
 });
 
 describe('parseProjectAction — exactly one action', () => {
