@@ -9,7 +9,8 @@
  */
 import { spawn } from 'node:child_process';
 import { existsSync, rmSync } from 'node:fs';
-import { platform } from 'node:os';
+import { homedir, platform } from 'node:os';
+import { join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from '../config.js';
@@ -22,6 +23,7 @@ import type { OpencodeInstallReport } from '../harness/capabilities/opencode-plu
 import { sqliteTranscriptSource } from '../harness/capabilities/sqlite-transcript-source.js';
 import { defaultRegistry, type HarnessAdapter } from '../harness/index.js';
 import { dispatchHook } from '../hooks/index.js';
+import { checkHooks, type HookHealth } from '../hooks/installer.js';
 import { renderNotice } from '../hooks/session-start.js';
 import {
   consumeFirstPromptFlag,
@@ -336,6 +338,25 @@ async function cmdStatus(): Promise<void> {
 export interface DoctorDeps {
   /** Override the version probe (tests inject this to stay hermetic/offline). */
   fetchLatest?: () => Promise<string | null>;
+  /**
+   * Probe whether abs's lifecycle hooks are wired. Returns `null` when the check is
+   * not applicable (Claude Code absent on this machine). Defaults to inspecting
+   * Claude Code's ~/.claude/settings.json; injected by tests so the verdict is
+   * hermetic and machine-independent.
+   */
+  checkHooks?: () => HookHealth | null;
+}
+
+/**
+ * Default hook-wiring probe for `abs doctor`. The silent-eviction bug bites Claude
+ * Code (hooks live in ~/.claude/settings.json, a file other tools rewrite). Only
+ * return a verdict when Claude Code is present on this machine; otherwise `null`
+ * (not applicable) so a Codex-only box isn't told its irrelevant Claude Code hooks
+ * are missing.
+ */
+function defaultDoctorHookCheck(): HookHealth | null {
+  if (!existsSync(join(homedir(), '.claude'))) return null;
+  return checkHooks();
 }
 
 export async function cmdDoctor(deps: DoctorDeps = {}): Promise<void> {
@@ -356,7 +377,12 @@ export async function cmdDoctor(deps: DoctorDeps = {}): Promise<void> {
     const rebuildFailedAt = memory.store.getMeta(REBUILD_FAILED_KEY);
     const embedDegradedAt = memory.store.getMeta(EMBED_DEGRADED_KEY);
     const degraded = rebuildFailedAt !== null || embedDegradedAt !== null;
-    const healthy = integrity.ok && !status.stale && !drift && !degraded;
+    // Hook wiring: a third-party rewrite of settings.json can drop abs's hooks, leaving
+    // capture/recall silently OFF while the db looks perfectly healthy. doctor used to
+    // report healthy:true through that — the whole reason this bug went undetected.
+    const hooks = (deps.checkHooks ?? defaultDoctorHookCheck)();
+    const hooksBroken = hooks !== null && !hooks.wired;
+    const healthy = integrity.ok && !status.stale && !drift && !degraded && !hooksBroken;
     // Best-effort, offline-safe (null on any failure). Explicit command only.
     const latest = await fetchLatest();
     const updateAvailable = latest !== null && isOutdated(VERSION, latest);
@@ -377,6 +403,17 @@ export async function cmdDoctor(deps: DoctorDeps = {}): Promise<void> {
             rebuildFailedAt,
             embedModelTimeoutAt: embedDegradedAt,
           },
+          hooks:
+            hooks === null
+              ? { harness: 'claude-code', applicable: false }
+              : {
+                  harness: 'claude-code',
+                  applicable: true,
+                  wired: hooks.wired,
+                  missing: hooks.missing,
+                  settingsPath: hooks.settingsPath,
+                  ...(hooks.unreadable ? { unreadable: true } : {}),
+                },
           walSizeBytes: memory.store.walSizeBytes(),
           backupPath: memory.store.backupPath(),
           version: { current: VERSION, latest, updateAvailable },
@@ -386,19 +423,37 @@ export async function cmdDoctor(deps: DoctorDeps = {}): Promise<void> {
       ),
     );
     if (!healthy) {
-      err(
-        !integrity.ok
-          ? 'abs doctor: memory.db FAILED its integrity check — restore from the `.bak` next to ' +
-              'the db, or your last `abs export`.'
-          : degraded && !status.stale && !drift
-            ? 'abs doctor: a degraded flag is set' +
-              (rebuildFailedAt ? ` (rebuild failed at ${rebuildFailedAt})` : '') +
-              (embedDegradedAt ? ` (embedding model load timed out at ${embedDegradedAt})` : '') +
-              '. The index itself looks fresh — run `abs status` to clear it after a successful ' +
-              'rebuild/embed; if it persists, recall may be degraded.'
-            : 'abs doctor: index is STALE/drifted — recall is degraded. It rebuilds on the next ' +
-              'MCP launch (`abs start`); run `abs status` to trigger a rebuild now.',
-      );
+      // Each real problem emits its own line; the index/db chain is guarded so a
+      // hooks-only failure never misfires a misleading "STALE" message.
+      if (hooksBroken && hooks) {
+        err(
+          `abs doctor: agentbrainsystem hooks are NOT wired in Claude Code (${hooks.settingsPath}) — ` +
+            'capture and recall are silently OFF' +
+            (hooks.unreadable
+              ? ' (settings.json is not valid JSON, so wiring cannot be verified)'
+              : ` (missing: ${hooks.missing.join(', ')})`) +
+            '. A tool that rewrote settings.json likely dropped them. Fix: run `abs setup`.',
+        );
+      }
+      if (!integrity.ok) {
+        err(
+          'abs doctor: memory.db FAILED its integrity check — restore from the `.bak` next to ' +
+            'the db, or your last `abs export`.',
+        );
+      } else if (degraded && !status.stale && !drift) {
+        err(
+          'abs doctor: a degraded flag is set' +
+            (rebuildFailedAt ? ` (rebuild failed at ${rebuildFailedAt})` : '') +
+            (embedDegradedAt ? ` (embedding model load timed out at ${embedDegradedAt})` : '') +
+            '. The index itself looks fresh — run `abs status` to clear it after a successful ' +
+            'rebuild/embed; if it persists, recall may be degraded.',
+        );
+      } else if (status.stale || drift) {
+        err(
+          'abs doctor: index is STALE/drifted — recall is degraded. It rebuilds on the next ' +
+            'MCP launch (`abs start`); run `abs status` to trigger a rebuild now.',
+        );
+      }
       process.exitCode = 1;
     }
     if (updateAvailable) {

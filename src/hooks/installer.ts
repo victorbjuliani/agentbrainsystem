@@ -233,6 +233,81 @@ export function installHooks(options: InstallOptions = {}): InstallResult {
   return { settingsPath, backupPath, added, alreadyPresent };
 }
 
+/** The wiring verdict for abs's lifecycle hooks in a harness settings file. */
+export interface HookHealth {
+  /** The settings file inspected. */
+  settingsPath: string;
+  /** Registry events whose `abs hook <event>` command is present. */
+  present: HookEvent[];
+  /** Registry events whose hook command is absent. */
+  missing: HookEvent[];
+  /** True when every checked registry hook is present (and settings was readable). */
+  wired: boolean;
+  /** True when settings.json exists but is not valid JSON — wiring unverifiable. */
+  unreadable: boolean;
+}
+
+export interface CheckHooksOptions {
+  /** Override settings.json path (tests). Defaults to ~/.claude/settings.json. */
+  settingsPath?: string;
+  /** Restrict the check to a subset of events. Defaults to the whole registry. */
+  events?: readonly HookEvent[];
+}
+
+/**
+ * Does this command invoke `abs hook <eventArg>`? Tolerant of how the binary is
+ * spelled — `abs hook session-end`, `/usr/local/bin/abs hook session-end`, and
+ * `node /path/cli.js hook session-end` all match — by requiring the adjacent token
+ * pair `hook <eventArg>` rather than an exact whole-string match. Avoids both false
+ * negatives (absolute-path installs) and substring false positives.
+ */
+function commandMatchesHook(command: string | undefined, eventArg: string): boolean {
+  if (!command) return false;
+  const parts = command.trim().split(/\s+/);
+  const i = parts.indexOf('hook');
+  return i >= 0 && parts[i + 1] === eventArg;
+}
+
+/**
+ * Read-only inverse of {@link installHooks}: report which registry hooks are wired in
+ * settings.json. Never mutates and never throws — a missing file means "nothing wired"
+ * (all missing, readable); a corrupt file means "cannot verify" (`unreadable`, treated
+ * as not wired). Used by `abs doctor` to catch the case where a third-party tool
+ * rewrote settings.json and dropped abs's hooks — capture/recall silently OFF while the
+ * db itself looks perfectly healthy.
+ */
+export function checkHooks(options: CheckHooksOptions = {}): HookHealth {
+  const settingsPath = options.settingsPath ?? defaultSettingsPath();
+  const events = options.events ?? HOOK_REGISTRY.map((s) => s.event);
+  const specs = HOOK_REGISTRY.filter((s) => events.includes(s.event));
+
+  let settings: ClaudeSettings;
+  let unreadable = false;
+  try {
+    settings = readSettings(settingsPath);
+  } catch {
+    // Corrupt JSON: readSettings throws. We cannot verify wiring — report it.
+    settings = {};
+    unreadable = true;
+  }
+
+  const hooks = settings.hooks ?? {};
+  const present: HookEvent[] = [];
+  const missing: HookEvent[] = [];
+  for (const spec of specs) {
+    const groups = hooks[spec.event] ?? [];
+    const found = groups.some((g) => {
+      const entries = (g as { hooks?: HookCommand[] }).hooks;
+      return (
+        Array.isArray(entries) && entries.some((h) => commandMatchesHook(h?.command, spec.eventArg))
+      );
+    });
+    (found ? present : missing).push(spec.event);
+  }
+
+  return { settingsPath, present, missing, wired: missing.length === 0 && !unreadable, unreadable };
+}
+
 export interface UninstallOptions {
   /** Override settings.json path (tests). Defaults to ~/.claude/settings.json. */
   settingsPath?: string;

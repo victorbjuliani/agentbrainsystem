@@ -1478,7 +1478,7 @@ describe('cmdDoctor — health check (#101, hermetic, tmp ABS_HOME)', () => {
     mem.store.createSession({ externalId: 's1' });
     mem.close();
 
-    await cmdDoctor({ fetchLatest: async () => null });
+    await cmdDoctor({ fetchLatest: async () => null, checkHooks: () => null });
 
     const report = JSON.parse(outLines.join(''));
     expect(report.healthy).toBe(true);
@@ -1496,7 +1496,7 @@ describe('cmdDoctor — health check (#101, hermetic, tmp ABS_HOME)', () => {
     mem.store.createObservation({ sessionId: sid, kind: 'note', content: 'orphan' });
     mem.close();
 
-    await cmdDoctor({ fetchLatest: async () => null });
+    await cmdDoctor({ fetchLatest: async () => null, checkHooks: () => null });
 
     const report = JSON.parse(outLines.join(''));
     expect(report.healthy).toBe(false);
@@ -1513,7 +1513,7 @@ describe('cmdDoctor — health check (#101, hermetic, tmp ABS_HOME)', () => {
     mem.store.setMeta(EMBED_DEGRADED_KEY, '2026-05-26T21:22:46.793Z');
     mem.close();
 
-    await cmdDoctor({ fetchLatest: async () => null });
+    await cmdDoctor({ fetchLatest: async () => null, checkHooks: () => null });
 
     const report = JSON.parse(outLines.join(''));
     expect(report.healthy).toBe(false);
@@ -1528,7 +1528,7 @@ describe('cmdDoctor — health check (#101, hermetic, tmp ABS_HOME)', () => {
     mem.store.createSession({ externalId: 's1' });
     mem.close();
 
-    await cmdDoctor({ fetchLatest: async () => '999.0.0' });
+    await cmdDoctor({ fetchLatest: async () => '999.0.0', checkHooks: () => null });
 
     const report = JSON.parse(outLines.join(''));
     expect(report.version.updateAvailable).toBe(true);
@@ -1541,12 +1541,56 @@ describe('cmdDoctor — health check (#101, hermetic, tmp ABS_HOME)', () => {
     mem.store.createSession({ externalId: 's1' });
     mem.close();
 
-    await cmdDoctor({ fetchLatest: async () => null });
+    await cmdDoctor({ fetchLatest: async () => null, checkHooks: () => null });
 
     const report = JSON.parse(outLines.join(''));
     expect(report.version.latest).toBeNull();
     expect(report.version.updateAvailable).toBe(false);
     expect(errLines.join('')).not.toMatch(/update available/i);
+  });
+
+  it('flags evicted Claude Code hooks — unhealthy + exit 1 + `abs setup` remediation (#bug)', async () => {
+    // Fresh, otherwise-healthy store: the ONLY problem is missing hooks. doctor used to
+    // report healthy:true here while capture/recall were silently OFF.
+    const mem = await openMemory(loadConfig(), { ensure: false });
+    mem.store.createSession({ externalId: 's1' });
+    mem.close();
+
+    await cmdDoctor({
+      fetchLatest: async () => null,
+      checkHooks: () => ({
+        settingsPath: '/home/u/.claude/settings.json',
+        present: ['SessionStart'],
+        missing: ['SessionEnd', 'UserPromptSubmit', 'PreToolUse'],
+        wired: false,
+        unreadable: false,
+      }),
+    });
+
+    const report = JSON.parse(outLines.join(''));
+    expect(report.healthy).toBe(false);
+    expect(report.drift).toBe(false);
+    expect(report.hooks).toMatchObject({ applicable: true, wired: false });
+    expect(report.hooks.missing).toContain('SessionEnd');
+    expect(process.exitCode).toBe(1);
+    const stderr = errLines.join('');
+    expect(stderr).toMatch(/hooks are NOT wired/i);
+    expect(stderr).toMatch(/abs setup/);
+    // The hooks-only failure must NOT misfire the "STALE/drifted" message.
+    expect(stderr).not.toMatch(/STALE\/drifted/i);
+  });
+
+  it('treats hooks as not-applicable when Claude Code is absent — stays healthy', async () => {
+    const mem = await openMemory(loadConfig(), { ensure: false });
+    mem.store.createSession({ externalId: 's1' });
+    mem.close();
+
+    await cmdDoctor({ fetchLatest: async () => null, checkHooks: () => null });
+
+    const report = JSON.parse(outLines.join(''));
+    expect(report.healthy).toBe(true);
+    expect(report.hooks).toEqual({ harness: 'claude-code', applicable: false });
+    expect(process.exitCode).not.toBe(1);
   });
 });
 
