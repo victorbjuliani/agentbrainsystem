@@ -24,6 +24,7 @@ import { sqliteTranscriptSource } from '../harness/capabilities/sqlite-transcrip
 import { defaultRegistry, type HarnessAdapter } from '../harness/index.js';
 import { dispatchHook } from '../hooks/index.js';
 import { checkHooks, type HookHealth } from '../hooks/installer.js';
+import { selfHealClaudeCodeHooks } from '../hooks/self-heal.js';
 import { renderNotice } from '../hooks/session-start.js';
 import {
   consumeFirstPromptFlag,
@@ -172,12 +173,18 @@ function out(msg: string): void {
   process.stdout.write(`${msg}\n`);
 }
 
-async function cmdStart(args: string[] = []): Promise<void> {
+export async function cmdStart(args: string[] = []): Promise<void> {
   // No stdout writes here — startStdio owns stdout for JSON-RPC.
   // `--harness <id>` is baked into the registered launch command (#109) so the
   // server resolves env-based sessions through the harness that launched it,
   // never a hard-coded claude-code. Absent (legacy registration) → claude-code.
-  await startStdio(optionValue(args, '--harness'));
+  const harness = optionValue(args, '--harness');
+  // Self-heal evicted Claude Code hooks before serving. The MCP server is registered
+  // separately from the hooks, so it still launches when a third-party settings.json
+  // rewrite has dropped them — the one always-loaded place that can restore them.
+  // Best-effort + fail-open + stderr-only (never delays/crashes the JSON-RPC server).
+  selfHealClaudeCodeHooks({ harness });
+  await startStdio(harness);
 }
 
 /**

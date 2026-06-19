@@ -250,6 +250,7 @@ guarantee is unaffected.
 | `ABS_LLM_BASE_URL` / `ABS_LLM_MODEL` | _(unset → consolidation off)_ | OpenAI-compatible endpoint for `abs consolidate` |
 | `ABS_AUTO_DISTILL` | `on` | auto-distill cadence after SessionEnd (needs an LLM): `on` \| `off`. `0` opts out |
 | `DISTILL_MIN_OBS` | `25` | min observations in a just-ended session for it to be cadence-due |
+| `ABS_SELF_HEAL_HOOKS` | `on` | re-assert evicted Claude Code hooks on MCP launch (`abs start`); `0` opts out |
 
 Out of scope (for now): multi-user/team sharing, image/vision embeddings, heavyweight consolidation tiers.
 

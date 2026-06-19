@@ -77,6 +77,23 @@ describe('installHooks', () => {
     expect(backups).toHaveLength(1);
   });
 
+  it('skips the backup when backup:false (self-heal path) but still writes the hooks', () => {
+    writeFileSync(settingsPath, JSON.stringify({ permissions: { allow: [] } }), 'utf8');
+    const result = installHooks({ settingsPath, backup: false });
+    expect(result.backupPath).toBeNull();
+    expect(result.added).toHaveLength(4);
+    expect(readdirSync(dir).filter((f) => f.endsWith('.bak'))).toEqual([]);
+    const s = read() as { hooks: Record<string, unknown>; permissions?: { allow: unknown[] } };
+    // The additive, non-clobbering contract holds on the self-heal path too.
+    expect(s.permissions).toEqual({ allow: [] });
+    expect(Object.keys(s.hooks).sort()).toEqual([
+      'PreToolUse',
+      'SessionEnd',
+      'SessionStart',
+      'UserPromptSubmit',
+    ]);
+  });
+
   it('never clobbers unrelated top-level keys', () => {
     writeFileSync(
       settingsPath,
