@@ -83,6 +83,13 @@ export interface InstallOptions {
   baseCommand?: string;
   /** Restrict installation to a subset of events. Defaults to the whole registry. */
   events?: readonly HookEvent[];
+  /**
+   * Write a timestamped `.bak` before mutating (default true). The self-heal path
+   * (`abs start`) sets this false: it re-asserts on every server launch, so backing
+   * up each time would churn `.bak` files if a hostile tool keeps re-evicting. The
+   * write itself stays crash-safe (atomic temp+rename) and additive (non-clobbering).
+   */
+  backup?: boolean;
 }
 
 export interface InstallResult {
@@ -224,7 +231,7 @@ export function installHooks(options: InstallOptions = {}): InstallResult {
 
   let backupPath: string | null = null;
   if (added.length > 0) {
-    backupPath = backupSettings(settingsPath);
+    if (options.backup !== false) backupPath = backupSettings(settingsPath);
     const next: ClaudeSettings = { ...settings, hooks };
     // Atomic write (temp + rename) so a crash mid-write can't truncate live settings.
     atomicWriteFile(settingsPath, `${JSON.stringify(next, null, 2)}\n`);

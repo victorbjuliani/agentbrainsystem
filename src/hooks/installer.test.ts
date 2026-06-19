@@ -77,6 +77,21 @@ describe('installHooks', () => {
     expect(backups).toHaveLength(1);
   });
 
+  it('skips the backup when backup:false (self-heal path) but still writes the hooks', () => {
+    writeFileSync(settingsPath, JSON.stringify({ permissions: { allow: [] } }), 'utf8');
+    const result = installHooks({ settingsPath, backup: false });
+    expect(result.backupPath).toBeNull();
+    expect(result.added).toHaveLength(4);
+    expect(readdirSync(dir).filter((f) => f.endsWith('.bak'))).toEqual([]);
+    const s = read() as { hooks: Record<string, unknown> };
+    expect(Object.keys(s.hooks).sort()).toEqual([
+      'PreToolUse',
+      'SessionEnd',
+      'SessionStart',
+      'UserPromptSubmit',
+    ]);
+  });
+
   it('never clobbers unrelated top-level keys', () => {
     writeFileSync(
       settingsPath,
